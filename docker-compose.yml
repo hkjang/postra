@@ -1,0 +1,30 @@
+# Docker Compose for a single-server Postra deployment.
+# For offline / air-gapped internal networks, set POSTRA_ALLOW_INSECURE_MAIL=true
+# to permit plaintext POP3/SMTP and SMTP without AUTH.
+services:
+  postra:
+    build: .
+    image: postra:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8480:8480"   # REST API
+      - "127.0.0.1:8481:8481"   # MCP Streamable HTTP
+    environment:
+      POSTRA_DATA_DIR: /data
+      POSTRA_HTTP_ADDR: "0.0.0.0:8480"
+      POSTRA_MCP_HTTP_ADDR: "0.0.0.0:8481"
+      # Require a bearer token whenever bound to a non-loopback interface.
+      POSTRA_API_TOKEN: "${POSTRA_API_TOKEN:?set POSTRA_API_TOKEN}"
+      # In production inject the KEK from a secret manager, not the on-disk file:
+      # POSTRA_KEK: "${POSTRA_KEK}"
+      # OpenAI-compatible endpoint (local vLLM/Ollama by default):
+      POSTRA_AI_BASE_URL: "${POSTRA_AI_BASE_URL:-http://host.docker.internal:11434/v1}"
+      POSTRA_AI_MODEL: "${POSTRA_AI_MODEL:-llama3.1}"
+      # Offline network toggles (default off):
+      POSTRA_ALLOW_INSECURE_MAIL: "${POSTRA_ALLOW_INSECURE_MAIL:-false}"
+      POSTRA_ALLOW_PRIVATE_HOSTS: "${POSTRA_ALLOW_PRIVATE_HOSTS:-true}"
+    volumes:
+      - postra-data:/data
+
+volumes:
+  postra-data:

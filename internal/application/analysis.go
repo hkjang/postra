@@ -1,0 +1,257 @@
+package application
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"net"
+	"net/url"
+	"strings"
+	"time"
+
+	"postra/internal/adapters/persistence"
+	"postra/internal/domain"
+)
+
+const promptVersion = "v1"
+
+// maxAIBodyChars bounds untrusted content per request.
+const maxAIBodyChars = 12000
+
+type promptSpec struct {
+	system string
+	task   string
+}
+
+// Prompts never interpolate mail content into instructions; the content
+// travels in the delimited untrusted block that the adapter appends (AI-014).
+var prompts = map[string]promptSpec{
+	"summarize": {
+		system: "You are an email analysis assistant. Respond with JSON only.",
+		task: `Summarize the email in the untrusted block. Respond in the email's main language.
+JSON schema: {"summary": string, "requests": [string], "dates": [string], "confidence": number (0-1)}`,
+	},
+	"classify": {
+		system: "You are an email classification assistant. Respond with JSON only.",
+		task: `Classify the email in the untrusted block.
+JSON schema: {"category": "work"|"advertisement"|"notification"|"personal"|"security"|"other", "importance": "high"|"normal"|"low", "reason": string, "confidence": number}`,
+	},
+	"action_items": {
+		system: "You are an email task extraction assistant. Respond with JSON only.",
+		task: `Extract action items from the email in the untrusted block.
+JSON schema: {"items": [{"task": string, "assignee": string|null, "due": string|null, "evidence": string, "confidence": number}]}
+Low-confidence dates/assignees must have confidence < 0.5 so the user reviews them.`,
+	},
+	"entities": {
+		system: "You are an email entity extraction assistant. Respond with JSON only.",
+		task: `Extract entities from the email in the untrusted block.
+JSON schema: {"people": [string], "companies": [string], "projects": [string], "amounts": [string], "contacts": [string]}`,
+	},
+	"phishing": {
+		system: "You are an email security analyst. Respond with JSON only.",
+		task: `Assess phishing risk of the email in the untrusted block (headers included).
+JSON schema: {"risk_score": number (0-100), "indicators": [string], "recommendation": string}`,
+	},
+	"thread_summary": {
+		system: "You are an email thread analysis assistant. Respond with JSON only.",
+		task: `The untrusted block contains a conversation (multiple emails, oldest first).
+JSON schema: {"progress": string, "decisions": [string], "open_items": [string], "next_action": string}`,
+	},
+	"question_answer": {
+		system: "You are an email question-answering assistant. Respond with JSON only. Answer strictly from the provided emails; if the answer is not present, say so.",
+		task: `Answer the user's question using only the emails in the untrusted block. Each email is prefixed with [message_id].
+JSON schema: {"answer": string, "evidence_message_ids": [string], "confidence": number}`,
+	},
+	"draft_reply": {
+		system: "You are an email drafting assistant. Respond with JSON only. You draft replies; you never send mail or take actions.",
+		task: `Write a reply draft to the email in the untrusted block, following the user instruction given above the block.
+JSON schema: {"subject": string, "body": string, "language": string}`,
+	},
+	"rewrite": {
+		system: "You are an email rewriting assistant. Respond with JSON only.",
+		task: `Rewrite the draft in the untrusted block according to the user instruction given above the block. Keep the factual content identical.
+JSON schema: {"subject": string, "body": string}`,
+	},
+}
+
+// checkAIPolicy blocks sending mail content to non-local AI endpoints unless
+// explicitly allowed (AI-011/012, §13 data-exfiltration control).
+func (a *App) checkAIPolicy(ctx context.Context) error {
+	if a.Cfg.AI.AllowExternal {
+		return nil
+	}
+	u, err := url.Parse(a.Cfg.AI.BaseURL)
+	if err != nil {
+		return userErrf("invalid AI base_url: %v", err)
+	}
+	host := u.Hostname()
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.IsLoopback() || ip.IsPrivate() {
+			return nil
+		}
+	} else if host == "localhost" {
+		return nil
+	} else if ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host); err == nil {
+		local := true
+		for _, ip := range ips {
+			if !ip.IsLoopback() && !ip.IsPrivate() {
+				local = false
+			}
+		}
+		if local {
+			return nil
+		}
+	}
+	return userErrf("AI endpoint %s is external; set ai.allow_external=true to permit sending mail content outside", host)
+}
+
+func truncateRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "\n[... truncated ...]"
+}
+
+func (a *App) runAnalysis(ctx context.Context, analysisType, targetType, targetID, userTask, untrusted string) (*domain.Analysis, error) {
+	spec, ok := prompts[analysisType]
+	if !ok {
+		return nil, userErrf("unknown analysis type %q", analysisType)
+	}
+	if err := a.checkAIPolicy(ctx); err != nil {
+		return nil, err
+	}
+	sum := sha256.Sum256([]byte(analysisType + "|" + promptVersion + "|" + a.Cfg.AI.Model + "|" + userTask + "|" + untrusted))
+	inputHash := hex.EncodeToString(sum[:])
+	if cached, err := a.Store.FindCachedAnalysis(ctx, DefaultUserID, analysisType, inputHash, a.Cfg.AI.Model); err == nil {
+		return cached, nil // AI-008 cache
+	}
+
+	task := spec.task
+	if userTask != "" {
+		task += "\n\nUser instruction: " + userTask
+	}
+	res, err := a.AI.Generate(ctx, domain.GenerationRequest{
+		System:    spec.system,
+		User:      task,
+		Untrusted: truncateRunes(untrusted, maxAIBodyChars),
+		JSONMode:  true,
+	})
+	if err != nil {
+		a.audit(ctx, "ai_analysis", targetType+":"+targetID, "error", analysisType+": "+err.Error())
+		return nil, err
+	}
+	resultJSON, err := extractJSON(res.Text)
+	if err != nil {
+		return nil, fmt.Errorf("AI returned non-JSON output (AI-005 validation failed): %w", err)
+	}
+	an := &domain.Analysis{
+		ID: persistence.NewID("ana"), UserID: DefaultUserID,
+		TargetType: targetType, TargetID: targetID, AnalysisType: analysisType,
+		ResultJSON: resultJSON, Model: res.Model, PromptVersion: promptVersion, InputHash: inputHash,
+	}
+	if err := a.Store.SaveAnalysis(ctx, an); err != nil {
+		return nil, err
+	}
+	a.audit(ctx, "ai_analysis", targetType+":"+targetID, "ok", analysisType)
+	return an, nil
+}
+
+// extractJSON validates the model output as a JSON object, tolerating
+// markdown fences local models like to add.
+func extractJSON(text string) (string, error) {
+	t := strings.TrimSpace(text)
+	if i := strings.Index(t, "{"); i >= 0 {
+		if j := strings.LastIndex(t, "}"); j > i {
+			t = t[i : j+1]
+		}
+	}
+	var v map[string]any
+	if err := json.Unmarshal([]byte(t), &v); err != nil {
+		return "", err
+	}
+	return t, nil
+}
+
+func (a *App) messageAsAIInput(ctx context.Context, messageID string, includeHeaders bool) (*domain.Message, string, error) {
+	mv, err := a.GetMessage(ctx, messageID, true)
+	if err != nil {
+		return nil, "", err
+	}
+	var sb strings.Builder
+	m := mv.Message
+	fmt.Fprintf(&sb, "Subject: %s\nFrom: %s <%s>\nDate: %s\n",
+		m.Subject, m.From.Name, m.From.Email, fmtUnix(m.Date))
+	if includeHeaders {
+		fmt.Fprintf(&sb, "Message-ID: %s\nAuthentication-Results: %s\n", m.MessageID, m.AuthResults)
+	}
+	sb.WriteString("\n")
+	if mv.Body != nil {
+		sb.WriteString(mv.Body.TextBody)
+	}
+	return &mv.Message, sb.String(), nil
+}
+
+func (a *App) AnalyzeMessage(ctx context.Context, messageID, analysisType string) (*domain.Analysis, error) {
+	_, input, err := a.messageAsAIInput(ctx, messageID, analysisType == "phishing")
+	if err != nil {
+		return nil, err
+	}
+	return a.runAnalysis(ctx, analysisType, "message", messageID, "", input)
+}
+
+func (a *App) SummarizeThread(ctx context.Context, threadID string) (*domain.Analysis, error) {
+	tv, err := a.GetThread(ctx, threadID, true)
+	if err != nil {
+		return nil, err
+	}
+	var sb strings.Builder
+	for _, mv := range tv.Messages {
+		fmt.Fprintf(&sb, "--- [%s] %s | %s | %s ---\n",
+			mv.Message.ID, fmtUnix(mv.Message.Date), mv.Message.From.Email, mv.Message.Subject)
+		if mv.Body != nil {
+			sb.WriteString(truncateRunes(mv.Body.TextBody, 3000))
+		}
+		sb.WriteString("\n")
+	}
+	return a.runAnalysis(ctx, "thread_summary", "thread", threadID, "", sb.String())
+}
+
+// AnswerQuestion retrieves candidate mails within the user's own scope and
+// asks the model to answer with per-message citations (AI-009).
+func (a *App) AnswerQuestion(ctx context.Context, question, accountID string) (*domain.Analysis, error) {
+	if strings.TrimSpace(question) == "" {
+		return nil, userErrf("question is empty")
+	}
+	res, err := a.Search(ctx, domain.SearchQuery{Text: question, AccountID: accountID, Limit: 5})
+	if err != nil {
+		return nil, err
+	}
+	if len(res.Messages) == 0 {
+		// keyword fallback: recent messages
+		res, err = a.Search(ctx, domain.SearchQuery{AccountID: accountID, Limit: 5})
+		if err != nil {
+			return nil, err
+		}
+	}
+	var sb strings.Builder
+	for _, m := range res.Messages {
+		body, _ := a.Store.GetBody(ctx, DefaultUserID, m.ID)
+		text := ""
+		if body != nil {
+			text = truncateRunes(body.TextBody, 2500)
+		}
+		fmt.Fprintf(&sb, "[%s] Subject: %s | From: %s | Date: %s\n%s\n\n",
+			m.ID, m.Subject, m.From.Email, fmtUnix(m.Date), text)
+	}
+	return a.runAnalysis(ctx, "question_answer", "query", "adhoc", "Question: "+question, sb.String())
+}
+
+func fmtUnix(u int64) string {
+	if u <= 0 {
+		return "unknown"
+	}
+	return time.Unix(u, 0).UTC().Format(time.RFC3339)
+}
