@@ -29,6 +29,9 @@ type Store struct {
 	kek *crypto.KEK
 }
 
+// Ping verifies the SQLite connection is usable (readiness probe).
+func (s *Store) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }
+
 func Open(path string) (*Store, error) {
 	db, err := sql.Open("sqlite", path+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
 	if err != nil {

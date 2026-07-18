@@ -127,7 +127,9 @@ POSTRA_ALLOW_INSECURE_MAIL=true ./postra serve
 | `postra_http_requests_total` | counter | `route`,`method`,`code` | REST 요청(경로 패턴 라벨) |
 | `postra_http_request_duration_seconds` | histogram | `route` | REST 요청 지연 |
 
-Go 런타임·프로세스 표준 메트릭(`go_*`, `process_*`)도 함께 노출됩니다. 라벨은 저카디널리티(계정·메시지 ID 미포함)로 유지해 장기 구동 시 시계열 폭증을 막습니다.
+Go 런타임·프로세스 표준 메트릭(`go_*`, `process_*`)과 배포 버전(`postra_build_info`)도 함께 노출됩니다. 라벨은 저카디널리티(계정·메시지 ID 미포함)로 유지해 장기 구동 시 시계열 폭증을 막습니다.
+
+**헬스 프로브**(인증 불요): `GET /api/livez` 는 프로세스 생존(항상 200), `GET /api/readyz`(및 `/api/healthz`)는 저장소 도달 가능 여부를 확인해 실패 시 503을 반환합니다. K8s liveness/readiness 프로브에 각각 매핑하세요.
 
 ## 구조 (§15)
 

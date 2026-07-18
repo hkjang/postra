@@ -55,6 +55,12 @@ func New(cfg config.Config, store Storage, objects objectstore.Store,
 	return a, nil
 }
 
+// Ready reports whether the app's backing store is reachable, for readiness
+// probes. Liveness (process is up) needs no dependency check.
+func (a *App) Ready(ctx context.Context) error {
+	return a.Store.Ping(ctx)
+}
+
 // Shutdown cancels background jobs and waits for workers to drain.
 func (a *App) Shutdown() {
 	a.cancelAll()

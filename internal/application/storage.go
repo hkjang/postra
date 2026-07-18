@@ -11,6 +11,9 @@ import (
 // PostgreSQL adapter (server/multi-user mode) are interchangeable (§2 공급자
 // 독립성, §24 확장). Concrete implementations live in internal/adapters.
 type Storage interface {
+	// Ping verifies the backend is reachable (readiness probe).
+	Ping(ctx context.Context) error
+
 	EnsureUser(ctx context.Context, id, loginID string) error
 
 	CreateAccount(ctx context.Context, a *domain.MailAccount) error

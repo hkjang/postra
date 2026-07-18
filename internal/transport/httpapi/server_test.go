@@ -62,14 +62,15 @@ func TestMetricsEndpoint(t *testing.T) {
 	}
 
 	// A normal authenticated request is counted under its route pattern.
-	route := "GET /api/healthz"
+	// /api/accounts requires the token (unlike the public probe endpoints).
+	route := "GET /api/accounts"
 	before := testutil.ToFloat64(metrics.HTTPRequests.WithLabelValues(route, "GET", "200"))
-	req := httptest.NewRequest("GET", "/api/healthz", nil)
+	req := httptest.NewRequest("GET", "/api/accounts", nil)
 	req.Header.Set("Authorization", "Bearer sekret")
 	rec2 := httptest.NewRecorder()
 	h.ServeHTTP(rec2, req)
 	if rec2.Code != http.StatusOK {
-		t.Fatalf("/api/healthz status = %d, want 200", rec2.Code)
+		t.Fatalf("/api/accounts status = %d, want 200", rec2.Code)
 	}
 	if got := testutil.ToFloat64(metrics.HTTPRequests.WithLabelValues(route, "GET", "200")) - before; got < 1 {
 		t.Fatalf("http_requests_total delta = %v, want >= 1", got)
@@ -77,7 +78,7 @@ func TestMetricsEndpoint(t *testing.T) {
 
 	// A bad token is rejected and counted as 401.
 	before401 := testutil.ToFloat64(metrics.HTTPRequests.WithLabelValues(route, "GET", "401"))
-	reqBad := httptest.NewRequest("GET", "/api/healthz", nil)
+	reqBad := httptest.NewRequest("GET", "/api/accounts", nil)
 	reqBad.Header.Set("Authorization", "Bearer wrong")
 	rec3 := httptest.NewRecorder()
 	h.ServeHTTP(rec3, reqBad)
@@ -86,6 +87,22 @@ func TestMetricsEndpoint(t *testing.T) {
 	}
 	if got := testutil.ToFloat64(metrics.HTTPRequests.WithLabelValues(route, "GET", "401")) - before401; got < 1 {
 		t.Fatalf("http_requests_total{401} delta = %v, want >= 1", got)
+	}
+}
+
+// TestProbesUnauthenticated verifies liveness/readiness probes are reachable
+// without the API token and report the store's health.
+func TestProbesUnauthenticated(t *testing.T) {
+	h := newTestHandler(t, "sekret") // token set, but probes must bypass it
+	for _, path := range []string{"/api/livez", "/api/readyz", "/api/healthz"} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("GET", path, nil)) // no Authorization header
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s = %d, want 200 (store is up, no token required)", path, rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), `"status":"ok"`) {
+			t.Fatalf("%s body = %s", path, rec.Body.String())
+		}
 	}
 }
 

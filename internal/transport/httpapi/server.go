@@ -3,6 +3,7 @@
 package httpapi
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -72,9 +73,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/outbound/{id}", s.getOutbound)
 
 	mux.HandleFunc("GET /api/audit", s.audit)
-	mux.HandleFunc("GET /api/healthz", func(w http.ResponseWriter, r *http.Request) {
+	// Probes (unauthenticated): livez = process is up; readyz/healthz = backing
+	// store reachable, 503 otherwise. healthz keeps the readiness meaning it
+	// had documented while livez separates pure liveness for orchestrators.
+	mux.HandleFunc("GET /api/livez", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
+	mux.HandleFunc("GET /api/readyz", s.readyz)
+	mux.HandleFunc("GET /api/healthz", s.readyz)
 
 	// Prometheus scrape endpoint (§18.1): unauthenticated so scrapers need no
 	// token; gated by config and by whatever the operator binds HTTPAddr to.
@@ -96,6 +102,27 @@ func (r *statusRecorder) WriteHeader(code int) {
 	r.ResponseWriter.WriteHeader(code)
 }
 
+// readyz reports 200 when the backing store is reachable, 503 otherwise.
+func (s *Server) readyz(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	if err := s.app.Ready(ctx); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "unavailable", "error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// publicPaths are reachable without the API token: scrape and probe endpoints
+// that reveal no sensitive data.
+func publicPath(p string) bool {
+	switch p {
+	case "/api/livez", "/api/readyz", "/api/healthz":
+		return true
+	}
+	return false
+}
+
 func (s *Server) middleware(mux *http.ServeMux) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// /metrics bypasses auth and is not self-instrumented.
@@ -112,7 +139,7 @@ func (s *Server) middleware(mux *http.ServeMux) http.Handler {
 		rec := &statusRecorder{ResponseWriter: w, code: http.StatusOK}
 		start := time.Now()
 		func() {
-			if s.apiToken != "" {
+			if s.apiToken != "" && !publicPath(r.URL.Path) {
 				got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 				if subtle.ConstantTimeCompare([]byte(got), []byte(s.apiToken)) != 1 {
 					writeJSON(rec, http.StatusUnauthorized, map[string]string{"error": "invalid or missing bearer token"})

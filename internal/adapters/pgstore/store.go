@@ -30,6 +30,9 @@ type Store struct {
 	pool *pgxpool.Pool
 }
 
+// Ping verifies the PostgreSQL pool is usable (readiness probe).
+func (s *Store) Ping(ctx context.Context) error { return s.pool.Ping(ctx) }
+
 // Open connects to PostgreSQL and applies the schema. The pgvector extension
 // is required for semantic search.
 func Open(ctx context.Context, dsn string) (*Store, error) {
