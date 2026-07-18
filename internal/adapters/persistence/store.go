@@ -135,7 +135,8 @@ CREATE TABLE IF NOT EXISTS message_bodies (
 
 CREATE TABLE IF NOT EXISTS attachments (
   id TEXT PRIMARY KEY, message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
-  name TEXT, mime_type TEXT, size INTEGER, hash TEXT, storage_uri TEXT, inline_flag INTEGER DEFAULT 0);
+  name TEXT, mime_type TEXT, size INTEGER, hash TEXT, storage_uri TEXT, inline_flag INTEGER DEFAULT 0,
+  scan_status TEXT DEFAULT 'clean', scan_detail TEXT);
 
 CREATE TABLE IF NOT EXISTS threads (
   id TEXT PRIMARY KEY, user_id TEXT NOT NULL, account_id TEXT NOT NULL,
@@ -195,6 +196,18 @@ CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_events(at DESC);
 	if _, err := s.db.Exec(schema); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
+	// Additive column migrations for databases created before these columns
+	// existed. Fresh DBs already have them from CREATE, so a "duplicate
+	// column" error is expected and ignored.
+	for _, alt := range []string{
+		`ALTER TABLE attachments ADD COLUMN scan_status TEXT DEFAULT 'clean'`,
+		`ALTER TABLE attachments ADD COLUMN scan_detail TEXT`,
+	} {
+		if _, err := s.db.Exec(alt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			return fmt.Errorf("migrate attachments: %w", err)
+		}
+	}
+
 	// Full-text index; fall back to LIKE search when FTS5 is unavailable.
 	_, err := s.db.Exec(`CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
       message_pk UNINDEXED, subject, from_email, text_body)`)
@@ -403,10 +416,15 @@ func (s *Store) InsertMessage(ctx context.Context, m *domain.Message, body *doma
 		}
 	}
 	for _, at := range atts {
+		status := at.ScanStatus
+		if status == "" {
+			status = domain.ScanClean
+		}
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO attachments (id,message_id,name,mime_type,size,hash,storage_uri,inline_flag)
-			 VALUES (?,?,?,?,?,?,?,?)`,
-			at.ID, m.ID, at.Name, at.MIMEType, at.Size, at.Hash, at.StorageURI, boolInt(at.Inline)); err != nil {
+			`INSERT INTO attachments (id,message_id,name,mime_type,size,hash,storage_uri,inline_flag,scan_status,scan_detail)
+			 VALUES (?,?,?,?,?,?,?,?,?,?)`,
+			at.ID, m.ID, at.Name, at.MIMEType, at.Size, at.Hash, at.StorageURI, boolInt(at.Inline),
+			string(status), at.ScanDetail); err != nil {
 			return err
 		}
 	}
@@ -568,7 +586,8 @@ func (s *Store) GetBody(ctx context.Context, userID, messageID string) (*domain.
 }
 
 func (s *Store) ListAttachments(ctx context.Context, userID, messageID string) ([]domain.Attachment, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT a.id,a.message_id,a.name,a.mime_type,a.size,a.hash,a.storage_uri,a.inline_flag
+	rows, err := s.db.QueryContext(ctx, `SELECT a.id,a.message_id,a.name,a.mime_type,a.size,a.hash,a.storage_uri,a.inline_flag,
+	 COALESCE(a.scan_status,'clean'),COALESCE(a.scan_detail,'')
 	 FROM attachments a JOIN messages m ON m.id=a.message_id
 	 WHERE a.message_id=? AND m.user_id=?`, messageID, userID)
 	if err != nil {
@@ -579,10 +598,12 @@ func (s *Store) ListAttachments(ctx context.Context, userID, messageID string) (
 	for rows.Next() {
 		var a domain.Attachment
 		var inline int
-		if err := rows.Scan(&a.ID, &a.MessageID, &a.Name, &a.MIMEType, &a.Size, &a.Hash, &a.StorageURI, &inline); err != nil {
+		var status string
+		if err := rows.Scan(&a.ID, &a.MessageID, &a.Name, &a.MIMEType, &a.Size, &a.Hash, &a.StorageURI, &inline, &status, &a.ScanDetail); err != nil {
 			return nil, err
 		}
 		a.Inline = inline != 0
+		a.ScanStatus = domain.ScanStatus(status)
 		out = append(out, a)
 	}
 	return out, rows.Err()

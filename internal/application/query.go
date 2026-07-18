@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"fmt"
 	"io"
 
 	"postra/internal/domain"
@@ -82,18 +83,32 @@ func (a *App) ListAttachments(ctx context.Context, messageID string) ([]domain.A
 	return a.Store.ListAttachments(ctx, DefaultUserID, messageID)
 }
 
-func (a *App) GetAttachment(ctx context.Context, messageID, attachmentID string) (*domain.Attachment, io.ReadCloser, error) {
+// GetAttachment streams an attachment. ack must be true to download a
+// quarantined/suspect attachment; blocked attachments are never available.
+func (a *App) GetAttachment(ctx context.Context, messageID, attachmentID string, ack bool) (*domain.Attachment, io.ReadCloser, error) {
 	atts, err := a.ListAttachments(ctx, messageID)
 	if err != nil {
 		return nil, nil, err
 	}
 	for _, at := range atts {
 		if at.ID == attachmentID {
+			// Blocked attachments were never retained (MIME-012).
+			if at.StorageURI == "" || at.ScanStatus == domain.ScanBlocked {
+				a.audit(ctx, "attachment_download", "attachment:"+attachmentID, "denied", at.ScanDetail)
+				return nil, nil, userErrf("attachment %q was blocked by policy and is not available: %s", at.Name, at.ScanDetail)
+			}
+			// Quarantined/suspect content requires explicit acknowledgement.
+			if (at.ScanStatus == domain.ScanQuarantined || at.ScanStatus == domain.ScanSuspect) && !ack {
+				a.audit(ctx, "attachment_download", "attachment:"+attachmentID, "denied", "ack required")
+				return nil, nil, userErrf("attachment %q is %s (%s); re-request with acknowledgement to download",
+					at.Name, at.ScanStatus, at.ScanDetail)
+			}
 			rc, err := a.Objects.Get(at.StorageURI)
 			if err != nil {
 				return nil, nil, err
 			}
-			a.audit(ctx, "attachment_download", "attachment:"+attachmentID, "ok", at.Name)
+			a.audit(ctx, "attachment_download", "attachment:"+attachmentID, "ok",
+				fmt.Sprintf("%s (%s)", at.Name, at.ScanStatus))
 			return &at, rc, nil
 		}
 	}

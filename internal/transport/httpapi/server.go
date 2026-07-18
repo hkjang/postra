@@ -325,7 +325,8 @@ func (s *Server) listAttachments(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getAttachment(w http.ResponseWriter, r *http.Request) {
-	at, rc, err := s.app.GetAttachment(r.Context(), r.PathValue("id"), r.PathValue("att"))
+	ack := r.URL.Query().Get("ack") == "true"
+	at, rc, err := s.app.GetAttachment(r.Context(), r.PathValue("id"), r.PathValue("att"), ack)
 	if err != nil {
 		writeErr(w, err)
 		return

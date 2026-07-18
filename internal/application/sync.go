@@ -243,15 +243,28 @@ func (a *App) ingestOne(ctx context.Context, sess domain.POP3Session, acc *domai
 	}
 	var atts []domain.Attachment
 	for _, ap := range parsed.Attachments {
-		uri, hash, size, err := a.Objects.Put("att", bytes.NewReader(ap.Data))
-		if err != nil {
-			continue
-		}
-		atts = append(atts, domain.Attachment{
-			ID: persistence.NewID("att"), MessageID: msg.ID,
-			Name: ap.Name, MIMEType: ap.MIMEType, Size: size, Hash: hash,
-			StorageURI: uri, Inline: ap.Inline,
+		// Policy + archive scan before retention (MIME-011/012/015).
+		verdict := a.Scanner.Scan(ctx, domain.ScanInput{
+			Name: ap.Name, MIMEType: ap.MIMEType, Data: ap.Data,
 		})
+		at := domain.Attachment{
+			ID: persistence.NewID("att"), MessageID: msg.ID,
+			Name: ap.Name, MIMEType: ap.MIMEType, Size: int64(len(ap.Data)),
+			Inline: ap.Inline, ScanStatus: verdict.Status, ScanDetail: verdict.Detail,
+		}
+		if verdict.StoreContent {
+			uri, hash, _, err := a.Objects.Put("att", bytes.NewReader(ap.Data))
+			if err != nil {
+				continue
+			}
+			at.StorageURI, at.Hash = uri, hash
+		} else {
+			// Dangerous content (blocked extension / zip bomb) is recorded
+			// but never retained (§13 악성 첨부).
+			a.audit(ctx, "attachment_blocked", "message:"+msg.ID, "ok",
+				fmt.Sprintf("%s: %s", ap.Name, verdict.Detail))
+		}
+		atts = append(atts, at)
 	}
 	if err := a.Store.InsertMessage(ctx, msg, body, atts); err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {

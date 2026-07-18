@@ -1,5 +1,7 @@
 package domain
 
+import "context"
+
 type Address struct {
 	Name  string `json:"name,omitempty"`
 	Email string `json:"email"`
@@ -48,8 +50,44 @@ type Attachment struct {
 	MIMEType   string `json:"mime_type"`
 	Size       int64  `json:"size"`
 	Hash       string `json:"hash"`
-	StorageURI string `json:"storage_uri"`
+	StorageURI string `json:"storage_uri"` // empty when content was not retained (blocked)
 	Inline     bool   `json:"inline"`
+	// ScanStatus is the malware/policy scan result (MIME-015).
+	ScanStatus ScanStatus `json:"scan_status"`
+	ScanDetail string     `json:"scan_detail,omitempty"`
+}
+
+// ScanStatus is the disposition of an attachment after policy + archive scan.
+type ScanStatus string
+
+const (
+	ScanClean       ScanStatus = "clean"       // safe to serve
+	ScanQuarantined ScanStatus = "quarantined" // stored but flagged (e.g. executable); download requires ack
+	ScanBlocked     ScanStatus = "blocked"     // content not retained (dangerous extension / zip bomb)
+	ScanSuspect     ScanStatus = "suspect"     // stored but flagged suspicious
+	ScanPending     ScanStatus = "pending"     // awaiting an external scanner
+)
+
+// ScanInput is what the AttachmentScanner inspects.
+type ScanInput struct {
+	Name     string
+	MIMEType string
+	Data     []byte
+}
+
+// ScanVerdict is the scanner's decision.
+type ScanVerdict struct {
+	Status ScanStatus
+	Detail string
+	// StoreContent is false when the blob must not be retained (blocked).
+	StoreContent bool
+}
+
+// AttachmentScanner classifies attachments by policy and inspects archives
+// (MIME-011/012/015). The default heuristic implementation is provider-
+// independent; a real AV (e.g. ClamAV) can be plugged behind this port.
+type AttachmentScanner interface {
+	Scan(ctx context.Context, in ScanInput) ScanVerdict
 }
 
 type Thread struct {

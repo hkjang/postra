@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 
+	"postra/internal/adapters/malware"
 	"postra/internal/adapters/objectstore"
 	"postra/internal/domain"
 	"postra/internal/platform/config"
@@ -29,6 +30,7 @@ type App struct {
 	POP3    domain.POP3Dialer
 	SMTP    domain.SMTPClient
 	AI      domain.AIProvider
+	Scanner domain.AttachmentScanner
 
 	syncLocks   sync.Map // accountID -> struct{} (best-effort single-session lock, POP-003)
 	jobCancels  sync.Map // jobID -> context.CancelFunc
@@ -43,6 +45,7 @@ func New(cfg config.Config, store Storage, objects objectstore.Store,
 	a := &App{
 		Cfg: cfg, Store: store, Objects: objects, Secrets: secrets,
 		POP3: pop3, SMTP: smtp, AI: ai,
+		Scanner:    malware.NewHeuristic(cfg.Attachments),
 		background: bg, cancelAll: cancel,
 	}
 	if err := store.EnsureUser(context.Background(), DefaultUserID, "local"); err != nil {

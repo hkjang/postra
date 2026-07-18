@@ -3,6 +3,7 @@ package application
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -178,6 +179,28 @@ func testMail(id, subject, body string) string {
 	return fmt.Sprintf("From: Alice <alice@example.com>\r\nTo: me@corp.local\r\n"+
 		"Subject: %s\r\nDate: Mon, 13 Jul 2026 10:00:00 +0900\r\nMessage-ID: <%s@example.com>\r\n"+
 		"Content-Type: text/plain; charset=utf-8\r\n\r\n%s\r\n", subject, id, body)
+}
+
+type attSpec struct{ name, ctype, body string }
+
+// mailWithAttachments builds a multipart/mixed message with the given parts
+// as base64 attachments.
+func mailWithAttachments(id string, parts []attSpec) string {
+	const b = "BOUNDARY123"
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "From: Alice <alice@example.com>\r\nTo: me@corp.local\r\n"+
+		"Subject: with-attachments\r\nDate: Mon, 13 Jul 2026 10:00:00 +0900\r\n"+
+		"Message-ID: <%s@example.com>\r\nMIME-Version: 1.0\r\n"+
+		"Content-Type: multipart/mixed; boundary=\"%s\"\r\n\r\n", id, b)
+	sb.WriteString("--" + b + "\r\nContent-Type: text/plain\r\n\r\nbody\r\n")
+	for _, p := range parts {
+		enc := base64.StdEncoding.EncodeToString([]byte(p.body))
+		fmt.Fprintf(&sb, "--%s\r\nContent-Type: %s\r\n"+
+			"Content-Transfer-Encoding: base64\r\n"+
+			"Content-Disposition: attachment; filename=\"%s\"\r\n\r\n%s\r\n", b, p.ctype, p.name, enc)
+	}
+	sb.WriteString("--" + b + "--\r\n")
+	return sb.String()
 }
 
 func mustAccount(t *testing.T, app *App) *domain.MailAccount {
@@ -677,6 +700,47 @@ func TestManyRecipientWarning(t *testing.T) {
 	if len(pv.Warnings) == 0 {
 		t.Fatal("expected a many-recipient warning")
 	}
+}
+
+// MIME-012/015: a dangerous attachment is recorded as blocked, its content
+// is not retained, and download is refused; a clean one downloads normally.
+func TestAttachmentScanningOnIngest(t *testing.T) {
+	app, pop, _, _ := newTestApp(t)
+	acc := mustAccount(t, app)
+	pop.messages["u1"] = mailWithAttachments("m1", []attSpec{
+		{name: "notes.txt", ctype: "text/plain", body: "safe notes"},
+		{name: "malware.exe", ctype: "application/octet-stream", body: "MZ executable"},
+	})
+	if j := syncAndWait(t, app, acc.ID); j.Stats["new"] != 1 {
+		t.Fatalf("sync new=%d (%s)", j.Stats["new"], j.Error)
+	}
+	ctx := WithActor(context.Background(), "test")
+	res, _ := app.Search(ctx, domain.SearchQuery{})
+	atts, err := app.ListAttachments(ctx, res.Messages[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]domain.Attachment{}
+	for _, a := range atts {
+		byName[a.Name] = a
+	}
+	safe, bad := byName["notes.txt"], byName["malware.exe"]
+	if safe.ScanStatus != domain.ScanClean {
+		t.Fatalf("notes.txt status=%s, want clean", safe.ScanStatus)
+	}
+	if bad.ScanStatus != domain.ScanBlocked || bad.StorageURI != "" {
+		t.Fatalf("malware.exe status=%s uri=%q, want blocked+no-store", bad.ScanStatus, bad.StorageURI)
+	}
+	// Blocked content is not downloadable.
+	if _, _, err := app.GetAttachment(ctx, res.Messages[0].ID, bad.ID, true); err == nil {
+		t.Fatal("blocked attachment must not be downloadable")
+	}
+	// Clean content downloads.
+	_, rc, err := app.GetAttachment(ctx, res.Messages[0].ID, safe.ID, false)
+	if err != nil {
+		t.Fatalf("clean attachment should download: %v", err)
+	}
+	rc.Close()
 }
 
 // Semantic search: embeddings are built, and a query embedding retrieves the

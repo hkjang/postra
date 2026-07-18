@@ -43,6 +43,15 @@ go build -o postra ./cmd/postra
 
 `config.json` 의 `sync.auto_sync_minutes` 를 0보다 크게 두면 `serve` 실행 시 백그라운드 스케줄러가 활성 POP3 계정을 해당 주기로 자동 동기화합니다(계정별 최소 간격 겸용). 또한 기동 시 재기동으로 중단된 `running`/`queued` job을 `failed` 로 정리해 유령 작업을 남기지 않습니다. 0이면 수동 동기화만 사용합니다.
 
+## 첨부 보안
+
+수집 시 모든 첨부는 정책 스캐너를 거칩니다(`internal/adapters/malware`).
+
+- **위험 확장자 차단**(MIME-012) — `attachments.block_extensions`(기본: exe/js/vbs/msi/jar 등)는 내용을 저장하지 않고 다운로드를 거부합니다.
+- **격리 확장자**(MIME-012) — `attachments.quarantine_extensions`(docm/dll/iso 등)는 저장하되 플래그를 달고, 다운로드 시 명시적 확인(`?ack=true`)을 요구합니다.
+- **압축폭탄 방지**(MIME-011) — zip/gzip은 추출 없이 항목 수·총 해제 크기·압축비를 검사해 한도 초과 시 차단합니다(`archive_max_entries` / `archive_max_total_bytes` / `archive_max_ratio`).
+- **스캔 상태 관리**(MIME-015) — 각 첨부는 `clean`/`quarantined`/`blocked`/`suspect` 상태로 기록됩니다. ClamAV 등 실제 AV는 동일 포트(`domain.AttachmentScanner`)로 교체 가능합니다.
+
 ## 발송 한도·경고
 
 `config.json` 의 `send.max_per_minute` / `send.max_per_hour` 로 계정별 발송 속도를 제한합니다(0=무제한, 기본 20/분·200/시간). 멱등 재실행은 한도에 계산되지 않습니다. `send.warn_recipients` 이상 수신자를 대상으로 하면 발송 미리보기에 경고가 표시됩니다.

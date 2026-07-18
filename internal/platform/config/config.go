@@ -48,9 +48,22 @@ type Config struct {
 	// stays queryable in plaintext; the FTS index also holds body plaintext.
 	EncryptAtRest bool `json:"encrypt_at_rest"`
 
-	AI   AIConfig   `json:"ai"`
-	Sync SyncConfig `json:"sync"`
-	Send SendConfig `json:"send"`
+	AI          AIConfig         `json:"ai"`
+	Sync        SyncConfig       `json:"sync"`
+	Send        SendConfig       `json:"send"`
+	Attachments AttachmentConfig `json:"attachments"`
+}
+
+// AttachmentConfig drives the heuristic attachment scanner (MIME-011/012).
+type AttachmentConfig struct {
+	// BlockExtensions: content is NOT retained; download is refused.
+	BlockExtensions []string `json:"block_extensions"`
+	// QuarantineExtensions: content stored but flagged; download is gated.
+	QuarantineExtensions []string `json:"quarantine_extensions"`
+	// Archive (zip-bomb) limits (MIME-011).
+	ArchiveMaxEntries    int     `json:"archive_max_entries"`
+	ArchiveMaxTotalBytes int64   `json:"archive_max_total_bytes"`
+	ArchiveMaxRatio      float64 `json:"archive_max_ratio"`
 }
 
 type SendConfig struct {
@@ -118,6 +131,16 @@ func Default() Config {
 			MaxPerMinute:   20,
 			MaxPerHour:     200,
 			WarnRecipients: 10,
+		},
+		Attachments: AttachmentConfig{
+			BlockExtensions: []string{
+				"exe", "com", "scr", "pif", "bat", "cmd", "vbs", "vbe", "js", "jse",
+				"ws", "wsf", "wsh", "ps1", "msi", "msp", "hta", "cpl", "jar", "reg",
+			},
+			QuarantineExtensions: []string{"docm", "xlsm", "pptm", "dll", "iso", "img", "lnk"},
+			ArchiveMaxEntries:    1000,
+			ArchiveMaxTotalBytes: 500 << 20, // 500 MiB uncompressed
+			ArchiveMaxRatio:      100,       // uncompressed:compressed
 		},
 	}
 }

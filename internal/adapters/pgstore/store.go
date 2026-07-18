@@ -94,7 +94,10 @@ func (s *Store) migrate(ctx context.Context) error {
 			text_body TEXT, html_sanitized TEXT, charset TEXT)`,
 		`CREATE TABLE IF NOT EXISTS attachments (
 			id TEXT PRIMARY KEY, message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
-			name TEXT, mime_type TEXT, size BIGINT, hash TEXT, storage_uri TEXT, inline_flag BOOL DEFAULT false)`,
+			name TEXT, mime_type TEXT, size BIGINT, hash TEXT, storage_uri TEXT, inline_flag BOOL DEFAULT false,
+			scan_status TEXT DEFAULT 'clean', scan_detail TEXT)`,
+		`ALTER TABLE attachments ADD COLUMN IF NOT EXISTS scan_status TEXT DEFAULT 'clean'`,
+		`ALTER TABLE attachments ADD COLUMN IF NOT EXISTS scan_detail TEXT`,
 		`CREATE TABLE IF NOT EXISTS threads (
 			id TEXT PRIMARY KEY, user_id TEXT NOT NULL, account_id TEXT NOT NULL,
 			subject_key TEXT, last_message_at BIGINT, message_count INT DEFAULT 0)`,
@@ -337,8 +340,13 @@ func (s *Store) InsertMessage(ctx context.Context, m *domain.Message, body *doma
 		}
 	}
 	for _, at := range atts {
-		if _, err := tx.Exec(ctx, `INSERT INTO attachments (id,message_id,name,mime_type,size,hash,storage_uri,inline_flag)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, at.ID, m.ID, at.Name, at.MIMEType, at.Size, at.Hash, at.StorageURI, at.Inline); err != nil {
+		status := at.ScanStatus
+		if status == "" {
+			status = domain.ScanClean
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO attachments (id,message_id,name,mime_type,size,hash,storage_uri,inline_flag,scan_status,scan_detail)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, at.ID, m.ID, at.Name, at.MIMEType, at.Size, at.Hash, at.StorageURI, at.Inline,
+			string(status), at.ScanDetail); err != nil {
 			return err
 		}
 	}
@@ -406,7 +414,8 @@ func (s *Store) GetBody(ctx context.Context, userID, messageID string) (*domain.
 }
 
 func (s *Store) ListAttachments(ctx context.Context, userID, messageID string) ([]domain.Attachment, error) {
-	rows, err := s.pool.Query(ctx, `SELECT a.id,a.message_id,a.name,a.mime_type,a.size,a.hash,a.storage_uri,a.inline_flag
+	rows, err := s.pool.Query(ctx, `SELECT a.id,a.message_id,a.name,a.mime_type,a.size,a.hash,a.storage_uri,a.inline_flag,
+	 COALESCE(a.scan_status,'clean'),COALESCE(a.scan_detail,'')
 	 FROM attachments a JOIN messages m ON m.id=a.message_id WHERE a.message_id=$1 AND m.user_id=$2`, messageID, userID)
 	if err != nil {
 		return nil, err
@@ -415,9 +424,11 @@ func (s *Store) ListAttachments(ctx context.Context, userID, messageID string) (
 	var out []domain.Attachment
 	for rows.Next() {
 		var a domain.Attachment
-		if err := rows.Scan(&a.ID, &a.MessageID, &a.Name, &a.MIMEType, &a.Size, &a.Hash, &a.StorageURI, &a.Inline); err != nil {
+		var status string
+		if err := rows.Scan(&a.ID, &a.MessageID, &a.Name, &a.MIMEType, &a.Size, &a.Hash, &a.StorageURI, &a.Inline, &status, &a.ScanDetail); err != nil {
 			return nil, err
 		}
+		a.ScanStatus = domain.ScanStatus(status)
 		out = append(out, a)
 	}
 	return out, rows.Err()
