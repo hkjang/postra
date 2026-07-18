@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -22,15 +23,16 @@ import (
 	"golang.org/x/term"
 
 	"postra/internal/adapters/ai"
+	"postra/internal/adapters/imap"
 	"postra/internal/adapters/objectstore"
 	"postra/internal/adapters/persistence"
 	"postra/internal/adapters/pgstore"
-	"postra/internal/adapters/imap"
 	"postra/internal/adapters/pop3"
 	"postra/internal/adapters/secretstore"
 	adsmtp "postra/internal/adapters/smtp"
 	"postra/internal/application"
 	"postra/internal/domain"
+	"postra/internal/platform/build"
 	"postra/internal/platform/config"
 	"postra/internal/platform/crypto"
 	"postra/internal/transport/httpapi"
@@ -54,6 +56,7 @@ func usage() {
 	fmt.Fprint(os.Stderr, `postra — personal mail AI & MCP platform
 
 Usage:
+  postra version                     print version and build info
   postra init                        write a default config file
   postra serve                       run REST API + remote MCP (Streamable HTTP)
   postra mcp                         run MCP server on stdio (for local MCP clients)
@@ -138,6 +141,11 @@ func run(cmd string, args []string) error {
 	configPath := fs.String("config", "", "config file path")
 
 	switch cmd {
+	case "version":
+		fs.Parse(args)
+		fmt.Printf("postra %s (%s %s/%s)\n", build.Version, runtime.Version(), runtime.GOOS, runtime.GOARCH)
+		return nil
+
 	case "init":
 		fs.Parse(args)
 		cfg := config.Default()

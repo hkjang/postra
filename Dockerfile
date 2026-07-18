@@ -6,8 +6,12 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
+# Version is injected at build time; defaults to "dev" for plain docker builds.
+ARG VERSION=dev
 # CGO is off: modernc.org/sqlite is pure Go, so the binary is static.
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/postra ./cmd/postra
+RUN CGO_ENABLED=0 go build -trimpath \
+    -ldflags="-s -w -X postra/internal/platform/build.Version=${VERSION}" \
+    -o /out/postra ./cmd/postra
 
 # Runtime stage
 FROM gcr.io/distroless/static-debian12:nonroot

@@ -9,10 +9,13 @@ package metrics
 
 import (
 	"net/http"
+	"runtime"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+	"postra/internal/platform/build"
 )
 
 const namespace = "postra"
@@ -82,6 +85,13 @@ func init() {
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
+	// build_info exposes the release and Go version as a constant "1" series,
+	// so dashboards can join metrics to the deployed version.
+	info := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: namespace, Name: "build_info", Help: "Build metadata; value is always 1.",
+	}, []string{"version", "goversion"})
+	reg.MustRegister(info)
+	info.WithLabelValues(build.Version, runtime.Version()).Set(1)
 }
 
 // Handler serves the Prometheus text exposition for the registered collectors.

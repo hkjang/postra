@@ -14,10 +14,9 @@ import (
 
 	"postra/internal/application"
 	"postra/internal/domain"
+	"postra/internal/platform/build"
 	"postra/internal/platform/metrics"
 )
-
-const serverVersion = "0.1.0"
 
 func boolPtr(b bool) *bool { return &b }
 
@@ -56,7 +55,7 @@ func metricsMiddleware(next mcp.MethodHandler) mcp.MethodHandler {
 
 // NewServer builds the MCP server with the full tool catalog.
 func NewServer(app *application.App) *mcp.Server {
-	s := mcp.NewServer(&mcp.Implementation{Name: "postra-mail", Version: serverVersion}, nil)
+	s := mcp.NewServer(&mcp.Implementation{Name: "postra-mail", Version: build.Version}, nil)
 	s.AddReceivingMiddleware(metricsMiddleware)
 	registerAccountTools(s, app)
 	registerSyncTools(s, app)

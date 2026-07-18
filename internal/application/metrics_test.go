@@ -42,7 +42,7 @@ func TestSyncMetrics(t *testing.T) {
 		t.Fatalf("/metrics status = %d", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"postra_pop3_sync_total", "postra_pop3_messages_fetched_total", "go_goroutines"} {
+	for _, want := range []string{"postra_pop3_sync_total", "postra_pop3_messages_fetched_total", "postra_build_info", "go_goroutines"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("exposition missing %q", want)
 		}
