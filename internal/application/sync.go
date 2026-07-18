@@ -1,0 +1,286 @@
+package application
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"strings"
+
+	"postra/internal/adapters/mailparse"
+	"postra/internal/adapters/persistence"
+	"postra/internal/adapters/pop3"
+	"postra/internal/domain"
+)
+
+type SyncOptions struct {
+	MaxMessages int `json:"max_messages,omitempty"`
+	// DeleteAfterFetch is intentionally absent from the MVP sync path:
+	// server-side deletion is a separate, approval-gated flow (§5.2).
+}
+
+// StartSync launches an asynchronous POP3 sync job and returns its job ID.
+func (a *App) StartSync(ctx context.Context, accountID string, opts SyncOptions) (*domain.Job, error) {
+	acc, err := a.Store.GetAccount(ctx, DefaultUserID, accountID)
+	if err != nil {
+		return nil, err
+	}
+	if acc.Status == domain.AccountDisabled {
+		return nil, userErrf("account %s is disabled", accountID)
+	}
+	if acc.POP3Host == "" {
+		return nil, userErrf("account %s has no POP3 server configured", accountID)
+	}
+	if _, loaded := a.syncLocks.LoadOrStore(accountID, struct{}{}); loaded {
+		return nil, userErrf("a sync for account %s is already running", accountID)
+	}
+
+	job := &domain.Job{
+		ID: persistence.NewID("job"), UserID: DefaultUserID,
+		Type: "sync", AccountID: accountID, Status: domain.JobQueued,
+	}
+	if err := a.Store.CreateJob(ctx, job); err != nil {
+		a.syncLocks.Delete(accountID)
+		return nil, err
+	}
+	a.audit(ctx, "sync_start", "account:"+accountID, "ok", "job:"+job.ID)
+
+	jobCtx, cancel := context.WithCancel(a.background)
+	a.jobCancels.Store(job.ID, cancel)
+	a.workerGroup.Add(1)
+	go func() {
+		defer a.workerGroup.Done()
+		defer a.syncLocks.Delete(accountID)
+		defer a.jobCancels.Delete(job.ID)
+		a.runSync(jobCtx, job, acc, opts)
+	}()
+	return job, nil
+}
+
+func (a *App) CancelJob(ctx context.Context, jobID string) error {
+	if _, err := a.Store.GetJob(ctx, DefaultUserID, jobID); err != nil {
+		return err
+	}
+	if c, ok := a.jobCancels.Load(jobID); ok {
+		c.(context.CancelFunc)()
+		a.audit(ctx, "job_cancel", "job:"+jobID, "ok", "")
+		return nil
+	}
+	return userErrf("job %s is not running", jobID)
+}
+
+func (a *App) GetJob(ctx context.Context, jobID string) (*domain.Job, error) {
+	return a.Store.GetJob(ctx, DefaultUserID, jobID)
+}
+
+func (a *App) runSync(ctx context.Context, job *domain.Job, acc *domain.MailAccount, opts SyncOptions) {
+	stats := domain.SyncStats{}
+	finish := func(status domain.JobStatus, errMsg string) {
+		job.Status = status
+		job.Error = errMsg
+		job.Stats = map[string]int64{
+			"seen": stats.Seen, "new": stats.New, "duplicate": stats.Duplicate,
+			"failed": stats.Failed, "oversize": stats.Oversize, "parse_error": stats.ParseError,
+		}
+		_ = a.Store.UpdateJob(context.Background(), job)
+		a.audit(context.Background(), "sync_finish", "account:"+acc.ID, string(status),
+			fmt.Sprintf("job:%s new=%d dup=%d failed=%d", job.ID, stats.New, stats.Duplicate, stats.Failed))
+	}
+
+	job.Status = domain.JobRunning
+	_ = a.Store.UpdateJob(ctx, job)
+
+	var secret *domain.SecretHandle
+	var err error
+	if acc.POP3Secret != "" {
+		secret, err = a.Secrets.Acquire(ctx, acc.POP3Secret, domain.PurposePOP3Auth)
+		if err != nil {
+			finish(domain.JobFailed, "secret acquisition failed: "+err.Error())
+			return
+		}
+		a.Store.TouchCredential(ctx, acc.POP3Secret)
+	}
+	sess, err := a.POP3.Dial(ctx, domain.POP3DialOptions{
+		Host: acc.POP3Host, Port: acc.POP3Port, Security: acc.POP3Security,
+		Username: acc.POP3Username, Password: secret,
+		InsecureSkipVerify: acc.InsecureSkipVerify,
+		ConnectTimeoutSec:  a.Cfg.Sync.ConnectTimeoutSec,
+		CommandTimeoutSec:  a.Cfg.Sync.CommandTimeoutSec,
+	})
+	if secret != nil {
+		secret.Zero()
+	}
+	if err != nil {
+		var authErr *pop3.AuthError
+		if errors.As(err, &authErr) {
+			// POP-011: no endless retries on bad credentials.
+			_ = a.Store.SetAccountStatus(context.Background(), DefaultUserID, acc.ID, domain.AccountCredentialError)
+			finish(domain.JobFailed, "authentication failed; account moved to credential_error")
+			return
+		}
+		finish(domain.JobFailed, "connect failed: "+err.Error())
+		return
+	}
+	defer sess.Close()
+
+	// Prefer UIDL as the dedup checkpoint (POP-004); fall back to LIST +
+	// content-derived IDs when the server lacks UIDL (POP-005/008).
+	remote, err := sess.UIDL(ctx)
+	uidlSupported := err == nil
+	if !uidlSupported {
+		remote, err = sess.List(ctx)
+		if err != nil {
+			finish(domain.JobFailed, "LIST failed: "+err.Error())
+			return
+		}
+	} else {
+		// merge sizes for the oversize check
+		if listed, lerr := sess.List(ctx); lerr == nil {
+			sizes := map[int]int64{}
+			for _, m := range listed {
+				sizes[m.Number] = m.Size
+			}
+			for i := range remote {
+				remote[i].Size = sizes[remote[i].Number]
+			}
+		}
+	}
+
+	maxN := a.Cfg.Sync.MaxPerSync
+	if opts.MaxMessages > 0 && opts.MaxMessages < maxN {
+		maxN = opts.MaxMessages
+	}
+	fetched := 0
+	for _, rm := range remote {
+		if ctx.Err() != nil {
+			finish(domain.JobCancelled, "cancelled")
+			return
+		}
+		if fetched >= maxN {
+			break
+		}
+		stats.Seen++
+		if uidlSupported && rm.UIDL != "" {
+			dup, err := a.Store.HasCheckpoint(ctx, acc.ID, rm.UIDL)
+			if err == nil && dup {
+				stats.Duplicate++
+				continue
+			}
+		}
+		if a.Cfg.Sync.MaxMessageBytes > 0 && rm.Size > a.Cfg.Sync.MaxMessageBytes {
+			stats.Oversize++
+			continue
+		}
+		if err := a.ingestOne(ctx, sess, acc, rm, uidlSupported, &stats); err != nil {
+			stats.Failed++
+			continue
+		}
+		fetched++
+		job.Progress = fmt.Sprintf("%d/%d", fetched, len(remote))
+		_ = a.Store.UpdateJob(ctx, job)
+	}
+	_ = sess.Quit(ctx)
+	finish(domain.JobSucceeded, "")
+}
+
+// ingestOne downloads, stores, and indexes a single message. Each message is
+// committed independently so an interruption never loses or duplicates
+// already-stored mail (POP-012, POP-015).
+func (a *App) ingestOne(ctx context.Context, sess domain.POP3Session, acc *domain.MailAccount,
+	rm domain.RemoteMessage, uidlSupported bool, stats *domain.SyncStats) error {
+
+	rc, err := sess.Retrieve(ctx, rm.Number)
+	if err != nil {
+		return err
+	}
+	raw, err := io.ReadAll(io.LimitReader(rc, a.Cfg.Sync.MaxMessageBytes+1))
+	rc.Close()
+	if err != nil {
+		return err
+	}
+	if a.Cfg.Sync.MaxMessageBytes > 0 && int64(len(raw)) > a.Cfg.Sync.MaxMessageBytes {
+		stats.Oversize++
+		return nil
+	}
+	sum := sha256.Sum256(raw)
+	rawHash := hex.EncodeToString(sum[:])
+
+	// Content-hash dedup catches UIDL-less servers and UIDL churn.
+	if dup, _ := a.Store.IsDuplicateHash(ctx, acc.ID, rawHash); dup {
+		stats.Duplicate++
+		if uidlSupported && rm.UIDL != "" {
+			_ = a.Store.AddCheckpoint(ctx, acc.ID, rm.UIDL, "")
+		}
+		return nil
+	}
+
+	parsed := mailparse.Parse(raw)
+	if parsed.ParseError != "" {
+		stats.ParseError++ // partial result still stored (MIME-004)
+	}
+
+	rawURI, _, _, err := a.Objects.Put("raw", bytes.NewReader(raw))
+	if err != nil {
+		return err
+	}
+
+	uidl := rm.UIDL
+	if uidl == "" {
+		// POP-005 fallback identity: stable content-derived key.
+		fb := sha256.Sum256([]byte(parsed.MessageID + "|" + parsed.From.Email + "|" +
+			parsed.Date.String() + "|" + fmt.Sprint(len(raw)) + "|" + rawHash))
+		uidl = "fb_" + hex.EncodeToString(fb[:16])
+		if dup, _ := a.Store.HasCheckpoint(ctx, acc.ID, uidl); dup {
+			stats.Duplicate++
+			return nil
+		}
+	}
+
+	subjectKey := mailparse.SubjectKey(parsed.Subject)
+	refs := mailparse.ReferenceIDs(parsed.References, parsed.InReplyTo)
+	threadID, err := a.Store.ResolveThread(ctx, DefaultUserID, acc.ID, refs, subjectKey, parsed.Date.Unix())
+	if err != nil {
+		threadID = ""
+	}
+
+	msg := &domain.Message{
+		ID: persistence.NewID("msg"), UserID: DefaultUserID, AccountID: acc.ID,
+		UIDL: uidl, MessageID: parsed.MessageID, Subject: parsed.Subject,
+		From: parsed.From, To: parsed.To, Cc: parsed.Cc, ReplyTo: parsed.ReplyTo,
+		Date: parsed.Date.Unix(), Size: int64(len(raw)),
+		RawHash: rawHash, RawURI: rawURI, ThreadID: threadID,
+		HasAttachments: len(parsed.Attachments) > 0,
+		InReplyTo:      parsed.InReplyTo, References: parsed.References,
+		AuthResults: parsed.AuthResults, ParseError: parsed.ParseError,
+	}
+	body := &domain.MessageBody{
+		MessageID: msg.ID, TextBody: parsed.TextBody,
+		HTMLSanitized: parsed.HTMLSafe, Charset: parsed.Charset,
+	}
+	var atts []domain.Attachment
+	for _, ap := range parsed.Attachments {
+		uri, hash, size, err := a.Objects.Put("att", bytes.NewReader(ap.Data))
+		if err != nil {
+			continue
+		}
+		atts = append(atts, domain.Attachment{
+			ID: persistence.NewID("att"), MessageID: msg.ID,
+			Name: ap.Name, MIMEType: ap.MIMEType, Size: size, Hash: hash,
+			StorageURI: uri, Inline: ap.Inline,
+		})
+	}
+	if err := a.Store.InsertMessage(ctx, msg, body, atts); err != nil {
+		if strings.Contains(err.Error(), "UNIQUE") {
+			stats.Duplicate++
+			_ = a.Store.AddCheckpoint(ctx, acc.ID, uidl, msg.ID)
+			return nil
+		}
+		return err
+	}
+	_ = a.Store.AddCheckpoint(ctx, acc.ID, uidl, msg.ID)
+	stats.New++
+	return nil
+}

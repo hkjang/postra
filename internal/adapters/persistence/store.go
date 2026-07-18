@@ -1,0 +1,889 @@
+// Package persistence implements the storage port on SQLite (pure Go,
+// modernc.org/sqlite). PostgreSQL can be added as a second adapter behind
+// the same Store surface for server deployments.
+package persistence
+
+import (
+	"context"
+	"crypto/rand"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	_ "modernc.org/sqlite"
+
+	"postra/internal/domain"
+)
+
+type Store struct {
+	db  *sql.DB
+	fts bool
+}
+
+func Open(path string) (*Store, error) {
+	db, err := sql.Open("sqlite", path+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1) // SQLite single-writer; avoids SQLITE_BUSY under workers
+	s := &Store{db: db}
+	if err := s.migrate(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return s, nil
+}
+
+func (s *Store) Close() error { return s.db.Close() }
+
+func (s *Store) migrate() error {
+	schema := `
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY, login_id TEXT UNIQUE NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active', timezone TEXT DEFAULT 'UTC',
+  created_at INTEGER NOT NULL);
+
+CREATE TABLE IF NOT EXISTS mail_accounts (
+  id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL,
+  email TEXT NOT NULL, status TEXT NOT NULL,
+  pop3_host TEXT, pop3_port INTEGER, pop3_security TEXT, pop3_username TEXT, pop3_secret_ref TEXT,
+  smtp_host TEXT, smtp_port INTEGER, smtp_security TEXT, smtp_username TEXT, smtp_auth TEXT, smtp_secret_ref TEXT,
+  insecure_skip_verify INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+
+CREATE TABLE IF NOT EXISTS credential_refs (
+  ref TEXT PRIMARY KEY, owner_id TEXT NOT NULL, secret_type TEXT NOT NULL,
+  provider TEXT NOT NULL, label TEXT, status TEXT NOT NULL DEFAULT 'active',
+  version INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, last_used_at INTEGER);
+
+CREATE TABLE IF NOT EXISTS sync_checkpoints (
+  account_id TEXT NOT NULL, uidl TEXT NOT NULL, message_id TEXT,
+  synced_at INTEGER NOT NULL, PRIMARY KEY (account_id, uidl));
+
+CREATE TABLE IF NOT EXISTS messages (
+  id TEXT PRIMARY KEY, user_id TEXT NOT NULL, account_id TEXT NOT NULL,
+  uidl TEXT, message_id_hdr TEXT, subject TEXT, from_name TEXT, from_email TEXT,
+  to_json TEXT, cc_json TEXT, reply_to_json TEXT,
+  date INTEGER, size INTEGER, raw_hash TEXT NOT NULL, raw_uri TEXT NOT NULL,
+  thread_id TEXT, has_attachments INTEGER NOT NULL DEFAULT 0,
+  in_reply_to TEXT, refs TEXT, auth_results TEXT, parse_error TEXT,
+  created_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_messages_account_date ON messages(account_id, date DESC);
+CREATE INDEX IF NOT EXISTS idx_messages_msgid ON messages(message_id_hdr);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_hash ON messages(account_id, raw_hash);
+
+CREATE TABLE IF NOT EXISTS message_bodies (
+  message_id TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+  text_body TEXT, html_sanitized TEXT, charset TEXT);
+
+CREATE TABLE IF NOT EXISTS attachments (
+  id TEXT PRIMARY KEY, message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  name TEXT, mime_type TEXT, size INTEGER, hash TEXT, storage_uri TEXT, inline_flag INTEGER DEFAULT 0);
+
+CREATE TABLE IF NOT EXISTS threads (
+  id TEXT PRIMARY KEY, user_id TEXT NOT NULL, account_id TEXT NOT NULL,
+  subject_key TEXT, last_message_at INTEGER, message_count INTEGER DEFAULT 0);
+CREATE INDEX IF NOT EXISTS idx_threads_key ON threads(account_id, subject_key);
+
+CREATE TABLE IF NOT EXISTS analyses (
+  id TEXT PRIMARY KEY, user_id TEXT NOT NULL, target_type TEXT NOT NULL,
+  target_id TEXT NOT NULL, analysis_type TEXT NOT NULL, result_json TEXT NOT NULL,
+  model TEXT, prompt_version TEXT, input_hash TEXT, created_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_analyses_cache ON analyses(analysis_type, input_hash, model);
+
+CREATE TABLE IF NOT EXISTS drafts (
+  id TEXT PRIMARY KEY, user_id TEXT NOT NULL, account_id TEXT NOT NULL,
+  kind TEXT NOT NULL, reply_to_message_id TEXT, status TEXT NOT NULL,
+  current_version INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+
+CREATE TABLE IF NOT EXISTS draft_versions (
+  draft_id TEXT NOT NULL REFERENCES drafts(id) ON DELETE CASCADE,
+  version INTEGER NOT NULL, subject TEXT, body_text TEXT, body_html TEXT,
+  to_json TEXT, cc_json TEXT, bcc_json TEXT, author TEXT NOT NULL,
+  created_at INTEGER NOT NULL, PRIMARY KEY (draft_id, version));
+
+CREATE TABLE IF NOT EXISTS approvals (
+  id TEXT PRIMARY KEY, user_id TEXT NOT NULL, action_type TEXT NOT NULL,
+  draft_id TEXT, draft_version INTEGER, payload_hash TEXT NOT NULL,
+  token_hash TEXT NOT NULL, approver TEXT, expires_at INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending', created_at INTEGER NOT NULL);
+
+CREATE TABLE IF NOT EXISTS outbound_messages (
+  id TEXT PRIMARY KEY, user_id TEXT NOT NULL, draft_id TEXT NOT NULL,
+  draft_version INTEGER NOT NULL, idempotency_key TEXT UNIQUE,
+  message_id_hdr TEXT, status TEXT NOT NULL, smtp_response TEXT,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+
+CREATE TABLE IF NOT EXISTS jobs (
+  id TEXT PRIMARY KEY, user_id TEXT NOT NULL, type TEXT NOT NULL,
+  account_id TEXT, status TEXT NOT NULL, progress TEXT,
+  stats_json TEXT, error TEXT, meta_json TEXT,
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+
+CREATE TABLE IF NOT EXISTS audit_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL,
+  user_id TEXT, actor TEXT, action TEXT NOT NULL, resource TEXT,
+  result TEXT NOT NULL, detail TEXT);
+CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_events(at DESC);
+`
+	if _, err := s.db.Exec(schema); err != nil {
+		return fmt.Errorf("migrate: %w", err)
+	}
+	// Full-text index; fall back to LIKE search when FTS5 is unavailable.
+	_, err := s.db.Exec(`CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+      message_pk UNINDEXED, subject, from_email, text_body)`)
+	s.fts = err == nil
+	return nil
+}
+
+func NewID(prefix string) string {
+	b := make([]byte, 10)
+	rand.Read(b)
+	return prefix + "_" + hex.EncodeToString(b)
+}
+
+func now() int64 { return time.Now().Unix() }
+
+var ErrNotFound = errors.New("not found")
+
+// ---------- users ----------
+
+func (s *Store) EnsureUser(ctx context.Context, id, loginID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO users (id, login_id, created_at) VALUES (?,?,?)
+		 ON CONFLICT(login_id) DO NOTHING`, id, loginID, now())
+	return err
+}
+
+// ---------- accounts ----------
+
+func (s *Store) CreateAccount(ctx context.Context, a *domain.MailAccount) error {
+	a.CreatedAt, a.UpdatedAt = now(), now()
+	_, err := s.db.ExecContext(ctx, `INSERT INTO mail_accounts
+	 (id,user_id,name,email,status,pop3_host,pop3_port,pop3_security,pop3_username,pop3_secret_ref,
+	  smtp_host,smtp_port,smtp_security,smtp_username,smtp_auth,smtp_secret_ref,insecure_skip_verify,created_at,updated_at)
+	 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		a.ID, a.UserID, a.Name, a.Email, a.Status,
+		a.POP3Host, a.POP3Port, a.POP3Security, a.POP3Username, string(a.POP3Secret),
+		a.SMTPHost, a.SMTPPort, a.SMTPSecurity, a.SMTPUsername, a.SMTPAuth, string(a.SMTPSecret),
+		boolInt(a.InsecureSkipVerify), a.CreatedAt, a.UpdatedAt)
+	return err
+}
+
+func (s *Store) scanAccount(row interface{ Scan(...any) error }) (*domain.MailAccount, error) {
+	var a domain.MailAccount
+	var pop3Ref, smtpRef string
+	var insecure int
+	err := row.Scan(&a.ID, &a.UserID, &a.Name, &a.Email, &a.Status,
+		&a.POP3Host, &a.POP3Port, &a.POP3Security, &a.POP3Username, &pop3Ref,
+		&a.SMTPHost, &a.SMTPPort, &a.SMTPSecurity, &a.SMTPUsername, &a.SMTPAuth, &smtpRef,
+		&insecure, &a.CreatedAt, &a.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	a.POP3Secret = domain.SecretRef(pop3Ref)
+	a.SMTPSecret = domain.SecretRef(smtpRef)
+	a.InsecureSkipVerify = insecure != 0
+	return &a, nil
+}
+
+const accountCols = `id,user_id,name,email,status,pop3_host,pop3_port,pop3_security,pop3_username,pop3_secret_ref,
+ smtp_host,smtp_port,smtp_security,smtp_username,smtp_auth,smtp_secret_ref,insecure_skip_verify,created_at,updated_at`
+
+func (s *Store) GetAccount(ctx context.Context, userID, id string) (*domain.MailAccount, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT `+accountCols+` FROM mail_accounts WHERE id=? AND user_id=?`, id, userID)
+	return s.scanAccount(row)
+}
+
+func (s *Store) ListAccounts(ctx context.Context, userID string) ([]domain.MailAccount, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+accountCols+` FROM mail_accounts WHERE user_id=? ORDER BY created_at`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.MailAccount
+	for rows.Next() {
+		a, err := s.scanAccount(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *a)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) UpdateAccount(ctx context.Context, a *domain.MailAccount) error {
+	a.UpdatedAt = now()
+	res, err := s.db.ExecContext(ctx, `UPDATE mail_accounts SET
+	 name=?,email=?,status=?,pop3_host=?,pop3_port=?,pop3_security=?,pop3_username=?,pop3_secret_ref=?,
+	 smtp_host=?,smtp_port=?,smtp_security=?,smtp_username=?,smtp_auth=?,smtp_secret_ref=?,
+	 insecure_skip_verify=?,updated_at=? WHERE id=? AND user_id=?`,
+		a.Name, a.Email, a.Status,
+		a.POP3Host, a.POP3Port, a.POP3Security, a.POP3Username, string(a.POP3Secret),
+		a.SMTPHost, a.SMTPPort, a.SMTPSecurity, a.SMTPUsername, a.SMTPAuth, string(a.SMTPSecret),
+		boolInt(a.InsecureSkipVerify), a.UpdatedAt, a.ID, a.UserID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) SetAccountStatus(ctx context.Context, userID, id string, st domain.AccountStatus) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE mail_accounts SET status=?, updated_at=? WHERE id=? AND user_id=?`, st, now(), id, userID)
+	return err
+}
+
+// ---------- credential refs ----------
+
+func (s *Store) PutCredentialRef(ctx context.Context, c domain.CredentialRef) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO credential_refs
+	 (ref,owner_id,secret_type,provider,label,status,version,created_at) VALUES (?,?,?,?,?,?,?,?)
+	 ON CONFLICT(ref) DO UPDATE SET status=excluded.status, version=excluded.version`,
+		string(c.Ref), c.OwnerID, c.Type, c.Provider, c.Label, c.Status, c.Version, now())
+	return err
+}
+
+func (s *Store) TouchCredential(ctx context.Context, ref domain.SecretRef) {
+	s.db.ExecContext(ctx, `UPDATE credential_refs SET last_used_at=? WHERE ref=?`, now(), string(ref))
+}
+
+func (s *Store) SetCredentialStatus(ctx context.Context, ref domain.SecretRef, status string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE credential_refs SET status=? WHERE ref=?`, status, string(ref))
+	return err
+}
+
+// ---------- sync checkpoints ----------
+
+func (s *Store) HasCheckpoint(ctx context.Context, accountID, uidl string) (bool, error) {
+	var one int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT 1 FROM sync_checkpoints WHERE account_id=? AND uidl=?`, accountID, uidl).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (s *Store) AddCheckpoint(ctx context.Context, accountID, uidl, messageID string) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO sync_checkpoints (account_id,uidl,message_id,synced_at)
+	 VALUES (?,?,?,?) ON CONFLICT DO NOTHING`, accountID, uidl, messageID, now())
+	return err
+}
+
+// ---------- messages ----------
+
+func addrJSON(a []domain.Address) string {
+	if len(a) == 0 {
+		return ""
+	}
+	b, _ := json.Marshal(a)
+	return string(b)
+}
+
+func addrFromJSON(s string) []domain.Address {
+	if s == "" {
+		return nil
+	}
+	var out []domain.Address
+	json.Unmarshal([]byte(s), &out)
+	return out
+}
+
+// InsertMessage stores a message + body + attachments atomically and updates
+// the FTS index. Duplicate raw hashes for the same account are rejected via
+// the unique index (POP-012 backstop when UIDL is unreliable).
+func (s *Store) InsertMessage(ctx context.Context, m *domain.Message, body *domain.MessageBody, atts []domain.Attachment) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	m.CreatedAt = now()
+	_, err = tx.ExecContext(ctx, `INSERT INTO messages
+	 (id,user_id,account_id,uidl,message_id_hdr,subject,from_name,from_email,to_json,cc_json,reply_to_json,
+	  date,size,raw_hash,raw_uri,thread_id,has_attachments,in_reply_to,refs,auth_results,parse_error,created_at)
+	 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		m.ID, m.UserID, m.AccountID, m.UIDL, m.MessageID, m.Subject, m.From.Name, m.From.Email,
+		addrJSON(m.To), addrJSON(m.Cc), addrJSON(m.ReplyTo),
+		m.Date, m.Size, m.RawHash, m.RawURI, m.ThreadID, boolInt(m.HasAttachments),
+		m.InReplyTo, m.References, m.AuthResults, m.ParseError, m.CreatedAt)
+	if err != nil {
+		return err
+	}
+	if body != nil {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO message_bodies (message_id,text_body,html_sanitized,charset) VALUES (?,?,?,?)`,
+			m.ID, body.TextBody, body.HTMLSanitized, body.Charset); err != nil {
+			return err
+		}
+	}
+	for _, at := range atts {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO attachments (id,message_id,name,mime_type,size,hash,storage_uri,inline_flag)
+			 VALUES (?,?,?,?,?,?,?,?)`,
+			at.ID, m.ID, at.Name, at.MIMEType, at.Size, at.Hash, at.StorageURI, boolInt(at.Inline)); err != nil {
+			return err
+		}
+	}
+	if s.fts {
+		text := ""
+		if body != nil {
+			text = body.TextBody
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO messages_fts (message_pk,subject,from_email,text_body) VALUES (?,?,?,?)`,
+			m.ID, m.Subject, m.From.Email, text); err != nil {
+			return err
+		}
+	}
+	if m.ThreadID != "" {
+		if _, err := tx.ExecContext(ctx, `UPDATE threads SET last_message_at=MAX(last_message_at,?),
+		 message_count=message_count+1 WHERE id=?`, m.Date, m.ThreadID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) IsDuplicateHash(ctx context.Context, accountID, rawHash string) (bool, error) {
+	var one int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT 1 FROM messages WHERE account_id=? AND raw_hash=?`, accountID, rawHash).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+const msgCols = `id,user_id,account_id,uidl,message_id_hdr,subject,from_name,from_email,to_json,cc_json,reply_to_json,
+ date,size,raw_hash,raw_uri,thread_id,has_attachments,in_reply_to,refs,auth_results,parse_error,created_at`
+
+func scanMessage(row interface{ Scan(...any) error }) (*domain.Message, error) {
+	var m domain.Message
+	var toJ, ccJ, rtJ string
+	var hasAtt int
+	var threadID, parseErr, authRes sql.NullString
+	err := row.Scan(&m.ID, &m.UserID, &m.AccountID, &m.UIDL, &m.MessageID, &m.Subject,
+		&m.From.Name, &m.From.Email, &toJ, &ccJ, &rtJ,
+		&m.Date, &m.Size, &m.RawHash, &m.RawURI, &threadID, &hasAtt,
+		&m.InReplyTo, &m.References, &authRes, &parseErr, &m.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	m.To, m.Cc, m.ReplyTo = addrFromJSON(toJ), addrFromJSON(ccJ), addrFromJSON(rtJ)
+	m.HasAttachments = hasAtt != 0
+	m.ThreadID, m.ParseError, m.AuthResults = threadID.String, parseErr.String, authRes.String
+	return &m, nil
+}
+
+func (s *Store) GetMessage(ctx context.Context, userID, id string) (*domain.Message, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT `+msgCols+` FROM messages WHERE id=? AND user_id=?`, id, userID)
+	return scanMessage(row)
+}
+
+func (s *Store) GetMessageByHeader(ctx context.Context, userID, accountID, messageIDHdr string) (*domain.Message, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT `+msgCols+` FROM messages WHERE user_id=? AND account_id=? AND message_id_hdr=? LIMIT 1`,
+		userID, accountID, messageIDHdr)
+	return scanMessage(row)
+}
+
+func (s *Store) GetBody(ctx context.Context, userID, messageID string) (*domain.MessageBody, error) {
+	var b domain.MessageBody
+	var html, charset sql.NullString
+	err := s.db.QueryRowContext(ctx, `SELECT b.message_id, b.text_body, b.html_sanitized, b.charset
+	 FROM message_bodies b JOIN messages m ON m.id=b.message_id
+	 WHERE b.message_id=? AND m.user_id=?`, messageID, userID).
+		Scan(&b.MessageID, &b.TextBody, &html, &charset)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	b.HTMLSanitized, b.Charset = html.String, charset.String
+	return &b, nil
+}
+
+func (s *Store) ListAttachments(ctx context.Context, userID, messageID string) ([]domain.Attachment, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT a.id,a.message_id,a.name,a.mime_type,a.size,a.hash,a.storage_uri,a.inline_flag
+	 FROM attachments a JOIN messages m ON m.id=a.message_id
+	 WHERE a.message_id=? AND m.user_id=?`, messageID, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.Attachment
+	for rows.Next() {
+		var a domain.Attachment
+		var inline int
+		if err := rows.Scan(&a.ID, &a.MessageID, &a.Name, &a.MIMEType, &a.Size, &a.Hash, &a.StorageURI, &inline); err != nil {
+			return nil, err
+		}
+		a.Inline = inline != 0
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// Search runs filtered keyword search with keyset (cursor) pagination.
+// Cursor format: "<date>:<id>" of the last row from the previous page.
+func (s *Store) Search(ctx context.Context, q domain.SearchQuery) (*domain.SearchResult, error) {
+	limit := q.Limit
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	var conds []string
+	var args []any
+	conds, args = append(conds, "m.user_id=?"), append(args, q.UserID)
+	if q.AccountID != "" {
+		conds, args = append(conds, "m.account_id=?"), append(args, q.AccountID)
+	}
+	if q.From != "" {
+		conds, args = append(conds, "m.from_email LIKE ?"), append(args, "%"+q.From+"%")
+	}
+	if q.To != "" {
+		conds, args = append(conds, "m.to_json LIKE ?"), append(args, "%"+q.To+"%")
+	}
+	if q.Subject != "" {
+		conds, args = append(conds, "m.subject LIKE ?"), append(args, "%"+q.Subject+"%")
+	}
+	if q.Since > 0 {
+		conds, args = append(conds, "m.date >= ?"), append(args, q.Since)
+	}
+	if q.Until > 0 {
+		conds, args = append(conds, "m.date <= ?"), append(args, q.Until)
+	}
+	if q.HasAttachment != nil {
+		conds, args = append(conds, "m.has_attachments = ?"), append(args, boolInt(*q.HasAttachment))
+	}
+	if q.Cursor != "" {
+		var cDate int64
+		var cID string
+		if _, err := fmt.Sscanf(q.Cursor, "%d:%s", &cDate, &cID); err == nil {
+			conds, args = append(conds, "(m.date < ? OR (m.date = ? AND m.id < ?))"),
+				append(args, cDate, cDate, cID)
+		}
+	}
+	join := ""
+	if q.Text != "" {
+		if s.fts {
+			join = " JOIN messages_fts f ON f.message_pk = m.id "
+			conds, args = append(conds, "messages_fts MATCH ?"), append(args, ftsQuery(q.Text))
+		} else {
+			conds = append(conds, `(m.subject LIKE ? OR m.from_email LIKE ? OR EXISTS
+			 (SELECT 1 FROM message_bodies b WHERE b.message_id=m.id AND b.text_body LIKE ?))`)
+			p := "%" + q.Text + "%"
+			args = append(args, p, p, p)
+		}
+	}
+	query := `SELECT ` + prefixCols(msgCols, "m.") + ` FROM messages m` + join +
+		` WHERE ` + strings.Join(conds, " AND ") +
+		` ORDER BY m.date DESC, m.id DESC LIMIT ?`
+	args = append(args, limit+1)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var msgs []domain.Message
+	for rows.Next() {
+		m, err := scanMessage(rows)
+		if err != nil {
+			return nil, err
+		}
+		msgs = append(msgs, *m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	res := &domain.SearchResult{}
+	if len(msgs) > limit {
+		msgs = msgs[:limit]
+		last := msgs[len(msgs)-1]
+		res.NextCursor = fmt.Sprintf("%d:%s", last.Date, last.ID)
+	}
+	res.Messages = msgs
+	return res, nil
+}
+
+// ftsQuery quotes user text so FTS5 operators in mail-derived strings can't
+// change query semantics.
+func ftsQuery(text string) string {
+	terms := strings.Fields(text)
+	for i, t := range terms {
+		terms[i] = `"` + strings.ReplaceAll(t, `"`, `""`) + `"`
+	}
+	return strings.Join(terms, " ")
+}
+
+// ---------- threads ----------
+
+// ResolveThread finds the thread for a new message via In-Reply-To /
+// References (MIME-006), falling back to the normalized subject key
+// (MIME-007). Creates a thread when none matches.
+func (s *Store) ResolveThread(ctx context.Context, userID, accountID string, refs []string, subjectKey string, date int64) (string, error) {
+	for _, r := range refs {
+		if r == "" {
+			continue
+		}
+		var tid sql.NullString
+		err := s.db.QueryRowContext(ctx,
+			`SELECT thread_id FROM messages WHERE user_id=? AND account_id=? AND message_id_hdr=? AND thread_id != '' LIMIT 1`,
+			userID, accountID, r).Scan(&tid)
+		if err == nil && tid.String != "" {
+			return tid.String, nil
+		}
+	}
+	if subjectKey != "" && len(refs) > 0 {
+		var tid string
+		err := s.db.QueryRowContext(ctx,
+			`SELECT id FROM threads WHERE user_id=? AND account_id=? AND subject_key=? LIMIT 1`,
+			userID, accountID, subjectKey).Scan(&tid)
+		if err == nil {
+			return tid, nil
+		}
+	}
+	tid := NewID("thr")
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO threads (id,user_id,account_id,subject_key,last_message_at,message_count) VALUES (?,?,?,?,?,0)`,
+		tid, userID, accountID, subjectKey, date)
+	return tid, err
+}
+
+func (s *Store) GetThreadMessages(ctx context.Context, userID, threadID string) ([]domain.Message, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+msgCols+` FROM messages WHERE user_id=? AND thread_id=? ORDER BY date ASC`, userID, threadID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.Message
+	for rows.Next() {
+		m, err := scanMessage(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *m)
+	}
+	return out, rows.Err()
+}
+
+// ---------- analyses ----------
+
+func (s *Store) SaveAnalysis(ctx context.Context, a *domain.Analysis) error {
+	a.CreatedAt = now()
+	_, err := s.db.ExecContext(ctx, `INSERT INTO analyses
+	 (id,user_id,target_type,target_id,analysis_type,result_json,model,prompt_version,input_hash,created_at)
+	 VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		a.ID, a.UserID, a.TargetType, a.TargetID, a.AnalysisType, a.ResultJSON,
+		a.Model, a.PromptVersion, a.InputHash, a.CreatedAt)
+	return err
+}
+
+// FindCachedAnalysis returns a previous result for identical input+settings (AI-008).
+func (s *Store) FindCachedAnalysis(ctx context.Context, userID, analysisType, inputHash, model string) (*domain.Analysis, error) {
+	var a domain.Analysis
+	err := s.db.QueryRowContext(ctx, `SELECT id,user_id,target_type,target_id,analysis_type,result_json,model,prompt_version,input_hash,created_at
+	 FROM analyses WHERE user_id=? AND analysis_type=? AND input_hash=? AND model=?
+	 ORDER BY created_at DESC LIMIT 1`, userID, analysisType, inputHash, model).
+		Scan(&a.ID, &a.UserID, &a.TargetType, &a.TargetID, &a.AnalysisType, &a.ResultJSON,
+			&a.Model, &a.PromptVersion, &a.InputHash, &a.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &a, nil
+}
+
+// ---------- drafts ----------
+
+func (s *Store) CreateDraft(ctx context.Context, d *domain.Draft, v *domain.DraftVersion) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	d.CreatedAt, d.UpdatedAt = now(), now()
+	d.CurrentVersion = 1
+	v.Version, v.CreatedAt = 1, now()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO drafts
+	 (id,user_id,account_id,kind,reply_to_message_id,status,current_version,created_at,updated_at)
+	 VALUES (?,?,?,?,?,?,?,?,?)`,
+		d.ID, d.UserID, d.AccountID, d.Kind, d.ReplyToMessageID, d.Status, d.CurrentVersion, d.CreatedAt, d.UpdatedAt); err != nil {
+		return err
+	}
+	if err := insertDraftVersion(ctx, tx, d.ID, v); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func insertDraftVersion(ctx context.Context, tx *sql.Tx, draftID string, v *domain.DraftVersion) error {
+	_, err := tx.ExecContext(ctx, `INSERT INTO draft_versions
+	 (draft_id,version,subject,body_text,body_html,to_json,cc_json,bcc_json,author,created_at)
+	 VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		draftID, v.Version, v.Subject, v.BodyText, v.BodyHTML,
+		addrJSON(v.To), addrJSON(v.Cc), addrJSON(v.Bcc), v.Author, v.CreatedAt)
+	return err
+}
+
+func (s *Store) AddDraftVersion(ctx context.Context, userID, draftID string, v *domain.DraftVersion) (int, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	var cur int
+	err = tx.QueryRowContext(ctx,
+		`SELECT current_version FROM drafts WHERE id=? AND user_id=? AND status='open'`, draftID, userID).Scan(&cur)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrNotFound
+	}
+	if err != nil {
+		return 0, err
+	}
+	v.Version, v.CreatedAt = cur+1, now()
+	if err := insertDraftVersion(ctx, tx, draftID, v); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE drafts SET current_version=?, updated_at=? WHERE id=?`, v.Version, now(), draftID); err != nil {
+		return 0, err
+	}
+	return v.Version, tx.Commit()
+}
+
+func (s *Store) GetDraft(ctx context.Context, userID, id string) (*domain.Draft, *domain.DraftVersion, error) {
+	var d domain.Draft
+	var replyTo sql.NullString
+	err := s.db.QueryRowContext(ctx, `SELECT id,user_id,account_id,kind,reply_to_message_id,status,current_version,created_at,updated_at
+	 FROM drafts WHERE id=? AND user_id=?`, id, userID).
+		Scan(&d.ID, &d.UserID, &d.AccountID, &d.Kind, &replyTo, &d.Status, &d.CurrentVersion, &d.CreatedAt, &d.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	d.ReplyToMessageID = replyTo.String
+	v, err := s.GetDraftVersion(ctx, userID, id, d.CurrentVersion)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &d, v, nil
+}
+
+func (s *Store) GetDraftVersion(ctx context.Context, userID, draftID string, version int) (*domain.DraftVersion, error) {
+	var v domain.DraftVersion
+	var toJ, ccJ, bccJ, html sql.NullString
+	err := s.db.QueryRowContext(ctx, `SELECT v.draft_id,v.version,v.subject,v.body_text,v.body_html,v.to_json,v.cc_json,v.bcc_json,v.author,v.created_at
+	 FROM draft_versions v JOIN drafts d ON d.id=v.draft_id
+	 WHERE v.draft_id=? AND v.version=? AND d.user_id=?`, draftID, version, userID).
+		Scan(&v.DraftID, &v.Version, &v.Subject, &v.BodyText, &html, &toJ, &ccJ, &bccJ, &v.Author, &v.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	v.BodyHTML = html.String
+	v.To, v.Cc, v.Bcc = addrFromJSON(toJ.String), addrFromJSON(ccJ.String), addrFromJSON(bccJ.String)
+	return &v, nil
+}
+
+func (s *Store) SetDraftStatus(ctx context.Context, userID, id string, st domain.DraftStatus) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE drafts SET status=?, updated_at=? WHERE id=? AND user_id=?`, st, now(), id, userID)
+	return err
+}
+
+// ---------- approvals ----------
+
+func (s *Store) InsertApproval(ctx context.Context, id, userID, actionType, draftID string, draftVersion int, payloadHash, tokenHash, approver string, expiresAt int64) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO approvals
+	 (id,user_id,action_type,draft_id,draft_version,payload_hash,token_hash,approver,expires_at,status,created_at)
+	 VALUES (?,?,?,?,?,?,?,?,?,'pending',?)`,
+		id, userID, actionType, draftID, draftVersion, payloadHash, tokenHash, approver, expiresAt, now())
+	return err
+}
+
+// ConsumeApproval flips a pending, unexpired, hash-matching approval to
+// 'used' in one statement — the atomicity makes replays impossible.
+func (s *Store) ConsumeApproval(ctx context.Context, tokenHash, payloadHash string) (string, int, error) {
+	var id, draftID string
+	var version int
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", 0, err
+	}
+	defer tx.Rollback()
+	err = tx.QueryRowContext(ctx, `SELECT id, COALESCE(draft_id,''), COALESCE(draft_version,0) FROM approvals
+	 WHERE token_hash=? AND payload_hash=? AND status='pending' AND expires_at > ?`,
+		tokenHash, payloadHash, now()).Scan(&id, &draftID, &version)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", 0, errors.New("approval token invalid, expired, consumed, or payload changed")
+	}
+	if err != nil {
+		return "", 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE approvals SET status='used' WHERE id=?`, id); err != nil {
+		return "", 0, err
+	}
+	return draftID, version, tx.Commit()
+}
+
+// ---------- outbound ----------
+
+func (s *Store) CreateOutbound(ctx context.Context, o *domain.OutboundMessage) error {
+	o.CreatedAt, o.UpdatedAt = now(), now()
+	_, err := s.db.ExecContext(ctx, `INSERT INTO outbound_messages
+	 (id,user_id,draft_id,draft_version,idempotency_key,message_id_hdr,status,attempts,created_at,updated_at)
+	 VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		o.ID, o.UserID, o.DraftID, o.DraftVersion, o.IdempotencyKey, o.MessageID, o.Status, o.Attempts, o.CreatedAt, o.UpdatedAt)
+	return err
+}
+
+func (s *Store) GetOutboundByIdemKey(ctx context.Context, userID, key string) (*domain.OutboundMessage, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT id,user_id,draft_id,draft_version,idempotency_key,message_id_hdr,status,COALESCE(smtp_response,''),attempts,created_at,updated_at
+	 FROM outbound_messages WHERE user_id=? AND idempotency_key=?`, userID, key)
+	return scanOutbound(row)
+}
+
+func (s *Store) GetOutbound(ctx context.Context, userID, id string) (*domain.OutboundMessage, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT id,user_id,draft_id,draft_version,idempotency_key,message_id_hdr,status,COALESCE(smtp_response,''),attempts,created_at,updated_at
+	 FROM outbound_messages WHERE user_id=? AND id=?`, userID, id)
+	return scanOutbound(row)
+}
+
+func scanOutbound(row interface{ Scan(...any) error }) (*domain.OutboundMessage, error) {
+	var o domain.OutboundMessage
+	err := row.Scan(&o.ID, &o.UserID, &o.DraftID, &o.DraftVersion, &o.IdempotencyKey,
+		&o.MessageID, &o.Status, &o.SMTPResponse, &o.Attempts, &o.CreatedAt, &o.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &o, nil
+}
+
+func (s *Store) UpdateOutbound(ctx context.Context, id string, status domain.OutboundStatus, smtpResponse string, attempts int) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE outbound_messages SET status=?, smtp_response=?, attempts=?, updated_at=? WHERE id=?`,
+		status, smtpResponse, attempts, now(), id)
+	return err
+}
+
+// ---------- jobs ----------
+
+func (s *Store) CreateJob(ctx context.Context, j *domain.Job) error {
+	j.CreatedAt, j.UpdatedAt = now(), now()
+	stats, _ := json.Marshal(j.Stats)
+	meta, _ := json.Marshal(j.Meta)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO jobs
+	 (id,user_id,type,account_id,status,progress,stats_json,error,meta_json,created_at,updated_at)
+	 VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		j.ID, j.UserID, j.Type, j.AccountID, j.Status, j.Progress, string(stats), j.Error, string(meta), j.CreatedAt, j.UpdatedAt)
+	return err
+}
+
+func (s *Store) UpdateJob(ctx context.Context, j *domain.Job) error {
+	j.UpdatedAt = now()
+	stats, _ := json.Marshal(j.Stats)
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE jobs SET status=?, progress=?, stats_json=?, error=?, updated_at=? WHERE id=?`,
+		j.Status, j.Progress, string(stats), j.Error, j.UpdatedAt, j.ID)
+	return err
+}
+
+func (s *Store) GetJob(ctx context.Context, userID, id string) (*domain.Job, error) {
+	var j domain.Job
+	var stats, meta, accountID, progress, jerr sql.NullString
+	err := s.db.QueryRowContext(ctx, `SELECT id,user_id,type,account_id,status,progress,stats_json,error,meta_json,created_at,updated_at
+	 FROM jobs WHERE id=? AND user_id=?`, id, userID).
+		Scan(&j.ID, &j.UserID, &j.Type, &accountID, &j.Status, &progress, &stats, &jerr, &meta, &j.CreatedAt, &j.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	j.AccountID, j.Progress, j.Error = accountID.String, progress.String, jerr.String
+	if stats.String != "" {
+		json.Unmarshal([]byte(stats.String), &j.Stats)
+	}
+	if meta.String != "" {
+		json.Unmarshal([]byte(meta.String), &j.Meta)
+	}
+	return &j, nil
+}
+
+// ---------- audit ----------
+
+func (s *Store) AppendAudit(ctx context.Context, ev domain.AuditEvent) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO audit_events (at,user_id,actor,action,resource,result,detail) VALUES (?,?,?,?,?,?,?)`,
+		now(), ev.UserID, ev.Actor, ev.Action, ev.Resource, ev.Result, ev.Detail)
+	return err
+}
+
+func (s *Store) SearchAudit(ctx context.Context, userID string, limit int) ([]domain.AuditEvent, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id,at,user_id,actor,action,resource,result,COALESCE(detail,'')
+	 FROM audit_events WHERE user_id=? ORDER BY id DESC LIMIT ?`, userID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.AuditEvent
+	for rows.Next() {
+		var e domain.AuditEvent
+		if err := rows.Scan(&e.ID, &e.At, &e.UserID, &e.Actor, &e.Action, &e.Resource, &e.Result, &e.Detail); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// prefixCols qualifies every column in a comma-separated list with a table
+// alias, so joined tables (e.g. the FTS index) cannot shadow column names.
+func prefixCols(cols, prefix string) string {
+	parts := strings.Split(cols, ",")
+	for i, p := range parts {
+		parts[i] = prefix + strings.TrimSpace(p)
+	}
+	return strings.Join(parts, ",")
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}

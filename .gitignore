@@ -1,0 +1,15 @@
+# build output
+/postra
+*.db
+*.db-wal
+*.db-shm
+/data/
+
+# secrets & local state (never commit)
+kek.key
+secrets.enc.json
+config.json
+
+# release artifacts (attached to GitHub Releases instead)
+/dist/*.tar.gz
+/dist/postra-*-linux-amd64
