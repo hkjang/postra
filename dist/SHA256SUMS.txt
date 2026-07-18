@@ -1,2 +1,2 @@
-6d031c1d01803a2b39d87babf60382c9d0e69cb2d3e08bd243a0242ae96e41b0  postra-0.1.0-linux-amd64-image.tar.gz
-abaed8be69070bda6b37778b68d08eb93ebe50b8d1ab961941205c4b00cc55ae  postra-0.1.0-linux-amd64
+13e25f3be992c7f1d6fdd1dd238979a0b0db077e2515964c1184b7a8f4666a48  postra-0.2.0-linux-amd64-image.tar.gz
+dc451b212df9743258cb131f44d02d74e754f38ba28a35bd125ef82f98dd9989  postra-0.2.0-linux-amd64
