@@ -1,0 +1,71 @@
+name: Release
+
+# Push a semver tag (e.g. v0.3.1) to build the offline artifacts and publish a
+# GitHub Release. Mirrors the manual recipe in dist/README.md so releases are
+# reproducible: static binary + docker-load image tarball + SBOM + checksums.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  GO_VERSION: "1.26.5"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+
+      - name: Derive version
+        id: v
+        run: |
+          TAG="${GITHUB_REF_NAME}"        # e.g. v0.3.1
+          echo "tag=$TAG"        >> "$GITHUB_OUTPUT"
+          echo "num=${TAG#v}"    >> "$GITHUB_OUTPUT"   # 0.3.1
+
+      - name: Build static binary
+        run: |
+          mkdir -p dist
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
+            -ldflags="-s -w -X postra/internal/platform/build.Version=${{ steps.v.outputs.tag }}" \
+            -o dist/postra-${{ steps.v.outputs.num }}-linux-amd64 ./cmd/postra
+
+      - name: Build offline image tarball
+        run: |
+          go run scripts/mkimage.go \
+            dist/postra-${{ steps.v.outputs.num }}-linux-amd64 \
+            dist/postra-${{ steps.v.outputs.num }}-linux-amd64-image.tar \
+            postra:${{ steps.v.outputs.num }}
+          gzip -9 -f dist/postra-${{ steps.v.outputs.num }}-linux-amd64-image.tar
+
+      - name: Generate SBOM
+        run: |
+          go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@v1.10.0
+          cyclonedx-gomod app -json -output dist/postra-${{ steps.v.outputs.num }}-sbom.cdx.json -main cmd/postra .
+
+      - name: Checksums
+        working-directory: dist
+        run: |
+          sha256sum \
+            postra-${{ steps.v.outputs.num }}-linux-amd64 \
+            postra-${{ steps.v.outputs.num }}-linux-amd64-image.tar.gz \
+            postra-${{ steps.v.outputs.num }}-sbom.cdx.json > SHA256SUMS.txt
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.v.outputs.tag }}" \
+            --title "Postra ${{ steps.v.outputs.tag }}" \
+            --generate-notes \
+            dist/postra-${{ steps.v.outputs.num }}-linux-amd64 \
+            dist/postra-${{ steps.v.outputs.num }}-linux-amd64-image.tar.gz \
+            dist/postra-${{ steps.v.outputs.num }}-sbom.cdx.json \
+            dist/SHA256SUMS.txt

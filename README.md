@@ -163,7 +163,11 @@ go test -race ./...      # 동시성 검사
 | **SBOM** | CycloneDX(`cyclonedx-gomod`) 소프트웨어 자재명세서 아티팩트 |
 | **docker** | 배포 이미지 빌드 검증 |
 
-빌드 툴체인은 `go.mod` 의 `toolchain` / Dockerfile / 워크플로 `GO_VERSION` 에서 동일 패치 버전으로 고정하며, 셋을 함께 올립니다(표준 라이브러리 보안 픽스 반영). 로컬에서도 동일 검사 실행:
+빌드 툴체인은 `go.mod` 의 `toolchain` / Dockerfile / 워크플로 `GO_VERSION` 에서 동일 패치 버전으로 고정하며, 셋을 함께 올립니다(표준 라이브러리 보안 픽스 반영). 보안 스캐너(`govulncheck`·`gosec`·`cyclonedx-gomod`)도 고정 버전으로 설치해 재현성을 확보합니다.
+
+**릴리즈 자동화**: `release.yml` 이 `v*` 태그 push 시 버전 각인 정적 바이너리·오프라인 이미지 tarball·SBOM·체크섬을 빌드해 GitHub Release로 발행합니다. 버전은 `-ldflags -X …/build.Version` 로 주입되어 `postra version`·MCP·`postra_build_info` 메트릭에 일관 반영됩니다.
+
+로컬에서도 동일 검사 실행:
 
 ```bash
 go run golang.org/x/vuln/cmd/govulncheck@latest ./...
