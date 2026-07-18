@@ -87,16 +87,34 @@ type sentMail struct {
 }
 
 type fakeSMTP struct {
-	sent      []sentMail
-	uncertain bool
+	sent          []sentMail
+	uncertain     bool
+	tempFailsLeft int  // return a temporary error this many times, then succeed
+	permFail      bool // return a permanent error
 }
 
 func (f *fakeSMTP) TestConnection(ctx context.Context, opts domain.SMTPSendOptions) (*domain.ConnDiagnostics, error) {
 	return &domain.ConnDiagnostics{Target: "smtp", OK: true}, nil
 }
 
+// classifiedErr implements the Temporary() interface used by the outbox.
+type classifiedErr struct {
+	msg  string
+	temp bool
+}
+
+func (e classifiedErr) Error() string   { return e.msg }
+func (e classifiedErr) Temporary() bool { return e.temp }
+
 func (f *fakeSMTP) Send(ctx context.Context, opts domain.SMTPSendOptions, env domain.Envelope, msg io.Reader) (domain.SendReceipt, error) {
 	raw, _ := io.ReadAll(msg)
+	if f.permFail {
+		return domain.SendReceipt{}, classifiedErr{"550 permanent", false}
+	}
+	if f.tempFailsLeft > 0 {
+		f.tempFailsLeft--
+		return domain.SendReceipt{}, classifiedErr{"451 temporary", true}
+	}
 	if f.uncertain {
 		return domain.SendReceipt{Uncertain: true, ServerResponse: "connection lost"}, nil
 	}
@@ -699,6 +717,85 @@ func TestManyRecipientWarning(t *testing.T) {
 	}
 	if len(pv.Warnings) == 0 {
 		t.Fatal("expected a many-recipient warning")
+	}
+}
+
+// SMTP-010/011: a temporary failure is retried via the outbox and eventually
+// delivered; the message is sent exactly once.
+func TestOutboxRetrySucceeds(t *testing.T) {
+	app, _, smtp, _ := newTestApp(t)
+	app.Cfg.Send.MaxRetries = 4
+	app.Cfg.Send.RetryBaseSeconds = 0 // due immediately, for deterministic testing
+	smtp.tempFailsLeft = 2
+	acc := mustAccount(t, app)
+	ctx := WithActor(context.Background(), "test")
+
+	dv, _ := app.CreateDraft(ctx, CreateDraftInput{
+		AccountID: acc.ID, To: []string{"bob@example.com"}, Subject: "s", Body: "b",
+	})
+	_, tok, _ := app.RequestSendApproval(ctx, dv.Draft.ID, "t", 60)
+	out, err := app.Send(ctx, SendInput{DraftID: dv.Draft.ID, ApprovalToken: tok.Token})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != domain.OutboundRetryWait {
+		t.Fatalf("after first temp failure status=%s, want retry_wait", out.Status)
+	}
+	// Two more attempts: fail once more, then succeed.
+	app.ProcessRetries(ctx)
+	app.ProcessRetries(ctx)
+	final, _ := app.GetOutbound(ctx, out.ID)
+	if final.Status != domain.OutboundSent {
+		t.Fatalf("final status=%s, want sent (attempts=%d)", final.Status, final.Attempts)
+	}
+	if len(smtp.sent) != 1 {
+		t.Fatalf("delivered %d times, want exactly 1", len(smtp.sent))
+	}
+}
+
+// SMTP-010: a permanent failure is not retried.
+func TestOutboxPermanentFailureNoRetry(t *testing.T) {
+	app, _, smtp, _ := newTestApp(t)
+	app.Cfg.Send.MaxRetries = 4
+	app.Cfg.Send.RetryBaseSeconds = 0
+	smtp.permFail = true
+	acc := mustAccount(t, app)
+	ctx := WithActor(context.Background(), "test")
+	dv, _ := app.CreateDraft(ctx, CreateDraftInput{
+		AccountID: acc.ID, To: []string{"bob@example.com"}, Subject: "s", Body: "b",
+	})
+	_, tok, _ := app.RequestSendApproval(ctx, dv.Draft.ID, "t", 60)
+	out, _ := app.Send(ctx, SendInput{DraftID: dv.Draft.ID, ApprovalToken: tok.Token})
+	if out.Status != domain.OutboundFailed {
+		t.Fatalf("permanent failure status=%s, want failed", out.Status)
+	}
+	if n := app.ProcessRetries(ctx); n != 0 {
+		t.Fatalf("permanent failure must not be queued for retry (processed %d)", n)
+	}
+}
+
+// Retries are exhausted after MaxRetries attempts → failed.
+func TestOutboxRetryExhaustion(t *testing.T) {
+	app, _, smtp, _ := newTestApp(t)
+	app.Cfg.Send.MaxRetries = 3
+	app.Cfg.Send.RetryBaseSeconds = 0
+	smtp.tempFailsLeft = 100 // never succeeds
+	acc := mustAccount(t, app)
+	ctx := WithActor(context.Background(), "test")
+	dv, _ := app.CreateDraft(ctx, CreateDraftInput{
+		AccountID: acc.ID, To: []string{"bob@example.com"}, Subject: "s", Body: "b",
+	})
+	_, tok, _ := app.RequestSendApproval(ctx, dv.Draft.ID, "t", 60)
+	out, _ := app.Send(ctx, SendInput{DraftID: dv.Draft.ID, ApprovalToken: tok.Token}) // attempt 1
+	for i := 0; i < 5; i++ {
+		app.ProcessRetries(ctx)
+	}
+	final, _ := app.GetOutbound(ctx, out.ID)
+	if final.Status != domain.OutboundFailed {
+		t.Fatalf("status=%s after exhaustion, want failed", final.Status)
+	}
+	if final.Attempts != 3 {
+		t.Fatalf("attempts=%d, want 3 (MaxRetries)", final.Attempts)
 	}
 }
 

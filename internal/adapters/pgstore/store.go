@@ -122,7 +122,10 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS outbound_messages (
 			id TEXT PRIMARY KEY, user_id TEXT NOT NULL, draft_id TEXT NOT NULL, draft_version INT NOT NULL,
 			idempotency_key TEXT UNIQUE, message_id_hdr TEXT, status TEXT NOT NULL, smtp_response TEXT,
-			attempts INT NOT NULL DEFAULT 0, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL)`,
+			attempts INT NOT NULL DEFAULT 0, next_attempt_at BIGINT NOT NULL DEFAULT 0,
+			created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL)`,
+		`ALTER TABLE outbound_messages ADD COLUMN IF NOT EXISTS next_attempt_at BIGINT NOT NULL DEFAULT 0`,
+		`CREATE INDEX IF NOT EXISTS idx_outbound_retry ON outbound_messages(status, next_attempt_at)`,
 		`CREATE TABLE IF NOT EXISTS jobs (
 			id TEXT PRIMARY KEY, user_id TEXT NOT NULL, type TEXT NOT NULL, account_id TEXT, status TEXT NOT NULL,
 			progress TEXT, stats_json TEXT, error TEXT, meta_json TEXT, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL)`,
@@ -725,7 +728,7 @@ func (s *Store) CreateOutbound(ctx context.Context, o *domain.OutboundMessage) e
 
 func scanOutbound(row pgx.Row) (*domain.OutboundMessage, error) {
 	var o domain.OutboundMessage
-	err := row.Scan(&o.ID, &o.UserID, &o.DraftID, &o.DraftVersion, &o.IdempotencyKey, &o.MessageID, &o.Status, &o.SMTPResponse, &o.Attempts, &o.CreatedAt, &o.UpdatedAt)
+	err := row.Scan(&o.ID, &o.UserID, &o.DraftID, &o.DraftVersion, &o.IdempotencyKey, &o.MessageID, &o.Status, &o.SMTPResponse, &o.Attempts, &o.NextAttemptAt, &o.CreatedAt, &o.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -735,7 +738,7 @@ func scanOutbound(row pgx.Row) (*domain.OutboundMessage, error) {
 	return &o, nil
 }
 
-const outboundCols = `id,user_id,draft_id,draft_version,idempotency_key,message_id_hdr,status,COALESCE(smtp_response,''),attempts,created_at,updated_at`
+const outboundCols = `id,user_id,draft_id,draft_version,idempotency_key,message_id_hdr,status,COALESCE(smtp_response,''),attempts,next_attempt_at,created_at,updated_at`
 
 func (s *Store) GetOutboundByIdemKey(ctx context.Context, userID, key string) (*domain.OutboundMessage, error) {
 	return scanOutbound(s.pool.QueryRow(ctx, `SELECT `+outboundCols+` FROM outbound_messages WHERE user_id=$1 AND idempotency_key=$2`, userID, key))
@@ -753,9 +756,37 @@ func (s *Store) CountSentSince(ctx context.Context, userID, accountID string, si
 }
 
 func (s *Store) UpdateOutbound(ctx context.Context, id string, status domain.OutboundStatus, smtpResponse string, attempts int) error {
-	_, err := s.pool.Exec(ctx, `UPDATE outbound_messages SET status=$1, smtp_response=$2, attempts=$3, updated_at=$4 WHERE id=$5`,
+	_, err := s.pool.Exec(ctx, `UPDATE outbound_messages SET status=$1, smtp_response=$2, attempts=$3, next_attempt_at=0, updated_at=$4 WHERE id=$5`,
 		status, smtpResponse, attempts, now(), id)
 	return err
+}
+
+func (s *Store) MarkOutboundRetry(ctx context.Context, id, smtpResponse string, attempts int, nextAttemptAt int64) error {
+	_, err := s.pool.Exec(ctx, `UPDATE outbound_messages SET status=$1, smtp_response=$2, attempts=$3, next_attempt_at=$4, updated_at=$5 WHERE id=$6`,
+		domain.OutboundRetryWait, smtpResponse, attempts, nextAttemptAt, now(), id)
+	return err
+}
+
+func (s *Store) ListDueRetries(ctx context.Context, nowTS int64, limit int) ([]domain.OutboundMessage, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.pool.Query(ctx, `SELECT `+outboundCols+`
+	 FROM outbound_messages WHERE status=$1 AND next_attempt_at <= $2 ORDER BY next_attempt_at LIMIT $3`,
+		domain.OutboundRetryWait, nowTS, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.OutboundMessage
+	for rows.Next() {
+		o, err := scanOutbound(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *o)
+	}
+	return out, rows.Err()
 }
 
 // ---------- jobs ----------

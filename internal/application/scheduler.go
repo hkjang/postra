@@ -49,6 +49,54 @@ func (a *App) RunScheduler(ctx context.Context) {
 	}
 }
 
+// RunRetryWorker drains the outbox retry queue on a fixed cadence until ctx
+// is cancelled (SMTP-011). Runs alongside the sync scheduler.
+func (a *App) RunRetryWorker(ctx context.Context) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if n := a.ProcessRetries(ctx); n > 0 {
+				slog.Info("outbox retries processed", "count", n)
+			}
+		}
+	}
+}
+
+// ProcessRetries attempts every due retry once and returns how many it acted
+// on. Exposed for deterministic testing and manual triggering.
+func (a *App) ProcessRetries(ctx context.Context) int {
+	due, err := a.Store.ListDueRetries(ctx, time.Now().Unix(), 50)
+	if err != nil {
+		slog.Error("list due retries failed", "err", err)
+		return 0
+	}
+	wctx := WithActor(ctx, "worker")
+	for _, out := range due {
+		o := out // copy
+		d, v, err := a.Store.GetDraft(wctx, o.UserID, o.DraftID)
+		if err != nil {
+			_ = a.Store.UpdateOutbound(wctx, o.ID, domain.OutboundFailed, "draft unavailable for retry", o.Attempts)
+			continue
+		}
+		vv, err := a.Store.GetDraftVersion(wctx, o.UserID, o.DraftID, o.DraftVersion)
+		if err != nil {
+			vv = v // fall back to current version
+		}
+		acc, err := a.Store.GetAccount(wctx, o.UserID, d.AccountID)
+		if err != nil {
+			_ = a.Store.UpdateOutbound(wctx, o.ID, domain.OutboundFailed, "account unavailable for retry", o.Attempts)
+			continue
+		}
+		receipt, sendErr := a.deliver(wctx, &o, acc, vv)
+		a.applySendResult(wctx, &o, o.DraftID, receipt, sendErr)
+	}
+	return len(due)
+}
+
 func (a *App) syncAllActive(ctx context.Context) {
 	sctx := WithActor(ctx, "scheduler")
 	accts, err := a.Store.ListAccounts(sctx, DefaultUserID)

@@ -259,6 +259,7 @@ func serve(configPath string) error {
 	schedCtx, schedCancel := context.WithCancel(context.Background())
 	defer schedCancel()
 	go app.RunScheduler(schedCtx)
+	go app.RunRetryWorker(schedCtx)
 
 	restSrv := &http.Server{
 		Addr:              cfg.HTTPAddr,

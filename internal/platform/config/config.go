@@ -74,6 +74,12 @@ type SendConfig struct {
 	// WarnRecipients surfaces a preview warning when a single send targets at
 	// least this many recipients (SMTP-013). 0 disables the warning.
 	WarnRecipients int `json:"warn_recipients"`
+	// Outbox retry policy for temporary SMTP failures (SMTP-010/011).
+	// MaxRetries is total attempts (1 = no retry). Backoff is exponential
+	// from RetryBaseSeconds, capped at RetryMaxSeconds.
+	MaxRetries       int `json:"max_retries"`
+	RetryBaseSeconds int `json:"retry_base_seconds"`
+	RetryMaxSeconds  int `json:"retry_max_seconds"`
 }
 
 type AIConfig struct {
@@ -128,9 +134,12 @@ func Default() Config {
 			CommandTimeoutSec: 60,
 		},
 		Send: SendConfig{
-			MaxPerMinute:   20,
-			MaxPerHour:     200,
-			WarnRecipients: 10,
+			MaxPerMinute:     20,
+			MaxPerHour:       200,
+			WarnRecipients:   10,
+			MaxRetries:       4,
+			RetryBaseSeconds: 30,
+			RetryMaxSeconds:  1800,
 		},
 		Attachments: AttachmentConfig{
 			BlockExtensions: []string{

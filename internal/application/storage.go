@@ -55,6 +55,8 @@ type Storage interface {
 	GetOutbound(ctx context.Context, userID, id string) (*domain.OutboundMessage, error)
 	CountSentSince(ctx context.Context, userID, accountID string, since int64) (int, error)
 	UpdateOutbound(ctx context.Context, id string, status domain.OutboundStatus, smtpResponse string, attempts int) error
+	MarkOutboundRetry(ctx context.Context, id, smtpResponse string, attempts int, nextAttemptAt int64) error
+	ListDueRetries(ctx context.Context, nowTS int64, limit int) ([]domain.OutboundMessage, error)
 
 	CreateJob(ctx context.Context, j *domain.Job) error
 	UpdateJob(ctx context.Context, j *domain.Job) error

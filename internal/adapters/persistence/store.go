@@ -228,8 +228,9 @@ CREATE TABLE IF NOT EXISTS outbound_messages (
   id TEXT PRIMARY KEY, user_id TEXT NOT NULL, draft_id TEXT NOT NULL,
   draft_version INTEGER NOT NULL, idempotency_key TEXT UNIQUE,
   message_id_hdr TEXT, status TEXT NOT NULL, smtp_response TEXT,
-  attempts INTEGER NOT NULL DEFAULT 0,
+  attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_outbound_retry ON outbound_messages(status, next_attempt_at);
 
 CREATE TABLE IF NOT EXISTS jobs (
   id TEXT PRIMARY KEY, user_id TEXT NOT NULL, type TEXT NOT NULL,
@@ -259,6 +260,7 @@ CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_events(at DESC);
 	for _, alt := range []string{
 		`ALTER TABLE attachments ADD COLUMN scan_status TEXT DEFAULT 'clean'`,
 		`ALTER TABLE attachments ADD COLUMN scan_detail TEXT`,
+		`ALTER TABLE outbound_messages ADD COLUMN next_attempt_at INTEGER NOT NULL DEFAULT 0`,
 	} {
 		if _, err := s.db.Exec(alt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return fmt.Errorf("migrate attachments: %w", err)
@@ -986,10 +988,45 @@ func (s *Store) CreateOutbound(ctx context.Context, o *domain.OutboundMessage) e
 	return err
 }
 
+const outboundCols = `id,user_id,draft_id,draft_version,idempotency_key,message_id_hdr,status,COALESCE(smtp_response,''),attempts,next_attempt_at,created_at,updated_at`
+
 func (s *Store) GetOutboundByIdemKey(ctx context.Context, userID, key string) (*domain.OutboundMessage, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id,user_id,draft_id,draft_version,idempotency_key,message_id_hdr,status,COALESCE(smtp_response,''),attempts,created_at,updated_at
+	row := s.db.QueryRowContext(ctx, `SELECT `+outboundCols+`
 	 FROM outbound_messages WHERE user_id=? AND idempotency_key=?`, userID, key)
 	return scanOutbound(row)
+}
+
+// MarkOutboundRetry records a temporary failure and schedules the next
+// attempt (SMTP-011). Terminal states go through UpdateOutbound.
+func (s *Store) MarkOutboundRetry(ctx context.Context, id, smtpResponse string, attempts int, nextAttemptAt int64) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE outbound_messages SET status=?, smtp_response=?, attempts=?, next_attempt_at=?, updated_at=? WHERE id=?`,
+		domain.OutboundRetryWait, smtpResponse, attempts, nextAttemptAt, now(), id)
+	return err
+}
+
+// ListDueRetries returns outbound messages awaiting a retry whose backoff has
+// elapsed (across all users; the worker acts on the whole outbox).
+func (s *Store) ListDueRetries(ctx context.Context, nowTS int64, limit int) ([]domain.OutboundMessage, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT `+outboundCols+`
+	 FROM outbound_messages WHERE status=? AND next_attempt_at <= ? ORDER BY next_attempt_at LIMIT ?`,
+		domain.OutboundRetryWait, nowTS, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.OutboundMessage
+	for rows.Next() {
+		o, err := scanOutbound(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *o)
+	}
+	return out, rows.Err()
 }
 
 // CountSentSince counts messages successfully sent for an account since a
@@ -1005,7 +1042,7 @@ func (s *Store) CountSentSince(ctx context.Context, userID, accountID string, si
 }
 
 func (s *Store) GetOutbound(ctx context.Context, userID, id string) (*domain.OutboundMessage, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id,user_id,draft_id,draft_version,idempotency_key,message_id_hdr,status,COALESCE(smtp_response,''),attempts,created_at,updated_at
+	row := s.db.QueryRowContext(ctx, `SELECT `+outboundCols+`
 	 FROM outbound_messages WHERE user_id=? AND id=?`, userID, id)
 	return scanOutbound(row)
 }
@@ -1013,7 +1050,7 @@ func (s *Store) GetOutbound(ctx context.Context, userID, id string) (*domain.Out
 func scanOutbound(row interface{ Scan(...any) error }) (*domain.OutboundMessage, error) {
 	var o domain.OutboundMessage
 	err := row.Scan(&o.ID, &o.UserID, &o.DraftID, &o.DraftVersion, &o.IdempotencyKey,
-		&o.MessageID, &o.Status, &o.SMTPResponse, &o.Attempts, &o.CreatedAt, &o.UpdatedAt)
+		&o.MessageID, &o.Status, &o.SMTPResponse, &o.Attempts, &o.NextAttemptAt, &o.CreatedAt, &o.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -1023,9 +1060,10 @@ func scanOutbound(row interface{ Scan(...any) error }) (*domain.OutboundMessage,
 	return &o, nil
 }
 
+// UpdateOutbound sets a terminal/immediate state and clears any pending retry.
 func (s *Store) UpdateOutbound(ctx context.Context, id string, status domain.OutboundStatus, smtpResponse string, attempts int) error {
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE outbound_messages SET status=?, smtp_response=?, attempts=?, updated_at=? WHERE id=?`,
+		`UPDATE outbound_messages SET status=?, smtp_response=?, attempts=?, next_attempt_at=0, updated_at=? WHERE id=?`,
 		status, smtpResponse, attempts, now(), id)
 	return err
 }

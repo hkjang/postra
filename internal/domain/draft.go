@@ -77,6 +77,7 @@ type OutboundStatus string
 
 const (
 	OutboundQueued    OutboundStatus = "queued"
+	OutboundRetryWait OutboundStatus = "retry_wait" // temporary failure; awaiting backoff retry
 	OutboundSent      OutboundStatus = "sent"
 	OutboundFailed    OutboundStatus = "failed"
 	OutboundUncertain OutboundStatus = "send_uncertain"
@@ -92,6 +93,7 @@ type OutboundMessage struct {
 	Status         OutboundStatus `json:"status"`
 	SMTPResponse   string         `json:"smtp_response,omitempty"`
 	Attempts       int            `json:"attempts"`
+	NextAttemptAt  int64          `json:"next_attempt_at,omitempty"`
 	CreatedAt      int64          `json:"created_at"`
 	UpdatedAt      int64          `json:"updated_at"`
 }

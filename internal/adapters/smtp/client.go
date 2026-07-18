@@ -15,6 +15,7 @@ import (
 	"io"
 	"net"
 	"net/smtp"
+	"net/textproto"
 	"strconv"
 	"strings"
 	"time"
@@ -109,6 +110,28 @@ type AuthError struct{ Err error }
 func (e *AuthError) Error() string { return "smtp auth: " + e.Err.Error() }
 func (e *AuthError) Unwrap() error { return e.Err }
 
+// SendError classifies a send failure as temporary (retryable, e.g. 4xx or a
+// network blip) or permanent (5xx), so the outbox can retry only what makes
+// sense (SMTP-010/011).
+type SendError struct {
+	Err  error
+	temp bool
+}
+
+func (e *SendError) Error() string   { return e.Err.Error() }
+func (e *SendError) Unwrap() error   { return e.Err }
+func (e *SendError) Temporary() bool { return e.temp }
+
+// classify wraps a send-phase error. A 4xx SMTP reply or a non-SMTP
+// (network) error is temporary; a 5xx reply is permanent.
+func classify(err error) *SendError {
+	var te *textproto.Error
+	if errors.As(err, &te) {
+		return &SendError{Err: err, temp: te.Code/100 == 4}
+	}
+	return &SendError{Err: err, temp: true}
+}
+
 // loginAuth implements the legacy AUTH LOGIN mechanism still common on
 // intranet mail servers.
 type loginAuth struct{ username, password string }
@@ -161,25 +184,30 @@ func (cl Client) Send(ctx context.Context, opts domain.SMTPSendOptions, env doma
 	}()
 	c, err := cl.connect(ctx, opts)
 	if err != nil {
-		return domain.SendReceipt{}, err
+		// Auth failures are permanent; connection issues are retryable.
+		var ae *AuthError
+		if errors.As(err, &ae) {
+			return domain.SendReceipt{}, &SendError{Err: err, temp: false}
+		}
+		return domain.SendReceipt{}, &SendError{Err: err, temp: true}
 	}
 	defer c.Close()
 
 	if err := c.Mail(env.From); err != nil {
-		return domain.SendReceipt{}, fmt.Errorf("MAIL FROM: %w", err)
+		return domain.SendReceipt{}, classify(fmt.Errorf("MAIL FROM: %w", err))
 	}
 	for _, rcpt := range env.To {
 		if err := c.Rcpt(rcpt); err != nil {
-			return domain.SendReceipt{}, fmt.Errorf("RCPT TO %s: %w", rcpt, err)
+			return domain.SendReceipt{}, classify(fmt.Errorf("RCPT TO %s: %w", rcpt, err))
 		}
 	}
 	w, err := c.Data()
 	if err != nil {
-		return domain.SendReceipt{}, fmt.Errorf("DATA: %w", err)
+		return domain.SendReceipt{}, classify(fmt.Errorf("DATA: %w", err))
 	}
 	if _, err := io.Copy(w, message); err != nil {
 		w.Close()
-		return domain.SendReceipt{}, fmt.Errorf("DATA write: %w", err)
+		return domain.SendReceipt{}, &SendError{Err: fmt.Errorf("DATA write: %w", err), temp: true}
 	}
 	// After the payload is fully handed over, a lost final response means the
 	// server may have accepted the message: report uncertain, never retried

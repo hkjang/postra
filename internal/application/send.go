@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"mime"
 	"mime/quotedprintable"
@@ -236,56 +237,103 @@ func (a *App) Send(ctx context.Context, in SendInput) (*domain.OutboundMessage, 
 		return nil, err
 	}
 
-	var inReplyTo, references string
-	if d.ReplyToMessageID != "" {
-		if orig, err := a.Store.GetMessage(ctx, DefaultUserID, d.ReplyToMessageID); err == nil && orig.MessageID != "" {
-			inReplyTo = orig.MessageID
-			references = strings.TrimSpace(orig.References + " " + orig.MessageID)
-		}
-	}
-	raw, err := buildMIME(acc, v, msgID, inReplyTo, references)
-	if err != nil {
-		_ = a.Store.UpdateOutbound(ctx, out.ID, domain.OutboundFailed, err.Error(), 1)
-		return nil, err
-	}
+	receipt, sendErr := a.deliver(ctx, out, acc, v)
+	return a.applySendResult(ctx, out, d.ID, receipt, sendErr), nil
+}
 
+// deliver builds the RFC822 message and hands it to SMTP. A build error is a
+// plain (permanent) error; SMTP errors carry temporary/permanent
+// classification from the adapter.
+func (a *App) deliver(ctx context.Context, out *domain.OutboundMessage, acc *domain.MailAccount, v *domain.DraftVersion) (domain.SendReceipt, error) {
+	var inReplyTo, references string
+	if orig, err := a.replyContext(ctx, out.DraftID); err == nil && orig != nil && orig.MessageID != "" {
+		inReplyTo = orig.MessageID
+		references = strings.TrimSpace(orig.References + " " + orig.MessageID)
+	}
+	raw, err := buildMIME(acc, v, out.MessageID, inReplyTo, references)
+	if err != nil {
+		return domain.SendReceipt{}, err // permanent
+	}
 	var secret *domain.SecretHandle
 	if acc.SMTPSecret != "" && acc.SMTPAuth != "none" {
 		secret, err = a.Secrets.Acquire(ctx, acc.SMTPSecret, domain.PurposeSMTPAuth)
 		if err != nil {
-			_ = a.Store.UpdateOutbound(ctx, out.ID, domain.OutboundFailed, "secret acquisition failed", 1)
-			return nil, err
+			return domain.SendReceipt{}, err // permanent (secret missing/revoked)
 		}
 		a.Store.TouchCredential(ctx, acc.SMTPSecret)
 	}
 	rcpts := append(append(emails(v.To), emails(v.Cc)...), emails(v.Bcc)...)
-	receipt, sendErr := a.SMTP.Send(ctx, domain.SMTPSendOptions{
+	return a.SMTP.Send(ctx, domain.SMTPSendOptions{
 		Host: acc.SMTPHost, Port: acc.SMTPPort, Security: acc.SMTPSecurity,
 		AuthMethod: acc.SMTPAuth, Username: acc.SMTPUsername, Password: secret,
 		InsecureSkipVerify: acc.InsecureSkipVerify,
 		ConnectTimeoutSec:  a.Cfg.Sync.ConnectTimeoutSec,
 	}, domain.Envelope{From: acc.Email, To: rcpts}, bytes.NewReader(raw))
+}
 
-	switch {
-	case sendErr != nil:
-		_ = a.Store.UpdateOutbound(ctx, out.ID, domain.OutboundFailed, sendErr.Error(), 1)
-		out.Status, out.SMTPResponse = domain.OutboundFailed, sendErr.Error()
-		a.audit(ctx, "mail_send", "draft:"+d.ID, "error", sendErr.Error())
-		return out, sendErr
-	case receipt.Uncertain:
-		// SMTP-008/009: recorded, surfaced, never auto-retried.
-		_ = a.Store.UpdateOutbound(ctx, out.ID, domain.OutboundUncertain, receipt.ServerResponse, 1)
-		out.Status, out.SMTPResponse = domain.OutboundUncertain, receipt.ServerResponse
-		a.audit(ctx, "mail_send", "draft:"+d.ID, "uncertain", "response lost after DATA")
-		return out, nil
-	default:
-		_ = a.Store.UpdateOutbound(ctx, out.ID, domain.OutboundSent, receipt.ServerResponse, 1)
-		_ = a.Store.SetDraftStatus(ctx, DefaultUserID, d.ID, domain.DraftSent)
-		out.Status, out.SMTPResponse = domain.OutboundSent, receipt.ServerResponse
-		a.audit(ctx, "mail_send", "draft:"+d.ID, "ok",
-			fmt.Sprintf("outbound=%s rcpt=%d", out.ID, len(rcpts)))
-		return out, nil
+func (a *App) replyContext(ctx context.Context, draftID string) (*domain.Message, error) {
+	d, _, err := a.Store.GetDraft(ctx, DefaultUserID, draftID)
+	if err != nil || d.ReplyToMessageID == "" {
+		return nil, err
 	}
+	return a.Store.GetMessage(ctx, DefaultUserID, d.ReplyToMessageID)
+}
+
+// applySendResult records the outcome of a delivery attempt and, for
+// temporary failures within the retry budget, schedules a backoff retry
+// (SMTP-010/011). Permanent failures and exhausted retries end in 'failed';
+// an uncertain result is never auto-retried (SMTP-008/009).
+func (a *App) applySendResult(ctx context.Context, out *domain.OutboundMessage, draftID string, receipt domain.SendReceipt, sendErr error) *domain.OutboundMessage {
+	attempts := out.Attempts + 1
+	out.Attempts = attempts
+	maxRetries := a.Cfg.Send.MaxRetries
+	if maxRetries <= 0 {
+		maxRetries = 1 // no retries configured: single attempt
+	}
+	switch {
+	case sendErr != nil && isTemporary(sendErr) && attempts < maxRetries:
+		next := time.Now().Add(a.retryBackoff(attempts)).Unix()
+		_ = a.Store.MarkOutboundRetry(ctx, out.ID, sendErr.Error(), attempts, next)
+		out.Status, out.SMTPResponse, out.NextAttemptAt = domain.OutboundRetryWait, sendErr.Error(), next
+		a.audit(ctx, "mail_send", "draft:"+draftID, "retry_scheduled",
+			fmt.Sprintf("attempt=%d next=%d", attempts, next))
+	case sendErr != nil && isTemporary(sendErr):
+		_ = a.Store.UpdateOutbound(ctx, out.ID, domain.OutboundFailed, "retries exhausted: "+sendErr.Error(), attempts)
+		out.Status, out.SMTPResponse = domain.OutboundFailed, sendErr.Error()
+		a.audit(ctx, "mail_send", "draft:"+draftID, "failed", "retries exhausted")
+	case sendErr != nil:
+		_ = a.Store.UpdateOutbound(ctx, out.ID, domain.OutboundFailed, sendErr.Error(), attempts)
+		out.Status, out.SMTPResponse = domain.OutboundFailed, sendErr.Error()
+		a.audit(ctx, "mail_send", "draft:"+draftID, "error", sendErr.Error())
+	case receipt.Uncertain:
+		_ = a.Store.UpdateOutbound(ctx, out.ID, domain.OutboundUncertain, receipt.ServerResponse, attempts)
+		out.Status, out.SMTPResponse = domain.OutboundUncertain, receipt.ServerResponse
+		a.audit(ctx, "mail_send", "draft:"+draftID, "uncertain", "response lost after DATA")
+	default:
+		_ = a.Store.UpdateOutbound(ctx, out.ID, domain.OutboundSent, receipt.ServerResponse, attempts)
+		_ = a.Store.SetDraftStatus(ctx, DefaultUserID, draftID, domain.DraftSent)
+		out.Status, out.SMTPResponse = domain.OutboundSent, receipt.ServerResponse
+		a.audit(ctx, "mail_send", "draft:"+draftID, "ok", "outbound="+out.ID)
+	}
+	return out
+}
+
+// retryBackoff is exponential (base * 2^(attempt-1)) capped at RetryMaxSeconds.
+func (a *App) retryBackoff(attempt int) time.Duration {
+	base := time.Duration(a.Cfg.Send.RetryBaseSeconds) * time.Second
+	d := base
+	for i := 1; i < attempt; i++ {
+		d *= 2
+	}
+	if max := time.Duration(a.Cfg.Send.RetryMaxSeconds) * time.Second; max > 0 && d > max {
+		d = max
+	}
+	return d
+}
+
+func isTemporary(err error) bool {
+	var t interface{ Temporary() bool }
+	return errors.As(err, &t) && t.Temporary()
 }
 
 func (a *App) GetOutbound(ctx context.Context, id string) (*domain.OutboundMessage, error) {
