@@ -108,6 +108,40 @@ func (l *Local) Delete(u string) error {
 	return err
 }
 
+// Walk visits every stored object as (kind, contentName, rawBytes). Used by
+// the encrypting wrapper to rewrap envelopes during KEK rotation.
+func (l *Local) Walk(fn func(kind, name string, blob []byte) error) error {
+	return filepath.WalkDir(l.root, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		rel, err := filepath.Rel(l.root, p)
+		if err != nil {
+			return err
+		}
+		parts := strings.Split(filepath.ToSlash(rel), "/")
+		if len(parts) != 3 { // kind/<prefix>/<name>
+			return nil
+		}
+		kind, name := parts[0], parts[2]
+		blob, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		return fn(kind, name, blob)
+	})
+}
+
+// Overwrite replaces an existing object's bytes in place (same content path).
+func (l *Local) Overwrite(kind, name string, data []byte) error {
+	dst := filepath.Join(l.root, kind, name[:2], name)
+	tmp := dst + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, dst)
+}
+
 func uri(kind, name string) string { return fmt.Sprintf("local://%s/%s", kind, name) }
 
 func parseURI(u string) (kind, name string, err error) {

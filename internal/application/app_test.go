@@ -702,6 +702,89 @@ func TestManyRecipientWarning(t *testing.T) {
 	}
 }
 
+// §11.3 KEK 회전: after rotating the keyring and rewrapping, secrets, raw
+// objects, and body columns still decrypt — even once the old key version is
+// retired (SEC-KEY-010/012). This is the "Backup 유출 후 Key 없이 복호화 불가"
+// rotation drill.
+func TestKEKRotationDrill(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Default()
+	cfg.DataDir = dir
+	cfg.AllowInsecureMail = true
+	cfg.EncryptAtRest = true
+	cfg.Sync.MaxMessageBytes = 1 << 20
+
+	kek, err := crypto.LoadOrCreateKEK(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := persistence.Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.EnableEncryption(kek)
+	t.Cleanup(func() { store.Close() })
+	local, _ := objectstore.NewLocal(dir)
+	enc := objectstore.NewEncrypted(local, kek)
+	secrets := secretstore.NewLocal(dir, kek)
+	pop := &fakePOP3{messages: map[string]string{}}
+	app, err := New(cfg, store, enc, secrets, pop, &fakeSMTP{}, &fakeAI{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(app.Shutdown)
+
+	acc := mustAccount(t, app)
+	const marker = "ROTATIONMARKER-XYZ"
+	pop.messages["u1"] = testMail("m1", "rotate me", "body with "+marker)
+	syncAndWait(t, app, acc.ID)
+	res, _ := app.Search(context.Background(), domain.SearchQuery{})
+	msgID := res.Messages[0].ID
+
+	// Rotate + rewrap everything.
+	if _, err := kek.Rotate(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := secrets.RewrapAll(context.Background()); err != nil {
+		t.Fatalf("rewrap secrets: %v", err)
+	}
+	if _, err := enc.RewrapAll(); err != nil {
+		t.Fatalf("rewrap objects: %v", err)
+	}
+	if _, err := store.RewrapBodies(context.Background()); err != nil {
+		t.Fatalf("rewrap bodies: %v", err)
+	}
+	// Retire the original key: only rewrapped data remains decryptable.
+	if err := kek.RetireVersion(1); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := WithActor(context.Background(), "test")
+	// Secret still usable (POP3 auth path acquires + reveals).
+	h, err := app.Secrets.Acquire(ctx, acc.POP3Secret, domain.PurposeTest)
+	if err != nil || string(h.Reveal()) != "pop3-password" {
+		t.Fatalf("secret after rotation: %v", err)
+	}
+	// Body decrypts.
+	mv, err := app.GetMessage(ctx, msgID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(mv.Body.TextBody, marker) {
+		t.Fatal("body must decrypt after rotation + retirement")
+	}
+	// Raw object decrypts.
+	rc, err := app.GetRawMessage(ctx, msgID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := io.ReadAll(rc)
+	rc.Close()
+	if !bytes.Contains(raw, []byte(marker)) {
+		t.Fatal("raw MIME must decrypt after rotation + retirement")
+	}
+}
+
 // MIME-012/015: a dangerous attachment is recorded as blocked, its content
 // is not retained, and download is refused; a clean one downloads normally.
 func TestAttachmentScanningOnIngest(t *testing.T) {

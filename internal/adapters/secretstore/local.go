@@ -149,4 +149,34 @@ func (s *LocalStore) Revoke(ctx context.Context, ref domain.SecretRef) error {
 	return s.save(m)
 }
 
+// RewrapAll re-wraps every stored secret envelope under the KEK's current
+// version (§11.3 회전). Returns the number of envelopes rewrapped.
+func (s *LocalStore) RewrapAll(ctx context.Context) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m, err := s.load()
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for ref, e := range m {
+		if e.Revoked || e.Envelope == nil {
+			continue
+		}
+		changed, err := s.kek.Rewrap(e.Envelope, aad(ref, e.Owner, e.Type))
+		if err != nil {
+			return n, fmt.Errorf("rewrap secret %s: %w", ref, err)
+		}
+		if changed {
+			n++
+		}
+	}
+	if n > 0 {
+		if err := s.save(m); err != nil {
+			return n, err
+		}
+	}
+	return n, nil
+}
+
 var _ domain.SecretStore = (*LocalStore)(nil)

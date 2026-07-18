@@ -54,6 +54,63 @@ func (s *Store) Close() error { return s.db.Close() }
 // content search is not indexed at rest.
 func (s *Store) EnableEncryption(kek *crypto.KEK) { s.kek = kek }
 
+// RewrapBodies re-encrypts encrypted body columns under the KEK's current
+// version (§11.3 회전). No-op when encryption is disabled. Returns the number
+// of rows rewrapped.
+func (s *Store) RewrapBodies(ctx context.Context) (int, error) {
+	if s.kek == nil {
+		return 0, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT message_id, text_body, html_sanitized FROM message_bodies`)
+	if err != nil {
+		return 0, err
+	}
+	type row struct{ id, text, html string }
+	var todo []row
+	for rows.Next() {
+		var r row
+		var html sql.NullString
+		if err := rows.Scan(&r.id, &r.text, &html); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		r.html = html.String
+		if strings.HasPrefix(r.text, bodyEncPrefix) || strings.HasPrefix(r.html, bodyEncPrefix) {
+			todo = append(todo, r)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, r := range todo {
+		text, err := s.openBody(r.id, "text", r.text)
+		if err != nil {
+			return n, err
+		}
+		html, err := s.openBody(r.id, "html", r.html)
+		if err != nil {
+			return n, err
+		}
+		sealedText, err := s.sealBody(r.id, "text", text)
+		if err != nil {
+			return n, err
+		}
+		sealedHTML, err := s.sealBody(r.id, "html", html)
+		if err != nil {
+			return n, err
+		}
+		if _, err := s.db.ExecContext(ctx,
+			`UPDATE message_bodies SET text_body=?, html_sanitized=? WHERE message_id=?`,
+			sealedText, sealedHTML, r.id); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
+}
+
 const bodyEncPrefix = "enc:v1:"
 
 // sealBody encrypts a body field when a KEK is configured, tagging the

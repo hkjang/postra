@@ -89,5 +89,34 @@ func (e *Encrypted) Get(u string) (io.ReadCloser, error) {
 
 func (e *Encrypted) Delete(u string) error { return e.inner.Delete(u) }
 
+// RewrapAll re-wraps every stored object envelope under the KEK's current
+// version. Objects are read, rewrapped in memory, and written back in place.
+func (e *Encrypted) RewrapAll() (int, error) {
+	n := 0
+	err := e.inner.Walk(func(kind, name string, blob []byte) error {
+		var env crypto.Envelope
+		if err := json.Unmarshal(blob, &env); err != nil {
+			return nil // not an envelope; skip
+		}
+		changed, err := e.kek.Rewrap(&env, objectAAD(kind, name))
+		if err != nil {
+			return fmt.Errorf("rewrap object %s/%s: %w", kind, name, err)
+		}
+		if !changed {
+			return nil
+		}
+		nb, err := json.Marshal(&env)
+		if err != nil {
+			return err
+		}
+		if err := e.inner.Overwrite(kind, name, nb); err != nil {
+			return err
+		}
+		n++
+		return nil
+	})
+	return n, err
+}
+
 var _ Store = (*Encrypted)(nil)
 var _ Store = (*Local)(nil)

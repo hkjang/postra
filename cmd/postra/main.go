@@ -163,6 +163,9 @@ func run(cmd string, args []string) error {
 		defer app.Shutdown()
 		return mcpserver.RunStdio(context.Background(), app)
 
+	case "key":
+		return keyCmd(args)
+
 	case "secret":
 		return secretCmd(args)
 
@@ -311,6 +314,85 @@ func warnIfNonLoopback(cfg config.Config) {
 				"addr", addr)
 		}
 	}
+}
+
+// ---------- key subcommands ----------
+
+// keyCmd handles KEK lifecycle: rotate generates a new key version and
+// rewraps existing secrets, encrypted objects, and encrypted body columns
+// under it (§11.3 회전, SEC-KEY-010/012).
+func keyCmd(args []string) error {
+	if len(args) < 1 {
+		return errors.New("usage: postra key rotate [--retire-old]")
+	}
+	sub, rest := args[0], args[1:]
+	fs := flag.NewFlagSet("key "+sub, flag.ExitOnError)
+	configPath := fs.String("config", "", "config file path")
+	retireOld := fs.Bool("retire-old", false, "retire all prior key versions after rewrap")
+	fs.Parse(rest)
+
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		return err
+	}
+	kek, err := crypto.LoadOrCreateKEK(cfg.DataDir)
+	if err != nil {
+		return err
+	}
+
+	switch sub {
+	case "rotate":
+		if cfg.StorageDriver == "postgres" {
+			return errors.New("key rotate currently supports the sqlite backend (body-column encryption)")
+		}
+		prev := kek.CurrentVersion()
+		nv, err := kek.Rotate()
+		if err != nil {
+			return err
+		}
+		fmt.Printf("rotated KEK: v%d -> v%d\n", prev, nv)
+
+		secrets := secretstore.NewLocal(cfg.DataDir, kek)
+		ns, err := secrets.RewrapAll(context.Background())
+		if err != nil {
+			return fmt.Errorf("rewrap secrets: %w", err)
+		}
+		fmt.Printf("rewrapped secrets: %d\n", ns)
+
+		if cfg.EncryptAtRest {
+			local, err := objectstore.NewLocal(cfg.DataDir)
+			if err != nil {
+				return err
+			}
+			no, err := objectstore.NewEncrypted(local, kek).RewrapAll()
+			if err != nil {
+				return fmt.Errorf("rewrap objects: %w", err)
+			}
+			fmt.Printf("rewrapped objects: %d\n", no)
+
+			store, err := persistence.Open(filepath.Join(cfg.DataDir, "postra.db"))
+			if err != nil {
+				return err
+			}
+			defer store.Close()
+			store.EnableEncryption(kek)
+			nb, err := store.RewrapBodies(context.Background())
+			if err != nil {
+				return fmt.Errorf("rewrap bodies: %w", err)
+			}
+			fmt.Printf("rewrapped bodies: %d\n", nb)
+		}
+
+		if *retireOld {
+			for v := 1; v < nv; v++ {
+				kek.RetireVersion(v)
+			}
+			fmt.Printf("retired key versions 1..%d\n", nv-1)
+		}
+		fmt.Println("key rotation complete")
+		return nil
+	}
+	return fmt.Errorf("unknown key subcommand %q", sub)
 }
 
 // ---------- secret subcommands ----------
