@@ -37,7 +37,30 @@ func NewServer(app *application.App) *mcp.Server {
 	registerAITools(s, app)
 	registerComposeTools(s, app)
 	registerAuditTools(s, app)
+	registerResources(s, app)
+	registerPrompts(s, app)
 	return s
+}
+
+// toolCatalogSummary backs the schema://mail/tools resource: a stable,
+// non-sensitive listing of tool names grouped by capability.
+func toolCatalogSummary() map[string]any {
+	return map[string]any{
+		"protocol_version": "2025-11-25 (baseline)",
+		"groups": map[string][]string{
+			"account_secret": {"mail_account_list", "mail_account_get", "mail_account_create",
+				"mail_account_update", "mail_account_test", "mail_account_disable",
+				"secret_registration_begin", "secret_rotation_begin", "secret_revoke"},
+			"sync":  {"mail_sync_start", "job_status", "job_cancel"},
+			"query": {"mail_search", "mail_message_get", "mail_thread_get", "mail_attachment_list"},
+			"ai": {"mail_summarize", "mail_classify", "mail_action_items_extract",
+				"mail_entities_extract", "mail_phishing_inspect", "mail_thread_summarize", "mail_question_answer"},
+			"compose_send": {"mail_draft_create", "mail_draft_update", "mail_draft_rewrite",
+				"mail_send_preview", "mail_send_request_approval", "mail_send", "mail_outbound_status"},
+			"audit": {"mail_audit_search"},
+		},
+		"note": "Secret values are never accepted as tool arguments; use secret_registration_begin.",
+	}
 }
 
 // RunStdio serves MCP over stdin/stdout (local transport, §10.1).

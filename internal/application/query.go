@@ -100,3 +100,19 @@ func (a *App) GetAttachment(ctx context.Context, messageID, attachmentID string)
 func (a *App) SearchAudit(ctx context.Context, limit int) ([]domain.AuditEvent, error) {
 	return a.Store.SearchAudit(ctx, DefaultUserID, limit)
 }
+
+// PolicySnapshot returns the currently applied, non-sensitive policy for the
+// MCP resource policy://mail/current. It never includes secrets or keys.
+func (a *App) PolicySnapshot() map[string]any {
+	return map[string]any{
+		"allow_insecure_mail":    a.Cfg.AllowInsecureMail,
+		"allow_private_hosts":    a.Cfg.AllowPrivateHosts,
+		"encrypt_at_rest":        a.Cfg.EncryptAtRest,
+		"ai_allow_external":      a.Cfg.AI.AllowExternal,
+		"ai_model":               a.Cfg.AI.Model,
+		"send_requires_approval": true,
+		"server_delete_default":  "retain",
+		"max_message_bytes":      a.Cfg.Sync.MaxMessageBytes,
+		"max_per_sync":           a.Cfg.Sync.MaxPerSync,
+	}
+}
