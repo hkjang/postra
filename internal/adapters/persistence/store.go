@@ -179,6 +179,13 @@ CREATE TABLE IF NOT EXISTS jobs (
   stats_json TEXT, error TEXT, meta_json TEXT,
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
 
+CREATE TABLE IF NOT EXISTS embeddings (
+  message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  chunk_id INTEGER NOT NULL, user_id TEXT NOT NULL, account_id TEXT NOT NULL,
+  model TEXT NOT NULL, dim INTEGER NOT NULL, vec BLOB NOT NULL,
+  PRIMARY KEY (message_id, chunk_id));
+CREATE INDEX IF NOT EXISTS idx_embeddings_scope ON embeddings(user_id, account_id);
+
 CREATE TABLE IF NOT EXISTS audit_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL,
   user_id TEXT, actor TEXT, action TEXT NOT NULL, resource TEXT,
@@ -203,7 +210,9 @@ func NewID(prefix string) string {
 
 func now() int64 { return time.Now().Unix() }
 
-var ErrNotFound = errors.New("not found")
+// ErrNotFound aliases the canonical port error so existing callers keep
+// working while transports match on domain.ErrNotFound.
+var ErrNotFound = domain.ErrNotFound
 
 // ---------- users ----------
 

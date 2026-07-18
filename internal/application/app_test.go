@@ -106,6 +106,9 @@ func (f *fakeSMTP) Send(ctx context.Context, opts domain.SMTPSendOptions, env do
 type fakeAI struct {
 	lastRequest domain.GenerationRequest
 	response    string
+	// embed maps a substring to the vector returned when the input contains
+	// it; falls back to a zero-ish vector. Lets tests control similarity.
+	embed map[string][]float32
 }
 
 func (f *fakeAI) Generate(ctx context.Context, req domain.GenerationRequest) (domain.GenerationResult, error) {
@@ -115,6 +118,21 @@ func (f *fakeAI) Generate(ctx context.Context, req domain.GenerationRequest) (do
 		resp = `{"summary":"test summary","requests":[],"dates":[],"confidence":0.9}`
 	}
 	return domain.GenerationResult{Text: resp, Model: "fake-model", InputHash: "h"}, nil
+}
+
+func (f *fakeAI) Embed(ctx context.Context, req domain.EmbeddingRequest) (domain.EmbeddingResult, error) {
+	out := domain.EmbeddingResult{Model: "fake-embed"}
+	for _, in := range req.Input {
+		vec := []float32{0.01, 0.01, 0.01}
+		for sub, v := range f.embed {
+			if strings.Contains(in, sub) {
+				vec = v
+				break
+			}
+		}
+		out.Vectors = append(out.Vectors, vec)
+	}
+	return out, nil
 }
 
 // ---------- harness ----------
@@ -658,6 +676,61 @@ func TestManyRecipientWarning(t *testing.T) {
 	}
 	if len(pv.Warnings) == 0 {
 		t.Fatal("expected a many-recipient warning")
+	}
+}
+
+// Semantic search: embeddings are built, and a query embedding retrieves the
+// message whose vector points the same direction (§7 의미 검색). Uses the
+// fake embedder to control similarity, so it runs on SQLite here; PostgreSQL
+// uses pgvector for the same behavior at scale.
+func TestSemanticSearch(t *testing.T) {
+	app, pop, _, aiP := newTestApp(t)
+	// Distinct directions per topic; the query aligns with "finance".
+	aiP.embed = map[string][]float32{
+		"quarterly budget report":  {1, 0, 0},
+		"team lunch invitation":    {0, 1, 0},
+		"server outage postmortem": {0, 0, 1},
+		"finance":                  {1, 0, 0}, // query term aligns with budget
+	}
+	acc := mustAccount(t, app)
+	pop.messages["u1"] = testMail("m1", "quarterly budget report", "Q3 numbers attached")
+	pop.messages["u2"] = testMail("m2", "team lunch invitation", "Friday noon")
+	pop.messages["u3"] = testMail("m3", "server outage postmortem", "root cause analysis")
+	syncAndWait(t, app, acc.ID)
+
+	ctx := WithActor(context.Background(), "test")
+	job, err := app.BuildEmbeddings(ctx, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// wait for embed job
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		j, _ := app.GetJob(ctx, job.ID)
+		if j.Status != domain.JobQueued && j.Status != domain.JobRunning {
+			if j.Stats["embedded"] != 3 {
+				t.Fatalf("embedded=%d, want 3 (%s)", j.Stats["embedded"], j.Error)
+			}
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	hits, err := app.SemanticSearch(ctx, "finance", "", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) == 0 {
+		t.Fatal("no semantic hits")
+	}
+	if hits[0].Message.Subject != "quarterly budget report" {
+		t.Fatalf("top hit = %q, want budget report (scores: %+v)", hits[0].Message.Subject, hits)
+	}
+	if hits[0].Score <= hits[len(hits)-1].Score && len(hits) > 1 {
+		t.Fatal("results should be ranked by descending score")
+	}
+	if hits[0].Reason == "" {
+		t.Fatal("hit should include a reason (§7 결과 설명)")
 	}
 }
 

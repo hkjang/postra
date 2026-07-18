@@ -24,6 +24,7 @@ import (
 	"postra/internal/adapters/ai"
 	"postra/internal/adapters/objectstore"
 	"postra/internal/adapters/persistence"
+	"postra/internal/adapters/pgstore"
 	"postra/internal/adapters/pop3"
 	"postra/internal/adapters/secretstore"
 	adsmtp "postra/internal/adapters/smtp"
@@ -83,10 +84,12 @@ func loadApp(configPath string) (*application.App, config.Config, error) {
 	if err != nil {
 		return nil, cfg, err
 	}
-	store, err := persistence.Open(filepath.Join(cfg.DataDir, "postra.db"))
+
+	store, err := openStorage(cfg, kek)
 	if err != nil {
 		return nil, cfg, err
 	}
+
 	local, err := objectstore.NewLocal(cfg.DataDir)
 	if err != nil {
 		return nil, cfg, err
@@ -94,12 +97,35 @@ func loadApp(configPath string) (*application.App, config.Config, error) {
 	var objects objectstore.Store = local
 	if cfg.EncryptAtRest {
 		objects = objectstore.NewEncrypted(local, kek)
-		store.EnableEncryption(kek)
 	}
 	secrets := secretstore.NewLocal(cfg.DataDir, kek)
 	app, err := application.New(cfg, store, objects, secrets,
 		pop3.Dialer{}, adsmtp.Client{}, ai.New(cfg.AI, secrets))
 	return app, cfg, err
+}
+
+// openStorage selects the persistence backend. SQLite is the personal/
+// embedded default (with optional at-rest body encryption); PostgreSQL is
+// the server/multi-user backend with pgvector semantic search.
+func openStorage(cfg config.Config, kek *crypto.KEK) (application.Storage, error) {
+	switch cfg.StorageDriver {
+	case "", "sqlite":
+		st, err := persistence.Open(filepath.Join(cfg.DataDir, "postra.db"))
+		if err != nil {
+			return nil, err
+		}
+		if cfg.EncryptAtRest {
+			st.EnableEncryption(kek) // body-column encryption (SQLite only)
+		}
+		return st, nil
+	case "postgres":
+		if cfg.PostgresDSN == "" {
+			return nil, fmt.Errorf("storage_driver=postgres requires postgres_dsn")
+		}
+		return pgstore.Open(context.Background(), cfg.PostgresDSN)
+	default:
+		return nil, fmt.Errorf("unknown storage_driver %q (sqlite|postgres)", cfg.StorageDriver)
+	}
 }
 
 func run(cmd string, args []string) error {

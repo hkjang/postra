@@ -425,6 +425,37 @@ func registerAITools(s *mcp.Server, app *application.App) {
 	})
 
 	mcp.AddTool(s, &mcp.Tool{
+		Name:        "mail_embeddings_build",
+		Description: "Build embeddings for stored messages lacking them, enabling semantic search. Returns a job_id.",
+		Annotations: aiAnn,
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct {
+		AccountID string `json:"account_id,omitempty" jsonschema:"optional account scope"`
+		Max       int    `json:"max,omitempty" jsonschema:"max messages to embed this run"`
+	}) (*mcp.CallToolResult, any, error) {
+		job, err := app.BuildEmbeddings(ctx, in.AccountID, in.Max)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, job, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "mail_semantic_search",
+		Description: "Meaning-based search over embedded messages. Returns messages ranked by similarity with scores and a short reason.",
+		Annotations: aiAnn,
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct {
+		Query     string `json:"query" jsonschema:"natural-language query"`
+		AccountID string `json:"account_id,omitempty" jsonschema:"optional account scope"`
+		Limit     int    `json:"limit,omitempty" jsonschema:"max results, default 10"`
+	}) (*mcp.CallToolResult, any, error) {
+		hits, err := app.SemanticSearch(ctx, in.Query, in.AccountID, in.Limit)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, map[string]any{"results": hits}, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
 		Name:        "mail_question_answer",
 		Description: "Answer a question from the user's own mailbox, with evidence message IDs.",
 		Annotations: aiAnn,

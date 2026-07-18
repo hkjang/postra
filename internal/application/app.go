@@ -13,7 +13,6 @@ import (
 	"sync"
 
 	"postra/internal/adapters/objectstore"
-	"postra/internal/adapters/persistence"
 	"postra/internal/domain"
 	"postra/internal/platform/config"
 )
@@ -24,7 +23,7 @@ const DefaultUserID = "usr_local"
 
 type App struct {
 	Cfg     config.Config
-	Store   *persistence.Store
+	Store   Storage
 	Objects objectstore.Store
 	Secrets domain.SecretStore
 	POP3    domain.POP3Dialer
@@ -38,7 +37,7 @@ type App struct {
 	workerGroup sync.WaitGroup
 }
 
-func New(cfg config.Config, store *persistence.Store, objects objectstore.Store,
+func New(cfg config.Config, store Storage, objects objectstore.Store,
 	secrets domain.SecretStore, pop3 domain.POP3Dialer, smtp domain.SMTPClient, ai domain.AIProvider) (*App, error) {
 	bg, cancel := context.WithCancel(context.Background())
 	a := &App{

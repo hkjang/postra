@@ -15,6 +15,12 @@ type Config struct {
 	// DataDir holds the SQLite DB, object store, and local secret store.
 	DataDir string `json:"data_dir"`
 
+	// StorageDriver selects the persistence backend: "sqlite" (default,
+	// personal/embedded) or "postgres" (server/multi-user, enables pgvector
+	// semantic search at scale). PostgresDSN is required for "postgres".
+	StorageDriver string `json:"storage_driver"`
+	PostgresDSN   string `json:"postgres_dsn"`
+
 	// HTTPAddr is the REST API bind address (e.g. "127.0.0.1:8480").
 	HTTPAddr string `json:"http_addr"`
 	// MCPHTTPAddr is the Streamable HTTP MCP bind address (e.g. "127.0.0.1:8481").
@@ -91,6 +97,7 @@ func Default() Config {
 	home, _ := os.UserHomeDir()
 	return Config{
 		DataDir:           filepath.Join(home, ".postra"),
+		StorageDriver:     "sqlite",
 		HTTPAddr:          "127.0.0.1:8480",
 		MCPHTTPAddr:       "127.0.0.1:8481",
 		AllowPrivateHosts: true,
@@ -148,6 +155,8 @@ func applyEnv(cfg *Config) {
 		}
 	}
 	set("POSTRA_DATA_DIR", &cfg.DataDir)
+	set("POSTRA_STORAGE_DRIVER", &cfg.StorageDriver)
+	set("POSTRA_POSTGRES_DSN", &cfg.PostgresDSN)
 	set("POSTRA_HTTP_ADDR", &cfg.HTTPAddr)
 	set("POSTRA_MCP_HTTP_ADDR", &cfg.MCPHTTPAddr)
 	set("POSTRA_API_TOKEN", &cfg.APIToken)

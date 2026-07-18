@@ -5,6 +5,11 @@ import (
 	"errors"
 )
 
+// ErrNotFound is the canonical "record does not exist" error returned by any
+// Storage adapter, so transports can map it to 404 without importing a
+// specific adapter package.
+var ErrNotFound = errors.New("not found")
+
 // SecretRef is an opaque reference to a secret held in a SecretStore.
 // Only references travel through the application layer, REST DTOs, and MCP
 // tool arguments — never secret values (SEC-KEY-001/004).

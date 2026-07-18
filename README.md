@@ -1,4 +1,9 @@
+<p align="center">
+  <img src="assets/logo.png" width="120" alt="Postra Logo"/>
+</p>
+
 # Postra — 개인 메일 AI · MCP 플랫폼
+
 
 Go로 작성한 개인/사내 구축형 메일 서비스입니다. 사용자의 **POP3/SMTP** 계정을 연결해 메일을 안전하게 **수집·검색·분석·작성·발송**하며, 모든 업무 기능을 **REST API / CLI / MCP** 세 인터페이스로 동일하게 제공합니다.
 
@@ -41,6 +46,17 @@ go build -o postra ./cmd/postra
 ## 발송 한도·경고
 
 `config.json` 의 `send.max_per_minute` / `send.max_per_hour` 로 계정별 발송 속도를 제한합니다(0=무제한, 기본 20/분·200/시간). 멱등 재실행은 한도에 계산되지 않습니다. `send.warn_recipients` 이상 수신자를 대상으로 하면 발송 미리보기에 경고가 표시됩니다.
+
+## 저장 백엔드 · 의미 검색
+
+`storage_driver` 로 백엔드를 선택합니다.
+
+- `sqlite`(기본) — 개인/임베디드. FTS5 전문 검색, 본문 at-rest 암호화.
+- `postgres` — 서버/다중 사용자. `postgres_dsn` 필요. tsvector 전문 검색 + **pgvector** 의미 검색. `CREATE EXTENSION vector` 가능한 인스턴스가 필요합니다.
+
+**의미(임베딩) 검색**은 두 백엔드 모두에서 동작합니다. `mail_embeddings_build`(또는 `POST /api/embeddings/build`)로 저장된 메일의 임베딩을 생성한 뒤 `mail_semantic_search`(`POST /api/semantic-search`)로 유사도 순 검색합니다. SQLite에서는 코사인 유사도를 Go로 계산하고, Postgres에서는 pgvector `<=>` 로 가속합니다. 결과에는 유사도 점수와 선택 이유가 포함됩니다. 임베딩 모델은 `ai.embed_model`(OpenAI 호환 `/embeddings`)로 지정합니다.
+
+Postgres 어댑터 통합 테스트는 `POSTRA_TEST_PG` DSN이 설정된 경우에만 실행됩니다(미설정 시 skip).
 
 ## 오프라인 / 격리망
 

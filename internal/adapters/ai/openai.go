@@ -135,6 +135,74 @@ func (p *OpenAICompat) Generate(ctx context.Context, req domain.GenerationReques
 	}, nil
 }
 
+type embedRequest struct {
+	Model string   `json:"model"`
+	Input []string `json:"input"`
+}
+
+type embedResponse struct {
+	Data []struct {
+		Embedding []float32 `json:"embedding"`
+	} `json:"data"`
+	Error *struct {
+		Message string `json:"message"`
+	} `json:"error,omitempty"`
+}
+
+// Embed calls the OpenAI-compatible /embeddings endpoint. EmbedModel falls
+// back to the chat model when unset (some local servers serve both).
+func (p *OpenAICompat) Embed(ctx context.Context, req domain.EmbeddingRequest) (domain.EmbeddingResult, error) {
+	if len(req.Input) == 0 {
+		return domain.EmbeddingResult{}, nil
+	}
+	model := p.cfg.EmbedModel
+	if model == "" {
+		model = p.cfg.Model
+	}
+	b, err := json.Marshal(embedRequest{Model: model, Input: req.Input})
+	if err != nil {
+		return domain.EmbeddingResult{}, err
+	}
+	url := strings.TrimSuffix(p.cfg.BaseURL, "/") + "/embeddings"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(b))
+	if err != nil {
+		return domain.EmbeddingResult{}, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if p.cfg.APIKeyRef != "" {
+		h, err := p.secrets.Acquire(ctx, domain.SecretRef(p.cfg.APIKeyRef), domain.PurposeAIKey)
+		if err != nil {
+			return domain.EmbeddingResult{}, fmt.Errorf("acquire AI key: %w", err)
+		}
+		httpReq.Header.Set("Authorization", "Bearer "+string(h.Reveal()))
+		defer h.Zero()
+	}
+	resp, err := p.client.Do(httpReq)
+	if err != nil {
+		return domain.EmbeddingResult{}, fmt.Errorf("embed request: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 50<<20))
+	if err != nil {
+		return domain.EmbeddingResult{}, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return domain.EmbeddingResult{}, fmt.Errorf("embed API %d: %s", resp.StatusCode, truncate(string(body), 300))
+	}
+	var er embedResponse
+	if err := json.Unmarshal(body, &er); err != nil {
+		return domain.EmbeddingResult{}, fmt.Errorf("embed response parse: %w", err)
+	}
+	if er.Error != nil {
+		return domain.EmbeddingResult{}, fmt.Errorf("embed API error: %s", er.Error.Message)
+	}
+	out := domain.EmbeddingResult{Model: model, Vectors: make([][]float32, len(er.Data))}
+	for i, d := range er.Data {
+		out.Vectors[i] = d.Embedding
+	}
+	return out, nil
+}
+
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s

@@ -16,6 +16,9 @@ type MessageView struct {
 	Message     domain.Message      `json:"message"`
 	Body        *domain.MessageBody `json:"body,omitempty"`
 	Attachments []domain.Attachment `json:"attachments,omitempty"`
+	// Score and Reason are populated by semantic search (§7 결과 설명).
+	Score  float64 `json:"score,omitempty"`
+	Reason string  `json:"reason,omitempty"`
 }
 
 func (a *App) GetMessage(ctx context.Context, id string, includeBody bool) (*MessageView, error) {

@@ -1,0 +1,935 @@
+// Package pgstore implements the application.Storage port on PostgreSQL
+// (pgx, pure Go) for server / multi-user deployments. Full-text search uses
+// tsvector + GIN; semantic search uses the pgvector extension.
+//
+// This adapter mirrors the SQLite adapter's semantics. Body-column
+// encryption (the SQLite personal-mode feature) is not applied here; server
+// deployments are expected to use database/volume encryption. Integration
+// tests run only when POSTRA_TEST_PG is set to a DSN.
+package pgstore
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"postra/internal/application"
+	"postra/internal/domain"
+)
+
+type Store struct {
+	pool *pgxpool.Pool
+}
+
+// Open connects to PostgreSQL and applies the schema. The pgvector extension
+// is required for semantic search.
+func Open(ctx context.Context, dsn string) (*Store, error) {
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		return nil, err
+	}
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, err
+	}
+	s := &Store{pool: pool}
+	if err := s.migrate(ctx); err != nil {
+		pool.Close()
+		return nil, err
+	}
+	return s, nil
+}
+
+func (s *Store) Close() error { s.pool.Close(); return nil }
+
+func now() int64 { return time.Now().Unix() }
+
+func NewID(prefix string) string {
+	b := make([]byte, 10)
+	rand.Read(b)
+	return prefix + "_" + hex.EncodeToString(b)
+}
+
+var ErrNotFound = domain.ErrNotFound
+
+func (s *Store) migrate(ctx context.Context) error {
+	stmts := []string{
+		`CREATE EXTENSION IF NOT EXISTS vector`,
+		`CREATE TABLE IF NOT EXISTS users (
+			id TEXT PRIMARY KEY, login_id TEXT UNIQUE NOT NULL,
+			status TEXT NOT NULL DEFAULT 'active', timezone TEXT DEFAULT 'UTC', created_at BIGINT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS mail_accounts (
+			id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL, email TEXT NOT NULL, status TEXT NOT NULL,
+			pop3_host TEXT, pop3_port INT, pop3_security TEXT, pop3_username TEXT, pop3_secret_ref TEXT,
+			smtp_host TEXT, smtp_port INT, smtp_security TEXT, smtp_username TEXT, smtp_auth TEXT, smtp_secret_ref TEXT,
+			insecure_skip_verify BOOL NOT NULL DEFAULT false, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS credential_refs (
+			ref TEXT PRIMARY KEY, owner_id TEXT NOT NULL, secret_type TEXT NOT NULL, provider TEXT NOT NULL,
+			label TEXT, status TEXT NOT NULL DEFAULT 'active', version INT NOT NULL DEFAULT 1,
+			created_at BIGINT NOT NULL, last_used_at BIGINT)`,
+		`CREATE TABLE IF NOT EXISTS sync_checkpoints (
+			account_id TEXT NOT NULL, uidl TEXT NOT NULL, message_id TEXT, synced_at BIGINT NOT NULL,
+			PRIMARY KEY (account_id, uidl))`,
+		`CREATE TABLE IF NOT EXISTS messages (
+			id TEXT PRIMARY KEY, user_id TEXT NOT NULL, account_id TEXT NOT NULL, uidl TEXT,
+			message_id_hdr TEXT, subject TEXT, from_name TEXT, from_email TEXT,
+			to_json TEXT, cc_json TEXT, reply_to_json TEXT,
+			date BIGINT, size BIGINT, raw_hash TEXT NOT NULL, raw_uri TEXT NOT NULL, thread_id TEXT,
+			has_attachments BOOL NOT NULL DEFAULT false, in_reply_to TEXT, refs TEXT, auth_results TEXT, parse_error TEXT,
+			created_at BIGINT NOT NULL, search_tsv tsvector)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_hash ON messages(account_id, raw_hash)`,
+		`CREATE INDEX IF NOT EXISTS idx_messages_account_date ON messages(account_id, date DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_messages_tsv ON messages USING GIN(search_tsv)`,
+		`CREATE TABLE IF NOT EXISTS message_bodies (
+			message_id TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+			text_body TEXT, html_sanitized TEXT, charset TEXT)`,
+		`CREATE TABLE IF NOT EXISTS attachments (
+			id TEXT PRIMARY KEY, message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+			name TEXT, mime_type TEXT, size BIGINT, hash TEXT, storage_uri TEXT, inline_flag BOOL DEFAULT false)`,
+		`CREATE TABLE IF NOT EXISTS threads (
+			id TEXT PRIMARY KEY, user_id TEXT NOT NULL, account_id TEXT NOT NULL,
+			subject_key TEXT, last_message_at BIGINT, message_count INT DEFAULT 0)`,
+		`CREATE INDEX IF NOT EXISTS idx_threads_key ON threads(account_id, subject_key)`,
+		`CREATE TABLE IF NOT EXISTS analyses (
+			id TEXT PRIMARY KEY, user_id TEXT NOT NULL, target_type TEXT NOT NULL, target_id TEXT NOT NULL,
+			analysis_type TEXT NOT NULL, result_json TEXT NOT NULL, model TEXT, prompt_version TEXT,
+			input_hash TEXT, created_at BIGINT NOT NULL)`,
+		`CREATE INDEX IF NOT EXISTS idx_analyses_cache ON analyses(analysis_type, input_hash, model)`,
+		`CREATE TABLE IF NOT EXISTS drafts (
+			id TEXT PRIMARY KEY, user_id TEXT NOT NULL, account_id TEXT NOT NULL, kind TEXT NOT NULL,
+			reply_to_message_id TEXT, status TEXT NOT NULL, current_version INT NOT NULL DEFAULT 0,
+			created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS draft_versions (
+			draft_id TEXT NOT NULL REFERENCES drafts(id) ON DELETE CASCADE, version INT NOT NULL,
+			subject TEXT, body_text TEXT, body_html TEXT, to_json TEXT, cc_json TEXT, bcc_json TEXT,
+			author TEXT NOT NULL, created_at BIGINT NOT NULL, PRIMARY KEY (draft_id, version))`,
+		`CREATE TABLE IF NOT EXISTS approvals (
+			id TEXT PRIMARY KEY, user_id TEXT NOT NULL, action_type TEXT NOT NULL, draft_id TEXT, draft_version INT,
+			payload_hash TEXT NOT NULL, token_hash TEXT NOT NULL, approver TEXT, expires_at BIGINT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'pending', created_at BIGINT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS outbound_messages (
+			id TEXT PRIMARY KEY, user_id TEXT NOT NULL, draft_id TEXT NOT NULL, draft_version INT NOT NULL,
+			idempotency_key TEXT UNIQUE, message_id_hdr TEXT, status TEXT NOT NULL, smtp_response TEXT,
+			attempts INT NOT NULL DEFAULT 0, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS jobs (
+			id TEXT PRIMARY KEY, user_id TEXT NOT NULL, type TEXT NOT NULL, account_id TEXT, status TEXT NOT NULL,
+			progress TEXT, stats_json TEXT, error TEXT, meta_json TEXT, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS audit_events (
+			id BIGSERIAL PRIMARY KEY, at BIGINT NOT NULL, user_id TEXT, actor TEXT, action TEXT NOT NULL,
+			resource TEXT, result TEXT NOT NULL, detail TEXT)`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_events(at DESC)`,
+		`CREATE TABLE IF NOT EXISTS embeddings (
+			message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE, chunk_id INT NOT NULL,
+			user_id TEXT NOT NULL, account_id TEXT NOT NULL, model TEXT NOT NULL, dim INT NOT NULL,
+			vec vector, PRIMARY KEY (message_id, chunk_id))`,
+		`CREATE INDEX IF NOT EXISTS idx_embeddings_scope ON embeddings(user_id, account_id)`,
+	}
+	for _, st := range stmts {
+		if _, err := s.pool.Exec(ctx, st); err != nil {
+			return fmt.Errorf("migrate: %w (stmt: %.60s)", err, st)
+		}
+	}
+	return nil
+}
+
+func addrJSON(a []domain.Address) string {
+	if len(a) == 0 {
+		return ""
+	}
+	b, _ := json.Marshal(a)
+	return string(b)
+}
+
+func addrFromJSON(s string) []domain.Address {
+	if s == "" {
+		return nil
+	}
+	var out []domain.Address
+	json.Unmarshal([]byte(s), &out)
+	return out
+}
+
+// vectorLiteral renders a []float32 as a pgvector text literal '[1,2,3]'.
+func vectorLiteral(v []float32) string {
+	parts := make([]string, len(v))
+	for i, f := range v {
+		parts[i] = strconv.FormatFloat(float64(f), 'g', -1, 32)
+	}
+	return "[" + strings.Join(parts, ",") + "]"
+}
+
+// ---------- users ----------
+
+func (s *Store) EnsureUser(ctx context.Context, id, loginID string) error {
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO users (id, login_id, created_at) VALUES ($1,$2,$3) ON CONFLICT (login_id) DO NOTHING`,
+		id, loginID, now())
+	return err
+}
+
+// ---------- accounts ----------
+
+const accountCols = `id,user_id,name,email,status,pop3_host,pop3_port,pop3_security,pop3_username,pop3_secret_ref,
+ smtp_host,smtp_port,smtp_security,smtp_username,smtp_auth,smtp_secret_ref,insecure_skip_verify,created_at,updated_at`
+
+func (s *Store) CreateAccount(ctx context.Context, a *domain.MailAccount) error {
+	a.CreatedAt, a.UpdatedAt = now(), now()
+	_, err := s.pool.Exec(ctx, `INSERT INTO mail_accounts (`+accountCols+`)
+	 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
+		a.ID, a.UserID, a.Name, a.Email, a.Status,
+		a.POP3Host, a.POP3Port, a.POP3Security, a.POP3Username, string(a.POP3Secret),
+		a.SMTPHost, a.SMTPPort, a.SMTPSecurity, a.SMTPUsername, a.SMTPAuth, string(a.SMTPSecret),
+		a.InsecureSkipVerify, a.CreatedAt, a.UpdatedAt)
+	return err
+}
+
+func scanAccount(row pgx.Row) (*domain.MailAccount, error) {
+	var a domain.MailAccount
+	var pop3Ref, smtpRef string
+	err := row.Scan(&a.ID, &a.UserID, &a.Name, &a.Email, &a.Status,
+		&a.POP3Host, &a.POP3Port, &a.POP3Security, &a.POP3Username, &pop3Ref,
+		&a.SMTPHost, &a.SMTPPort, &a.SMTPSecurity, &a.SMTPUsername, &a.SMTPAuth, &smtpRef,
+		&a.InsecureSkipVerify, &a.CreatedAt, &a.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	a.POP3Secret, a.SMTPSecret = domain.SecretRef(pop3Ref), domain.SecretRef(smtpRef)
+	return &a, nil
+}
+
+func (s *Store) GetAccount(ctx context.Context, userID, id string) (*domain.MailAccount, error) {
+	return scanAccount(s.pool.QueryRow(ctx, `SELECT `+accountCols+` FROM mail_accounts WHERE id=$1 AND user_id=$2`, id, userID))
+}
+
+func (s *Store) ListAccounts(ctx context.Context, userID string) ([]domain.MailAccount, error) {
+	rows, err := s.pool.Query(ctx, `SELECT `+accountCols+` FROM mail_accounts WHERE user_id=$1 ORDER BY created_at`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.MailAccount
+	for rows.Next() {
+		a, err := scanAccount(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *a)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) UpdateAccount(ctx context.Context, a *domain.MailAccount) error {
+	a.UpdatedAt = now()
+	ct, err := s.pool.Exec(ctx, `UPDATE mail_accounts SET
+	 name=$1,email=$2,status=$3,pop3_host=$4,pop3_port=$5,pop3_security=$6,pop3_username=$7,pop3_secret_ref=$8,
+	 smtp_host=$9,smtp_port=$10,smtp_security=$11,smtp_username=$12,smtp_auth=$13,smtp_secret_ref=$14,
+	 insecure_skip_verify=$15,updated_at=$16 WHERE id=$17 AND user_id=$18`,
+		a.Name, a.Email, a.Status, a.POP3Host, a.POP3Port, a.POP3Security, a.POP3Username, string(a.POP3Secret),
+		a.SMTPHost, a.SMTPPort, a.SMTPSecurity, a.SMTPUsername, a.SMTPAuth, string(a.SMTPSecret),
+		a.InsecureSkipVerify, a.UpdatedAt, a.ID, a.UserID)
+	if err != nil {
+		return err
+	}
+	if ct.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) SetAccountStatus(ctx context.Context, userID, id string, st domain.AccountStatus) error {
+	_, err := s.pool.Exec(ctx, `UPDATE mail_accounts SET status=$1, updated_at=$2 WHERE id=$3 AND user_id=$4`, st, now(), id, userID)
+	return err
+}
+
+// ---------- credentials ----------
+
+func (s *Store) PutCredentialRef(ctx context.Context, c domain.CredentialRef) error {
+	_, err := s.pool.Exec(ctx, `INSERT INTO credential_refs (ref,owner_id,secret_type,provider,label,status,version,created_at)
+	 VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (ref) DO UPDATE SET status=excluded.status, version=excluded.version`,
+		string(c.Ref), c.OwnerID, c.Type, c.Provider, c.Label, c.Status, c.Version, now())
+	return err
+}
+
+func (s *Store) TouchCredential(ctx context.Context, ref domain.SecretRef) {
+	s.pool.Exec(ctx, `UPDATE credential_refs SET last_used_at=$1 WHERE ref=$2`, now(), string(ref))
+}
+
+func (s *Store) SetCredentialStatus(ctx context.Context, ref domain.SecretRef, status string) error {
+	_, err := s.pool.Exec(ctx, `UPDATE credential_refs SET status=$1 WHERE ref=$2`, status, string(ref))
+	return err
+}
+
+// ---------- checkpoints ----------
+
+func (s *Store) HasCheckpoint(ctx context.Context, accountID, uidl string) (bool, error) {
+	var one int
+	err := s.pool.QueryRow(ctx, `SELECT 1 FROM sync_checkpoints WHERE account_id=$1 AND uidl=$2`, accountID, uidl).Scan(&one)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (s *Store) AddCheckpoint(ctx context.Context, accountID, uidl, messageID string) error {
+	_, err := s.pool.Exec(ctx, `INSERT INTO sync_checkpoints (account_id,uidl,message_id,synced_at)
+	 VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`, accountID, uidl, messageID, now())
+	return err
+}
+
+func (s *Store) StoredUIDLs(ctx context.Context, accountID string) (map[string]bool, error) {
+	rows, err := s.pool.Query(ctx, `SELECT uidl FROM sync_checkpoints WHERE account_id=$1`, accountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var u string
+		if err := rows.Scan(&u); err != nil {
+			return nil, err
+		}
+		out[u] = true
+	}
+	return out, rows.Err()
+}
+
+// ---------- messages ----------
+
+const msgCols = `id,user_id,account_id,uidl,message_id_hdr,subject,from_name,from_email,to_json,cc_json,reply_to_json,
+ date,size,raw_hash,raw_uri,thread_id,has_attachments,in_reply_to,refs,auth_results,parse_error,created_at`
+
+func (s *Store) InsertMessage(ctx context.Context, m *domain.Message, body *domain.MessageBody, atts []domain.Attachment) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	m.CreatedAt = now()
+	text := ""
+	if body != nil {
+		text = body.TextBody
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO messages (`+msgCols+`,search_tsv)
+	 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,
+	  to_tsvector('simple', coalesce($6,'')||' '||coalesce($8,'')||' '||$23))`,
+		m.ID, m.UserID, m.AccountID, m.UIDL, m.MessageID, m.Subject, m.From.Name, m.From.Email,
+		addrJSON(m.To), addrJSON(m.Cc), addrJSON(m.ReplyTo), m.Date, m.Size, m.RawHash, m.RawURI, m.ThreadID,
+		m.HasAttachments, m.InReplyTo, m.References, m.AuthResults, m.ParseError, m.CreatedAt, text)
+	if err != nil {
+		return err
+	}
+	if body != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO message_bodies (message_id,text_body,html_sanitized,charset) VALUES ($1,$2,$3,$4)`,
+			m.ID, body.TextBody, body.HTMLSanitized, body.Charset); err != nil {
+			return err
+		}
+	}
+	for _, at := range atts {
+		if _, err := tx.Exec(ctx, `INSERT INTO attachments (id,message_id,name,mime_type,size,hash,storage_uri,inline_flag)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, at.ID, m.ID, at.Name, at.MIMEType, at.Size, at.Hash, at.StorageURI, at.Inline); err != nil {
+			return err
+		}
+	}
+	if m.ThreadID != "" {
+		if _, err := tx.Exec(ctx, `UPDATE threads SET last_message_at=GREATEST(last_message_at,$1), message_count=message_count+1 WHERE id=$2`,
+			m.Date, m.ThreadID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *Store) IsDuplicateHash(ctx context.Context, accountID, rawHash string) (bool, error) {
+	var one int
+	err := s.pool.QueryRow(ctx, `SELECT 1 FROM messages WHERE account_id=$1 AND raw_hash=$2`, accountID, rawHash).Scan(&one)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func scanMessage(row pgx.Row) (*domain.Message, error) {
+	var m domain.Message
+	var toJ, ccJ, rtJ, threadID, parseErr, authRes, inReplyTo, refs *string
+	err := row.Scan(&m.ID, &m.UserID, &m.AccountID, &m.UIDL, &m.MessageID, &m.Subject, &m.From.Name, &m.From.Email,
+		&toJ, &ccJ, &rtJ, &m.Date, &m.Size, &m.RawHash, &m.RawURI, &threadID,
+		&m.HasAttachments, &inReplyTo, &refs, &authRes, &parseErr, &m.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	m.To, m.Cc, m.ReplyTo = addrFromJSON(deref(toJ)), addrFromJSON(deref(ccJ)), addrFromJSON(deref(rtJ))
+	m.ThreadID, m.ParseError, m.AuthResults = deref(threadID), deref(parseErr), deref(authRes)
+	m.InReplyTo, m.References = deref(inReplyTo), deref(refs)
+	return &m, nil
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+func (s *Store) GetMessage(ctx context.Context, userID, id string) (*domain.Message, error) {
+	return scanMessage(s.pool.QueryRow(ctx, `SELECT `+msgCols+` FROM messages WHERE id=$1 AND user_id=$2`, id, userID))
+}
+
+func (s *Store) GetBody(ctx context.Context, userID, messageID string) (*domain.MessageBody, error) {
+	var b domain.MessageBody
+	var html, charset *string
+	err := s.pool.QueryRow(ctx, `SELECT b.message_id, b.text_body, b.html_sanitized, b.charset
+	 FROM message_bodies b JOIN messages m ON m.id=b.message_id WHERE b.message_id=$1 AND m.user_id=$2`, messageID, userID).
+		Scan(&b.MessageID, &b.TextBody, &html, &charset)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	b.HTMLSanitized, b.Charset = deref(html), deref(charset)
+	return &b, nil
+}
+
+func (s *Store) ListAttachments(ctx context.Context, userID, messageID string) ([]domain.Attachment, error) {
+	rows, err := s.pool.Query(ctx, `SELECT a.id,a.message_id,a.name,a.mime_type,a.size,a.hash,a.storage_uri,a.inline_flag
+	 FROM attachments a JOIN messages m ON m.id=a.message_id WHERE a.message_id=$1 AND m.user_id=$2`, messageID, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.Attachment
+	for rows.Next() {
+		var a domain.Attachment
+		if err := rows.Scan(&a.ID, &a.MessageID, &a.Name, &a.MIMEType, &a.Size, &a.Hash, &a.StorageURI, &a.Inline); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) Search(ctx context.Context, q domain.SearchQuery) (*domain.SearchResult, error) {
+	limit := q.Limit
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	conds := []string{"m.user_id=$1"}
+	args := []any{q.UserID}
+	add := func(cond string, val any) {
+		args = append(args, val)
+		conds = append(conds, fmt.Sprintf(cond, len(args)))
+	}
+	if q.AccountID != "" {
+		add("m.account_id=$%d", q.AccountID)
+	}
+	if q.From != "" {
+		add("m.from_email ILIKE $%d", "%"+q.From+"%")
+	}
+	if q.To != "" {
+		add("m.to_json ILIKE $%d", "%"+q.To+"%")
+	}
+	if q.Subject != "" {
+		add("m.subject ILIKE $%d", "%"+q.Subject+"%")
+	}
+	if q.Since > 0 {
+		add("m.date >= $%d", q.Since)
+	}
+	if q.Until > 0 {
+		add("m.date <= $%d", q.Until)
+	}
+	if q.HasAttachment != nil {
+		add("m.has_attachments = $%d", *q.HasAttachment)
+	}
+	if q.Text != "" {
+		add("m.search_tsv @@ websearch_to_tsquery('simple', $%d)", q.Text)
+	}
+	if q.Cursor != "" {
+		var cDate int64
+		var cID string
+		if _, err := fmt.Sscanf(q.Cursor, "%d:%s", &cDate, &cID); err == nil {
+			args = append(args, cDate)
+			di := len(args)
+			args = append(args, cID)
+			ii := len(args)
+			conds = append(conds, fmt.Sprintf("(m.date < $%d OR (m.date = $%d AND m.id < $%d))", di, di, ii))
+		}
+	}
+	args = append(args, limit+1)
+	query := `SELECT ` + prefixCols(msgCols, "m.") + ` FROM messages m WHERE ` + strings.Join(conds, " AND ") +
+		fmt.Sprintf(` ORDER BY m.date DESC, m.id DESC LIMIT $%d`, len(args))
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var msgs []domain.Message
+	for rows.Next() {
+		m, err := scanMessage(rows)
+		if err != nil {
+			return nil, err
+		}
+		msgs = append(msgs, *m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	res := &domain.SearchResult{}
+	if len(msgs) > limit {
+		msgs = msgs[:limit]
+		last := msgs[len(msgs)-1]
+		res.NextCursor = fmt.Sprintf("%d:%s", last.Date, last.ID)
+	}
+	res.Messages = msgs
+	return res, nil
+}
+
+func prefixCols(cols, prefix string) string {
+	parts := strings.Split(cols, ",")
+	for i, p := range parts {
+		parts[i] = prefix + strings.TrimSpace(p)
+	}
+	return strings.Join(parts, ",")
+}
+
+// ---------- threads ----------
+
+func (s *Store) ResolveThread(ctx context.Context, userID, accountID string, refs []string, subjectKey string, date int64) (string, error) {
+	for _, r := range refs {
+		if r == "" {
+			continue
+		}
+		var tid *string
+		err := s.pool.QueryRow(ctx, `SELECT thread_id FROM messages
+		 WHERE user_id=$1 AND account_id=$2 AND message_id_hdr=$3 AND thread_id <> '' LIMIT 1`, userID, accountID, r).Scan(&tid)
+		if err == nil && tid != nil && *tid != "" {
+			return *tid, nil
+		}
+	}
+	if subjectKey != "" && len(refs) > 0 {
+		var tid string
+		err := s.pool.QueryRow(ctx, `SELECT id FROM threads WHERE user_id=$1 AND account_id=$2 AND subject_key=$3 LIMIT 1`,
+			userID, accountID, subjectKey).Scan(&tid)
+		if err == nil {
+			return tid, nil
+		}
+	}
+	tid := NewID("thr")
+	_, err := s.pool.Exec(ctx, `INSERT INTO threads (id,user_id,account_id,subject_key,last_message_at,message_count)
+	 VALUES ($1,$2,$3,$4,$5,0)`, tid, userID, accountID, subjectKey, date)
+	return tid, err
+}
+
+func (s *Store) GetThreadMessages(ctx context.Context, userID, threadID string) ([]domain.Message, error) {
+	rows, err := s.pool.Query(ctx, `SELECT `+msgCols+` FROM messages WHERE user_id=$1 AND thread_id=$2 ORDER BY date ASC`, userID, threadID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.Message
+	for rows.Next() {
+		m, err := scanMessage(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *m)
+	}
+	return out, rows.Err()
+}
+
+// ---------- analyses ----------
+
+func (s *Store) SaveAnalysis(ctx context.Context, a *domain.Analysis) error {
+	a.CreatedAt = now()
+	_, err := s.pool.Exec(ctx, `INSERT INTO analyses
+	 (id,user_id,target_type,target_id,analysis_type,result_json,model,prompt_version,input_hash,created_at)
+	 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		a.ID, a.UserID, a.TargetType, a.TargetID, a.AnalysisType, a.ResultJSON, a.Model, a.PromptVersion, a.InputHash, a.CreatedAt)
+	return err
+}
+
+func (s *Store) FindCachedAnalysis(ctx context.Context, userID, analysisType, inputHash, model string) (*domain.Analysis, error) {
+	var a domain.Analysis
+	err := s.pool.QueryRow(ctx, `SELECT id,user_id,target_type,target_id,analysis_type,result_json,model,prompt_version,input_hash,created_at
+	 FROM analyses WHERE user_id=$1 AND analysis_type=$2 AND input_hash=$3 AND model=$4 ORDER BY created_at DESC LIMIT 1`,
+		userID, analysisType, inputHash, model).
+		Scan(&a.ID, &a.UserID, &a.TargetType, &a.TargetID, &a.AnalysisType, &a.ResultJSON, &a.Model, &a.PromptVersion, &a.InputHash, &a.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &a, nil
+}
+
+// ---------- drafts ----------
+
+func (s *Store) CreateDraft(ctx context.Context, d *domain.Draft, v *domain.DraftVersion) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	d.CreatedAt, d.UpdatedAt, d.CurrentVersion = now(), now(), 1
+	v.Version, v.CreatedAt = 1, now()
+	if _, err := tx.Exec(ctx, `INSERT INTO drafts (id,user_id,account_id,kind,reply_to_message_id,status,current_version,created_at,updated_at)
+	 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, d.ID, d.UserID, d.AccountID, d.Kind, d.ReplyToMessageID, d.Status, d.CurrentVersion, d.CreatedAt, d.UpdatedAt); err != nil {
+		return err
+	}
+	if err := insertDraftVersionTx(ctx, tx, d.ID, v); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func insertDraftVersionTx(ctx context.Context, tx pgx.Tx, draftID string, v *domain.DraftVersion) error {
+	_, err := tx.Exec(ctx, `INSERT INTO draft_versions (draft_id,version,subject,body_text,body_html,to_json,cc_json,bcc_json,author,created_at)
+	 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		draftID, v.Version, v.Subject, v.BodyText, v.BodyHTML, addrJSON(v.To), addrJSON(v.Cc), addrJSON(v.Bcc), v.Author, v.CreatedAt)
+	return err
+}
+
+func (s *Store) AddDraftVersion(ctx context.Context, userID, draftID string, v *domain.DraftVersion) (int, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+	var cur int
+	err = tx.QueryRow(ctx, `SELECT current_version FROM drafts WHERE id=$1 AND user_id=$2 AND status='open'`, draftID, userID).Scan(&cur)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, ErrNotFound
+	}
+	if err != nil {
+		return 0, err
+	}
+	v.Version, v.CreatedAt = cur+1, now()
+	if err := insertDraftVersionTx(ctx, tx, draftID, v); err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE drafts SET current_version=$1, updated_at=$2 WHERE id=$3`, v.Version, now(), draftID); err != nil {
+		return 0, err
+	}
+	return v.Version, tx.Commit(ctx)
+}
+
+func (s *Store) GetDraft(ctx context.Context, userID, id string) (*domain.Draft, *domain.DraftVersion, error) {
+	var d domain.Draft
+	var replyTo *string
+	err := s.pool.QueryRow(ctx, `SELECT id,user_id,account_id,kind,reply_to_message_id,status,current_version,created_at,updated_at
+	 FROM drafts WHERE id=$1 AND user_id=$2`, id, userID).
+		Scan(&d.ID, &d.UserID, &d.AccountID, &d.Kind, &replyTo, &d.Status, &d.CurrentVersion, &d.CreatedAt, &d.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	d.ReplyToMessageID = deref(replyTo)
+	v, err := s.GetDraftVersion(ctx, userID, id, d.CurrentVersion)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &d, v, nil
+}
+
+func (s *Store) GetDraftVersion(ctx context.Context, userID, draftID string, version int) (*domain.DraftVersion, error) {
+	var v domain.DraftVersion
+	var toJ, ccJ, bccJ, html *string
+	err := s.pool.QueryRow(ctx, `SELECT v.draft_id,v.version,v.subject,v.body_text,v.body_html,v.to_json,v.cc_json,v.bcc_json,v.author,v.created_at
+	 FROM draft_versions v JOIN drafts d ON d.id=v.draft_id WHERE v.draft_id=$1 AND v.version=$2 AND d.user_id=$3`, draftID, version, userID).
+		Scan(&v.DraftID, &v.Version, &v.Subject, &v.BodyText, &html, &toJ, &ccJ, &bccJ, &v.Author, &v.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	v.BodyHTML = deref(html)
+	v.To, v.Cc, v.Bcc = addrFromJSON(deref(toJ)), addrFromJSON(deref(ccJ)), addrFromJSON(deref(bccJ))
+	return &v, nil
+}
+
+func (s *Store) SetDraftStatus(ctx context.Context, userID, id string, st domain.DraftStatus) error {
+	_, err := s.pool.Exec(ctx, `UPDATE drafts SET status=$1, updated_at=$2 WHERE id=$3 AND user_id=$4`, st, now(), id, userID)
+	return err
+}
+
+// ---------- approvals ----------
+
+func (s *Store) InsertApproval(ctx context.Context, id, userID, actionType, draftID string, draftVersion int, payloadHash, tokenHash, approver string, expiresAt int64) error {
+	_, err := s.pool.Exec(ctx, `INSERT INTO approvals (id,user_id,action_type,draft_id,draft_version,payload_hash,token_hash,approver,expires_at,status,created_at)
+	 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending',$10)`,
+		id, userID, actionType, draftID, draftVersion, payloadHash, tokenHash, approver, expiresAt, now())
+	return err
+}
+
+func (s *Store) ConsumeApproval(ctx context.Context, tokenHash, payloadHash string) (string, int, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return "", 0, err
+	}
+	defer tx.Rollback(ctx)
+	var id, draftID string
+	var version int
+	err = tx.QueryRow(ctx, `SELECT id, COALESCE(draft_id,''), COALESCE(draft_version,0) FROM approvals
+	 WHERE token_hash=$1 AND payload_hash=$2 AND status='pending' AND expires_at > $3 FOR UPDATE`,
+		tokenHash, payloadHash, now()).Scan(&id, &draftID, &version)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", 0, errors.New("approval token invalid, expired, consumed, or payload changed")
+	}
+	if err != nil {
+		return "", 0, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE approvals SET status='used' WHERE id=$1`, id); err != nil {
+		return "", 0, err
+	}
+	return draftID, version, tx.Commit(ctx)
+}
+
+// ---------- outbound ----------
+
+func (s *Store) CreateOutbound(ctx context.Context, o *domain.OutboundMessage) error {
+	o.CreatedAt, o.UpdatedAt = now(), now()
+	_, err := s.pool.Exec(ctx, `INSERT INTO outbound_messages (id,user_id,draft_id,draft_version,idempotency_key,message_id_hdr,status,attempts,created_at,updated_at)
+	 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		o.ID, o.UserID, o.DraftID, o.DraftVersion, o.IdempotencyKey, o.MessageID, o.Status, o.Attempts, o.CreatedAt, o.UpdatedAt)
+	return err
+}
+
+func scanOutbound(row pgx.Row) (*domain.OutboundMessage, error) {
+	var o domain.OutboundMessage
+	err := row.Scan(&o.ID, &o.UserID, &o.DraftID, &o.DraftVersion, &o.IdempotencyKey, &o.MessageID, &o.Status, &o.SMTPResponse, &o.Attempts, &o.CreatedAt, &o.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &o, nil
+}
+
+const outboundCols = `id,user_id,draft_id,draft_version,idempotency_key,message_id_hdr,status,COALESCE(smtp_response,''),attempts,created_at,updated_at`
+
+func (s *Store) GetOutboundByIdemKey(ctx context.Context, userID, key string) (*domain.OutboundMessage, error) {
+	return scanOutbound(s.pool.QueryRow(ctx, `SELECT `+outboundCols+` FROM outbound_messages WHERE user_id=$1 AND idempotency_key=$2`, userID, key))
+}
+
+func (s *Store) GetOutbound(ctx context.Context, userID, id string) (*domain.OutboundMessage, error) {
+	return scanOutbound(s.pool.QueryRow(ctx, `SELECT `+outboundCols+` FROM outbound_messages WHERE user_id=$1 AND id=$2`, userID, id))
+}
+
+func (s *Store) CountSentSince(ctx context.Context, userID, accountID string, since int64) (int, error) {
+	var n int
+	err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM outbound_messages o JOIN drafts d ON d.id=o.draft_id
+	 WHERE d.user_id=$1 AND d.account_id=$2 AND o.status='sent' AND o.updated_at >= $3`, userID, accountID, since).Scan(&n)
+	return n, err
+}
+
+func (s *Store) UpdateOutbound(ctx context.Context, id string, status domain.OutboundStatus, smtpResponse string, attempts int) error {
+	_, err := s.pool.Exec(ctx, `UPDATE outbound_messages SET status=$1, smtp_response=$2, attempts=$3, updated_at=$4 WHERE id=$5`,
+		status, smtpResponse, attempts, now(), id)
+	return err
+}
+
+// ---------- jobs ----------
+
+func (s *Store) CreateJob(ctx context.Context, j *domain.Job) error {
+	j.CreatedAt, j.UpdatedAt = now(), now()
+	stats, _ := json.Marshal(j.Stats)
+	meta, _ := json.Marshal(j.Meta)
+	_, err := s.pool.Exec(ctx, `INSERT INTO jobs (id,user_id,type,account_id,status,progress,stats_json,error,meta_json,created_at,updated_at)
+	 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+		j.ID, j.UserID, j.Type, j.AccountID, j.Status, j.Progress, string(stats), j.Error, string(meta), j.CreatedAt, j.UpdatedAt)
+	return err
+}
+
+func (s *Store) UpdateJob(ctx context.Context, j *domain.Job) error {
+	j.UpdatedAt = now()
+	stats, _ := json.Marshal(j.Stats)
+	_, err := s.pool.Exec(ctx, `UPDATE jobs SET status=$1, progress=$2, stats_json=$3, error=$4, updated_at=$5 WHERE id=$6`,
+		j.Status, j.Progress, string(stats), j.Error, j.UpdatedAt, j.ID)
+	return err
+}
+
+func (s *Store) RecoverStaleJobs(ctx context.Context) (int64, error) {
+	ct, err := s.pool.Exec(ctx, `UPDATE jobs SET status='failed', error='interrupted (process restart)', updated_at=$1
+	 WHERE status IN ('queued','running')`, now())
+	if err != nil {
+		return 0, err
+	}
+	return ct.RowsAffected(), nil
+}
+
+func (s *Store) GetJob(ctx context.Context, userID, id string) (*domain.Job, error) {
+	var j domain.Job
+	var stats, meta, accountID, progress, jerr *string
+	err := s.pool.QueryRow(ctx, `SELECT id,user_id,type,account_id,status,progress,stats_json,error,meta_json,created_at,updated_at
+	 FROM jobs WHERE id=$1 AND user_id=$2`, id, userID).
+		Scan(&j.ID, &j.UserID, &j.Type, &accountID, &j.Status, &progress, &stats, &jerr, &meta, &j.CreatedAt, &j.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	j.AccountID, j.Progress, j.Error = deref(accountID), deref(progress), deref(jerr)
+	if deref(stats) != "" {
+		json.Unmarshal([]byte(*stats), &j.Stats)
+	}
+	if deref(meta) != "" {
+		json.Unmarshal([]byte(*meta), &j.Meta)
+	}
+	return &j, nil
+}
+
+// ---------- audit ----------
+
+func (s *Store) AppendAudit(ctx context.Context, ev domain.AuditEvent) error {
+	_, err := s.pool.Exec(ctx, `INSERT INTO audit_events (at,user_id,actor,action,resource,result,detail)
+	 VALUES ($1,$2,$3,$4,$5,$6,$7)`, now(), ev.UserID, ev.Actor, ev.Action, ev.Resource, ev.Result, ev.Detail)
+	return err
+}
+
+func (s *Store) SearchAudit(ctx context.Context, userID string, limit int) ([]domain.AuditEvent, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	rows, err := s.pool.Query(ctx, `SELECT id,at,user_id,actor,action,resource,result,COALESCE(detail,'')
+	 FROM audit_events WHERE user_id=$1 ORDER BY id DESC LIMIT $2`, userID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.AuditEvent
+	for rows.Next() {
+		var e domain.AuditEvent
+		if err := rows.Scan(&e.ID, &e.At, &e.UserID, &e.Actor, &e.Action, &e.Resource, &e.Result, &e.Detail); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// ---------- delete ----------
+
+func (s *Store) DeleteMessage(ctx context.Context, userID, id string) ([]string, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	var rawURI string
+	err = tx.QueryRow(ctx, `SELECT raw_uri FROM messages WHERE id=$1 AND user_id=$2`, id, userID).Scan(&rawURI)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	uris := []string{rawURI}
+	rows, err := tx.Query(ctx, `SELECT storage_uri FROM attachments WHERE message_id=$1`, id)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var u string
+		if err := rows.Scan(&u); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		uris = append(uris, u)
+	}
+	rows.Close()
+	if _, err := tx.Exec(ctx, `DELETE FROM messages WHERE id=$1 AND user_id=$2`, id, userID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return uris, nil
+}
+
+// ---------- embeddings ----------
+
+func (s *Store) SaveEmbedding(ctx context.Context, userID, accountID, messageID string, chunkID int, vec []float32, model string) error {
+	_, err := s.pool.Exec(ctx, `INSERT INTO embeddings (message_id,chunk_id,user_id,account_id,model,dim,vec)
+	 VALUES ($1,$2,$3,$4,$5,$6,$7::vector) ON CONFLICT (message_id,chunk_id) DO UPDATE SET model=excluded.model, dim=excluded.dim, vec=excluded.vec`,
+		messageID, chunkID, userID, accountID, model, len(vec), vectorLiteral(vec))
+	return err
+}
+
+func (s *Store) MessagesMissingEmbeddings(ctx context.Context, userID, accountID string, limit int) ([]string, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	args := []any{userID}
+	q := `SELECT m.id FROM messages m WHERE m.user_id=$1 AND NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.message_id=m.id)`
+	if accountID != "" {
+		args = append(args, accountID)
+		q += fmt.Sprintf(" AND m.account_id=$%d", len(args))
+	}
+	args = append(args, limit)
+	q += fmt.Sprintf(" ORDER BY m.date DESC LIMIT $%d", len(args))
+	rows, err := s.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// SemanticSearch uses pgvector cosine distance (<=>). Score = 1 - distance.
+func (s *Store) SemanticSearch(ctx context.Context, userID, accountID string, queryVec []float32, limit int) ([]domain.SemanticHit, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	args := []any{userID, vectorLiteral(queryVec)}
+	q := `SELECT message_id, 1 - (vec <=> $2::vector) AS score FROM embeddings WHERE user_id=$1`
+	if accountID != "" {
+		args = append(args, accountID)
+		q += fmt.Sprintf(" AND account_id=$%d", len(args))
+	}
+	args = append(args, limit)
+	q += fmt.Sprintf(" ORDER BY vec <=> $2::vector ASC LIMIT $%d", len(args))
+	rows, err := s.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.SemanticHit
+	for rows.Next() {
+		var h domain.SemanticHit
+		if err := rows.Scan(&h.MessageID, &h.Score); err != nil {
+			return nil, err
+		}
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}
+
+var _ application.Storage = (*Store)(nil)

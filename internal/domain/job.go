@@ -71,8 +71,26 @@ type GenerationResult struct {
 	InputHash string
 }
 
+type EmbeddingRequest struct {
+	Input []string
+}
+
+type EmbeddingResult struct {
+	Vectors [][]float32
+	Model   string
+}
+
 type AIProvider interface {
 	Generate(ctx context.Context, req GenerationRequest) (GenerationResult, error)
+	// Embed returns one vector per input string. Used for semantic search.
+	Embed(ctx context.Context, req EmbeddingRequest) (EmbeddingResult, error)
+}
+
+// SemanticHit is a semantic-search result: a message and its similarity to
+// the query (1.0 = identical direction).
+type SemanticHit struct {
+	MessageID string  `json:"message_id"`
+	Score     float64 `json:"score"`
 }
 
 type Analysis struct {

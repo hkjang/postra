@@ -12,7 +12,6 @@ import (
 	"strconv"
 	"strings"
 
-	"postra/internal/adapters/persistence"
 	"postra/internal/application"
 	"postra/internal/domain"
 )
@@ -58,6 +57,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/messages/{id}/analyze", s.analyzeMessage)
 	mux.HandleFunc("POST /api/threads/{id}/summarize", s.summarizeThread)
 	mux.HandleFunc("POST /api/qa", s.questionAnswer)
+	mux.HandleFunc("POST /api/embeddings/build", s.buildEmbeddings)
+	mux.HandleFunc("POST /api/semantic-search", s.semanticSearch)
 
 	mux.HandleFunc("POST /api/drafts", s.createDraft)
 	mux.HandleFunc("GET /api/drafts/{id}", s.getDraft)
@@ -103,7 +104,7 @@ func writeErr(w http.ResponseWriter, err error) {
 	switch {
 	case errors.As(err, &ue):
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": ue.Msg})
-	case errors.Is(err, persistence.ErrNotFound):
+	case errors.Is(err, domain.ErrNotFound):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 	default:
 		slog.Error("request failed", "err", err)
@@ -433,6 +434,37 @@ func (s *Server) questionAnswer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, an)
+}
+
+func (s *Server) buildEmbeddings(w http.ResponseWriter, r *http.Request) {
+	in, _ := decode[struct {
+		AccountID string `json:"account_id"`
+		Max       int    `json:"max"`
+	}](r)
+	job, err := s.app.BuildEmbeddings(r.Context(), in.AccountID, in.Max)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, job)
+}
+
+func (s *Server) semanticSearch(w http.ResponseWriter, r *http.Request) {
+	in, err := decode[struct {
+		Query     string `json:"query"`
+		AccountID string `json:"account_id"`
+		Limit     int    `json:"limit"`
+	}](r)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	hits, err := s.app.SemanticSearch(r.Context(), in.Query, in.AccountID, in.Limit)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"results": hits})
 }
 
 // ---------- drafts & send ----------
