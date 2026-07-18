@@ -87,5 +87,7 @@ func (e *Encrypted) Get(u string) (io.ReadCloser, error) {
 	return io.NopCloser(bytes.NewReader(pt)), nil
 }
 
+func (e *Encrypted) Delete(u string) error { return e.inner.Delete(u) }
+
 var _ Store = (*Encrypted)(nil)
 var _ Store = (*Local)(nil)

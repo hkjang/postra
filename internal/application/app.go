@@ -138,6 +138,32 @@ func (a *App) checkInsecureAllowed(ctx context.Context, acc *domain.MailAccount)
 	return nil
 }
 
+// dialPOP3 acquires the account's POP3 secret (if any), opens a session, and
+// zeroes the secret immediately after the handshake. The handle never leaves
+// this call (SEC-KEY-005).
+func (a *App) dialPOP3(ctx context.Context, acc *domain.MailAccount, purpose domain.SecretPurpose) (domain.POP3Session, error) {
+	var secret *domain.SecretHandle
+	var err error
+	if acc.POP3Secret != "" {
+		secret, err = a.Secrets.Acquire(ctx, acc.POP3Secret, purpose)
+		if err != nil {
+			return nil, err
+		}
+		a.Store.TouchCredential(ctx, acc.POP3Secret)
+	}
+	sess, err := a.POP3.Dial(ctx, domain.POP3DialOptions{
+		Host: acc.POP3Host, Port: acc.POP3Port, Security: acc.POP3Security,
+		Username: acc.POP3Username, Password: secret,
+		InsecureSkipVerify: acc.InsecureSkipVerify,
+		ConnectTimeoutSec:  a.Cfg.Sync.ConnectTimeoutSec,
+		CommandTimeoutSec:  a.Cfg.Sync.CommandTimeoutSec,
+	})
+	if secret != nil {
+		secret.Zero()
+	}
+	return sess, err
+}
+
 func randomToken(n int) string {
 	b := make([]byte, n)
 	rand.Read(b)

@@ -36,10 +36,77 @@ func NewServer(app *application.App) *mcp.Server {
 	registerQueryTools(s, app)
 	registerAITools(s, app)
 	registerComposeTools(s, app)
+	registerDeleteTools(s, app)
 	registerAuditTools(s, app)
 	registerResources(s, app)
 	registerPrompts(s, app)
 	return s
+}
+
+// registerDeleteTools exposes the local and 2-stage server-delete flows
+// (§5.2). Server deletion requires a fresh approval token bound to the exact
+// UIDL set; local deletion is destructive but does not touch the server.
+func registerDeleteTools(s *mcp.Server, app *application.App) {
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "mail_local_delete",
+		Description: "Delete a message from LOCAL storage only (DB rows + stored blobs). The mail server copy is untouched. Destructive.",
+		Annotations: &mcp.ToolAnnotations{DestructiveHint: boolPtr(true), OpenWorldHint: boolPtr(false)},
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct {
+		MessageID string `json:"message_id" jsonschema:"the internal message ID to delete locally"`
+		Confirm   bool   `json:"confirm" jsonschema:"must be true after the user approved the local deletion"`
+	}) (*mcp.CallToolResult, any, error) {
+		if !in.Confirm {
+			return nil, nil, &application.UserError{Msg: "set confirm=true after the user explicitly approved deleting this local message"}
+		}
+		if err := app.LocalDelete(ctx, in.MessageID); err != nil {
+			return nil, nil, err
+		}
+		return nil, map[string]string{"status": "deleted", "message_id": in.MessageID}, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "mail_server_delete_preview",
+		Description: "Preview which maildrop messages could be deleted on the POP3 server. Only messages already stored locally are eligible. Deletes nothing; returns a payload hash for approval.",
+		Annotations: readExtern,
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in accountIDInput) (*mcp.CallToolResult, any, error) {
+		pv, err := app.ServerDeletePreview(ctx, in.AccountID)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, pv, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "mail_server_delete_request_approval",
+		Description: "Request a one-time approval token to delete the currently-eligible messages from the POP3 server. Show the preview to the user and obtain explicit confirmation before mail_server_delete.",
+		Annotations: writeExtern,
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct {
+		AccountID  string `json:"account_id" jsonschema:"the mail account ID"`
+		Approver   string `json:"approver,omitempty"`
+		TTLSeconds int    `json:"ttl_seconds,omitempty" jsonschema:"token lifetime, default 600"`
+	}) (*mcp.CallToolResult, any, error) {
+		pv, tok, err := app.RequestServerDeleteApproval(ctx, in.AccountID, in.Approver, in.TTLSeconds)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, map[string]any{"preview": pv, "approval": tok}, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "mail_server_delete",
+		Description: "Delete the approved UIDLs from the POP3 server. Requires an approval token bound to the exact account + UIDL set. Very destructive and externally visible — only call after explicit user confirmation.",
+		Annotations: destructive,
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct {
+		AccountID     string   `json:"account_id" jsonschema:"the mail account ID"`
+		UIDLs         []string `json:"uidls" jsonschema:"the UIDLs to delete (from the approved preview)"`
+		ApprovalToken string   `json:"approval_token" jsonschema:"token from mail_server_delete_request_approval"`
+	}) (*mcp.CallToolResult, any, error) {
+		res, err := app.ServerDelete(ctx, in.AccountID, in.UIDLs, in.ApprovalToken)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, res, nil
+	})
 }
 
 // toolCatalogSummary backs the schema://mail/tools resource: a stable,

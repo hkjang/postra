@@ -52,7 +52,7 @@ POSTRA_ALLOW_INSECURE_MAIL=true ./postra serve
 - **로컬(stdio)**: `postra mcp` — Claude Code 등 로컬 MCP 클라이언트에 연결
 - **원격(Streamable HTTP)**: `postra serve` 의 `:8481`. 비로컬 인터페이스 바인딩 시 `POSTRA_API_TOKEN` 을 요구합니다.
 
-주요 **도구(Tools)**: `mail_account_*`, `secret_registration_begin`, `mail_sync_start`, `job_status`, `mail_search`, `mail_message_get`, `mail_thread_get`, `mail_summarize` / `mail_classify` / `mail_action_items_extract` / `mail_phishing_inspect` / `mail_question_answer`, `mail_draft_create`, `mail_draft_rewrite`, `mail_send_preview`, `mail_send_request_approval`, `mail_send`, `mail_audit_search`.
+주요 **도구(Tools)**: `mail_account_*`, `secret_registration_begin`, `mail_sync_start`, `job_status`, `mail_search`, `mail_message_get`, `mail_thread_get`, `mail_summarize` / `mail_classify` / `mail_action_items_extract` / `mail_phishing_inspect` / `mail_question_answer`, `mail_draft_create`, `mail_draft_rewrite`, `mail_send_preview`, `mail_send_request_approval`, `mail_send`, `mail_local_delete`, `mail_server_delete_preview`, `mail_server_delete_request_approval`, `mail_server_delete`, `mail_audit_search`.
 
 **리소스(Resources)**: `mail://accounts/{id}`, `mail://messages/{id}`, `mail://messages/{id}/raw`, `mail://threads/{id}`, `mail://drafts/{id}`, `mail://sync-jobs/{id}`, `policy://mail/current`, `schema://mail/tools`.
 

@@ -421,6 +421,73 @@ func (s *Store) InsertMessage(ctx context.Context, m *domain.Message, body *doma
 	return tx.Commit()
 }
 
+// DeleteMessage removes a message and its dependents within the user's
+// scope and returns the object URIs (raw + attachments) the caller should
+// purge from the object store. FK cascade drops bodies/attachments rows;
+// the FTS row is removed explicitly.
+func (s *Store) DeleteMessage(ctx context.Context, userID, id string) ([]string, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	var rawURI string
+	err = tx.QueryRowContext(ctx, `SELECT raw_uri FROM messages WHERE id=? AND user_id=?`, id, userID).Scan(&rawURI)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	uris := []string{rawURI}
+	rows, err := tx.QueryContext(ctx, `SELECT storage_uri FROM attachments WHERE message_id=?`, id)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var u string
+		if err := rows.Scan(&u); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		uris = append(uris, u)
+	}
+	rows.Close()
+
+	if s.fts {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM messages_fts WHERE message_pk=?`, id); err != nil {
+			return nil, err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM messages WHERE id=? AND user_id=?`, id, userID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return uris, nil
+}
+
+// StoredUIDLs returns the set of UIDLs already stored locally for an account
+// (checkpoints), used to compute server-delete eligibility.
+func (s *Store) StoredUIDLs(ctx context.Context, accountID string) (map[string]bool, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT uidl FROM sync_checkpoints WHERE account_id=?`, accountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var u string
+		if err := rows.Scan(&u); err != nil {
+			return nil, err
+		}
+		out[u] = true
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) IsDuplicateHash(ctx context.Context, accountID, rawHash string) (bool, error) {
 	var one int
 	err := s.db.QueryRowContext(ctx,

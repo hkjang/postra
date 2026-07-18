@@ -93,26 +93,7 @@ func (a *App) runSync(ctx context.Context, job *domain.Job, acc *domain.MailAcco
 	job.Status = domain.JobRunning
 	_ = a.Store.UpdateJob(ctx, job)
 
-	var secret *domain.SecretHandle
-	var err error
-	if acc.POP3Secret != "" {
-		secret, err = a.Secrets.Acquire(ctx, acc.POP3Secret, domain.PurposePOP3Auth)
-		if err != nil {
-			finish(domain.JobFailed, "secret acquisition failed: "+err.Error())
-			return
-		}
-		a.Store.TouchCredential(ctx, acc.POP3Secret)
-	}
-	sess, err := a.POP3.Dial(ctx, domain.POP3DialOptions{
-		Host: acc.POP3Host, Port: acc.POP3Port, Security: acc.POP3Security,
-		Username: acc.POP3Username, Password: secret,
-		InsecureSkipVerify: acc.InsecureSkipVerify,
-		ConnectTimeoutSec:  a.Cfg.Sync.ConnectTimeoutSec,
-		CommandTimeoutSec:  a.Cfg.Sync.CommandTimeoutSec,
-	})
-	if secret != nil {
-		secret.Zero()
-	}
+	sess, err := a.dialPOP3(ctx, acc, domain.PurposePOP3Auth)
 	if err != nil {
 		var authErr *pop3.AuthError
 		if errors.As(err, &authErr) {

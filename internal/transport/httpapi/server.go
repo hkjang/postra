@@ -50,6 +50,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/messages/{id}/attachments", s.listAttachments)
 	mux.HandleFunc("GET /api/messages/{id}/attachments/{att}", s.getAttachment)
 	mux.HandleFunc("GET /api/threads/{id}", s.getThread)
+	mux.HandleFunc("DELETE /api/messages/{id}", s.localDelete)
+	mux.HandleFunc("POST /api/accounts/{id}/server-delete/preview", s.serverDeletePreview)
+	mux.HandleFunc("POST /api/accounts/{id}/server-delete/request-approval", s.serverDeleteApproval)
+	mux.HandleFunc("POST /api/accounts/{id}/server-delete", s.serverDelete)
 
 	mux.HandleFunc("POST /api/messages/{id}/analyze", s.analyzeMessage)
 	mux.HandleFunc("POST /api/threads/{id}/summarize", s.summarizeThread)
@@ -329,6 +333,53 @@ func (s *Server) getAttachment(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+at.Name+`"`)
 	io.Copy(w, rc)
+}
+
+func (s *Server) localDelete(w http.ResponseWriter, r *http.Request) {
+	if err := s.app.LocalDelete(r.Context(), r.PathValue("id")); err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (s *Server) serverDeletePreview(w http.ResponseWriter, r *http.Request) {
+	pv, err := s.app.ServerDeletePreview(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, pv)
+}
+
+func (s *Server) serverDeleteApproval(w http.ResponseWriter, r *http.Request) {
+	in, _ := decode[struct {
+		Approver   string `json:"approver"`
+		TTLSeconds int    `json:"ttl_seconds"`
+	}](r)
+	pv, tok, err := s.app.RequestServerDeleteApproval(r.Context(), r.PathValue("id"), in.Approver, in.TTLSeconds)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"preview": pv, "approval": tok})
+}
+
+func (s *Server) serverDelete(w http.ResponseWriter, r *http.Request) {
+	in, err := decode[struct {
+		UIDLs         []string `json:"uidls"`
+		ApprovalToken string   `json:"approval_token"`
+	}](r)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	res, err := s.app.ServerDelete(r.Context(), r.PathValue("id"), in.UIDLs, in.ApprovalToken)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 func (s *Server) getThread(w http.ResponseWriter, r *http.Request) {

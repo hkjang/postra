@@ -18,6 +18,8 @@ type Store interface {
 	// Put stores content and returns (uri, sha256hex, size).
 	Put(kind string, r io.Reader) (string, string, int64, error)
 	Get(uri string) (io.ReadCloser, error)
+	// Delete removes an object. Missing objects are not an error.
+	Delete(uri string) error
 }
 
 type Local struct {
@@ -92,6 +94,18 @@ func (l *Local) Get(u string) (io.ReadCloser, error) {
 		return nil, err
 	}
 	return os.Open(filepath.Join(l.root, kind, name[:2], name))
+}
+
+func (l *Local) Delete(u string) error {
+	kind, name, err := parseURI(u)
+	if err != nil {
+		return err
+	}
+	err = os.Remove(filepath.Join(l.root, kind, name[:2], name))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
 }
 
 func uri(kind, name string) string { return fmt.Sprintf("local://%s/%s", kind, name) }

@@ -598,6 +598,89 @@ func TestSchedulerSyncsActiveAccounts(t *testing.T) {
 	}
 }
 
+// Local delete removes the message and its blobs without touching the server.
+func TestLocalDelete(t *testing.T) {
+	app, pop, _, _ := newTestApp(t)
+	acc := mustAccount(t, app)
+	pop.messages["u1"] = testMail("m1", "trash me", "delete this")
+	syncAndWait(t, app, acc.ID)
+	res, _ := app.Search(context.Background(), domain.SearchQuery{})
+	if len(res.Messages) != 1 {
+		t.Fatalf("setup: %d messages", len(res.Messages))
+	}
+	id := res.Messages[0].ID
+	ctx := WithActor(context.Background(), "test")
+	if err := app.LocalDelete(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.GetMessage(ctx, id, false); err == nil {
+		t.Fatal("message should be gone after local delete")
+	}
+	res, _ = app.Search(context.Background(), domain.SearchQuery{})
+	if len(res.Messages) != 0 {
+		t.Fatalf("search still returns %d after delete", len(res.Messages))
+	}
+	// server copy untouched
+	if len(pop.deleted) != 0 {
+		t.Fatalf("local delete must not delete from server: %v", pop.deleted)
+	}
+}
+
+// Server delete is 2-stage: preview → approval → delete, and only
+// locally-stored UIDLs are eligible; the approval binds the exact UIDL set.
+func TestServerDeleteFlow(t *testing.T) {
+	app, pop, _, _ := newTestApp(t)
+	acc := mustAccount(t, app)
+	pop.messages["u1"] = testMail("m1", "one", "body1")
+	pop.messages["u2"] = testMail("m2", "two", "body2")
+	syncAndWait(t, app, acc.ID)
+	// A message present on the server but NOT stored locally must be ineligible.
+	pop.messages["u3"] = testMail("m3", "unsynced", "not stored")
+
+	ctx := WithActor(context.Background(), "test")
+	pv, err := app.ServerDeletePreview(ctx, acc.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pv.Deletable) != 2 {
+		t.Fatalf("deletable=%v, want 2 stored uidls", pv.Deletable)
+	}
+	for _, c := range pv.Candidates {
+		if c.UIDL == "u3" && c.Deletable {
+			t.Fatal("unsynced u3 must not be deletable")
+		}
+	}
+
+	// no approval → rejected
+	if _, err := app.ServerDelete(ctx, acc.ID, pv.Deletable, "bogus"); err == nil {
+		t.Fatal("server delete without valid approval must fail")
+	}
+
+	_, tok, err := app.RequestServerDeleteApproval(ctx, acc.ID, "admin", 60)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// tampering with the UIDL set invalidates the token
+	if _, err := app.ServerDelete(ctx, acc.ID, []string{"u1"}, tok.Token); err == nil {
+		t.Fatal("approval bound to full set must reject a narrowed set")
+	}
+	// exact set succeeds
+	res, err := app.ServerDelete(ctx, acc.ID, pv.Deletable, tok.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Deleted) != 2 {
+		t.Fatalf("deleted=%v, want 2", res.Deleted)
+	}
+	if len(pop.deleted) != 2 {
+		t.Fatalf("server saw %v deletions, want 2", pop.deleted)
+	}
+	// single-use token
+	if _, err := app.ServerDelete(ctx, acc.ID, pv.Deletable, tok.Token); err == nil {
+		t.Fatal("consumed approval must not be reusable")
+	}
+}
+
 // §14 at-rest encryption: neither the raw MIME object nor the parsed body
 // column may appear as plaintext anywhere under the data directory, yet
 // reads still return the original content and FTS search still works.
