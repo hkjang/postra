@@ -885,7 +885,7 @@ func (s *Store) DeleteMessage(ctx context.Context, userID, id string) ([]string,
 	if err != nil {
 		return nil, err
 	}
-	uris := []string{rawURI}
+	candidates := []string{rawURI}
 	rows, err := tx.Query(ctx, `SELECT storage_uri FROM attachments WHERE message_id=$1`, id)
 	if err != nil {
 		return nil, err
@@ -896,16 +896,31 @@ func (s *Store) DeleteMessage(ctx context.Context, userID, id string) ([]string,
 			rows.Close()
 			return nil, err
 		}
-		uris = append(uris, u)
+		if u != "" {
+			candidates = append(candidates, u)
+		}
 	}
 	rows.Close()
 	if _, err := tx.Exec(ctx, `DELETE FROM messages WHERE id=$1 AND user_id=$2`, id, userID); err != nil {
 		return nil, err
 	}
+	// Return only blobs no surviving message references (shared-blob safety).
+	var orphans []string
+	for _, u := range candidates {
+		var refs int
+		if err := tx.QueryRow(ctx,
+			`SELECT (SELECT COUNT(*) FROM messages WHERE raw_uri=$1) +
+			        (SELECT COUNT(*) FROM attachments WHERE storage_uri=$1)`, u).Scan(&refs); err != nil {
+			return nil, err
+		}
+		if refs == 0 {
+			orphans = append(orphans, u)
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
-	return uris, nil
+	return orphans, nil
 }
 
 // ---------- embeddings ----------

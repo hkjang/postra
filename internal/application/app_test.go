@@ -720,6 +720,42 @@ func TestManyRecipientWarning(t *testing.T) {
 	}
 }
 
+// AI-013: analyses record the active prompt version, and a config override
+// rolls the type back to an older version.
+func TestPromptVersioning(t *testing.T) {
+	app, pop, _, _ := newTestApp(t)
+	acc := mustAccount(t, app)
+	pop.messages["u1"] = testMail("m1", "topic", "content here")
+	syncAndWait(t, app, acc.ID)
+	ctx := WithActor(context.Background(), "test")
+	res, _ := app.Search(ctx, domain.SearchQuery{})
+	id := res.Messages[0].ID
+
+	// Default: newest version (summarize has v1+v2 → v2).
+	an, err := app.AnalyzeMessage(ctx, id, "summarize")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if an.PromptVersion != "v2" {
+		t.Fatalf("default prompt version=%s, want v2", an.PromptVersion)
+	}
+
+	// Roll back to v1 via config; cache key differs so it re-runs.
+	app.Cfg.AI.PromptVersions = map[string]string{"summarize": "v1"}
+	an2, err := app.AnalyzeMessage(ctx, id, "summarize")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if an2.PromptVersion != "v1" {
+		t.Fatalf("after rollback prompt version=%s, want v1", an2.PromptVersion)
+	}
+	// A single-version type still reports v1.
+	an3, _ := app.AnalyzeMessage(ctx, id, "classify")
+	if an3.PromptVersion != "v1" {
+		t.Fatalf("classify version=%s, want v1", an3.PromptVersion)
+	}
+}
+
 // AI-011: when the AI endpoint is external, PII/secrets in mail content are
 // masked before reaching the model.
 func TestExternalAIMasking(t *testing.T) {
@@ -1062,6 +1098,44 @@ func TestLocalDelete(t *testing.T) {
 	// server copy untouched
 	if len(pop.deleted) != 0 {
 		t.Fatalf("local delete must not delete from server: %v", pop.deleted)
+	}
+}
+
+// Object GC safety: a blob shared by two messages (same attachment content)
+// is not purged when one message is deleted — only when the last reference
+// goes away. Prevents the shared-blob deletion hazard.
+func TestSharedBlobNotDeleted(t *testing.T) {
+	app, pop, _, _ := newTestApp(t)
+	acc := mustAccount(t, app)
+	shared := attSpec{name: "shared.txt", ctype: "text/plain", body: "identical attachment content"}
+	pop.messages["u1"] = mailWithAttachments("m1", []attSpec{shared})
+	pop.messages["u2"] = mailWithAttachments("m2", []attSpec{shared})
+	syncAndWait(t, app, acc.ID)
+
+	ctx := WithActor(context.Background(), "test")
+	res, _ := app.Search(ctx, domain.SearchQuery{})
+	if len(res.Messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(res.Messages))
+	}
+	m1, m2 := res.Messages[0].ID, res.Messages[1].ID
+
+	// Delete one message; the shared attachment blob must survive.
+	if err := app.LocalDelete(ctx, m1); err != nil {
+		t.Fatal(err)
+	}
+	atts, err := app.ListAttachments(ctx, m2)
+	if err != nil || len(atts) == 0 {
+		t.Fatalf("surviving message attachments: %v %d", err, len(atts))
+	}
+	_, rc, err := app.GetAttachment(ctx, m2, atts[0].ID, false)
+	if err != nil {
+		t.Fatalf("shared blob was wrongly purged; download failed: %v", err)
+	}
+	rc.Close()
+
+	// Delete the second; now the blob is orphaned and purged.
+	if err := app.LocalDelete(ctx, m2); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -99,6 +99,9 @@ type AIConfig struct {
 	// MaskExternalPII redacts PII/secrets from mail content before it is sent
 	// to an external (non-local) AI endpoint (AI-011).
 	MaskExternalPII bool `json:"mask_external_pii"`
+	// PromptVersions pins/rolls back the prompt version per analysis type
+	// (AI-013), e.g. {"summarize": "v1"}. Unset types use the newest version.
+	PromptVersions map[string]string `json:"prompt_versions,omitempty"`
 }
 
 type SyncConfig struct {

@@ -507,10 +507,11 @@ func (s *Store) InsertMessage(ctx context.Context, m *domain.Message, body *doma
 	return tx.Commit()
 }
 
-// DeleteMessage removes a message and its dependents within the user's
-// scope and returns the object URIs (raw + attachments) the caller should
-// purge from the object store. FK cascade drops bodies/attachments rows;
-// the FTS row is removed explicitly.
+// DeleteMessage removes a message and its dependents within the user's scope
+// and returns the object URIs (raw + attachments) that became UNREFERENCED
+// and are therefore safe to purge from the object store. Content-addressed
+// blobs can be shared across messages, so an object is returned only when no
+// surviving message references it (fixes the shared-blob deletion hazard).
 func (s *Store) DeleteMessage(ctx context.Context, userID, id string) ([]string, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -526,7 +527,7 @@ func (s *Store) DeleteMessage(ctx context.Context, userID, id string) ([]string,
 	if err != nil {
 		return nil, err
 	}
-	uris := []string{rawURI}
+	candidates := []string{rawURI}
 	rows, err := tx.QueryContext(ctx, `SELECT storage_uri FROM attachments WHERE message_id=?`, id)
 	if err != nil {
 		return nil, err
@@ -537,7 +538,9 @@ func (s *Store) DeleteMessage(ctx context.Context, userID, id string) ([]string,
 			rows.Close()
 			return nil, err
 		}
-		uris = append(uris, u)
+		if u != "" {
+			candidates = append(candidates, u)
+		}
 	}
 	rows.Close()
 
@@ -549,10 +552,25 @@ func (s *Store) DeleteMessage(ctx context.Context, userID, id string) ([]string,
 	if _, err := tx.ExecContext(ctx, `DELETE FROM messages WHERE id=? AND user_id=?`, id, userID); err != nil {
 		return nil, err
 	}
+
+	// A blob is orphaned only if no OTHER message (or its attachments) still
+	// points at the same URI after this deletion.
+	var orphans []string
+	for _, u := range candidates {
+		var refs int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT (SELECT COUNT(*) FROM messages WHERE raw_uri=?) +
+			        (SELECT COUNT(*) FROM attachments WHERE storage_uri=?)`, u, u).Scan(&refs); err != nil {
+			return nil, err
+		}
+		if refs == 0 {
+			orphans = append(orphans, u)
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return uris, nil
+	return orphans, nil
 }
 
 // StoredUIDLs returns the set of UIDLs already stored locally for an account

@@ -16,8 +16,6 @@ import (
 	"postra/internal/platform/mask"
 )
 
-const promptVersion = "v1"
-
 // maxAIBodyChars bounds untrusted content per request.
 const maxAIBodyChars = 12000
 
@@ -26,14 +24,32 @@ type promptSpec struct {
 	task   string
 }
 
-// Prompts never interpolate mail content into instructions; the content
-// travels in the delimited untrusted block that the adapter appends (AI-014).
-var prompts = map[string]promptSpec{
+type versionedPrompt struct {
+	version string
+	spec    promptSpec
+}
+
+// promptRegistry versions each analysis prompt (AI-013). Versions are ordered
+// oldest→newest; the newest is active by default. ai.prompt_versions can pin
+// or roll back a type to an earlier version. The chosen version is recorded on
+// every analysis and folded into the cache key.
+var promptRegistry = map[string][]versionedPrompt{
 	"summarize": {
-		system: "You are an email analysis assistant. Respond with JSON only.",
-		task: `Summarize the email in the untrusted block. Respond in the email's main language.
+		{"v1", promptSpec{
+			system: "You are an email analysis assistant. Respond with JSON only.",
+			task: `Summarize the email in the untrusted block. Respond in the email's main language.
 JSON schema: {"summary": string, "requests": [string], "dates": [string], "confidence": number (0-1)}`,
+		}},
+		{"v2", promptSpec{
+			system: "You are a precise email analysis assistant. Respond with JSON only and never invent facts absent from the email.",
+			task: `Summarize the email in the untrusted block in its main language. Be concise and cite only what is present.
+JSON schema: {"summary": string, "requests": [string], "dates": [string], "confidence": number (0-1)}`,
+		}},
 	},
+}
+
+// singleVersionPrompts hold prompts that currently have only a v1.
+var singleVersionPrompts = map[string]promptSpec{
 	"classify": {
 		system: "You are an email classification assistant. Respond with JSON only.",
 		task: `Classify the email in the untrusted block.
@@ -75,6 +91,32 @@ JSON schema: {"subject": string, "body": string, "language": string}`,
 		task: `Rewrite the draft in the untrusted block according to the user instruction given above the block. Keep the factual content identical.
 JSON schema: {"subject": string, "body": string}`,
 	},
+}
+
+func init() {
+	// Fold single-version prompts into the registry as "v1".
+	for name, spec := range singleVersionPrompts {
+		promptRegistry[name] = []versionedPrompt{{"v1", spec}}
+	}
+}
+
+// activePrompt resolves the prompt version for an analysis type: the config
+// override (ai.prompt_versions) if present and valid, else the newest version
+// (AI-013). Returns the version string and spec.
+func (a *App) activePrompt(analysisType string) (string, promptSpec, bool) {
+	versions, ok := promptRegistry[analysisType]
+	if !ok || len(versions) == 0 {
+		return "", promptSpec{}, false
+	}
+	if pin, ok := a.Cfg.AI.PromptVersions[analysisType]; ok {
+		for _, vp := range versions {
+			if vp.version == pin {
+				return vp.version, vp.spec, true
+			}
+		}
+	}
+	last := versions[len(versions)-1]
+	return last.version, last.spec, true
 }
 
 // aiEndpointLocal reports whether the configured AI endpoint resolves only to
@@ -126,14 +168,14 @@ func truncateRunes(s string, n int) string {
 }
 
 func (a *App) runAnalysis(ctx context.Context, analysisType, targetType, targetID, userTask, untrusted string) (*domain.Analysis, error) {
-	spec, ok := prompts[analysisType]
+	pv, spec, ok := a.activePrompt(analysisType)
 	if !ok {
 		return nil, userErrf("unknown analysis type %q", analysisType)
 	}
 	if err := a.checkAIPolicy(ctx); err != nil {
 		return nil, err
 	}
-	sum := sha256.Sum256([]byte(analysisType + "|" + promptVersion + "|" + a.Cfg.AI.Model + "|" + userTask + "|" + untrusted))
+	sum := sha256.Sum256([]byte(analysisType + "|" + pv + "|" + a.Cfg.AI.Model + "|" + userTask + "|" + untrusted))
 	inputHash := hex.EncodeToString(sum[:])
 	if cached, err := a.Store.FindCachedAnalysis(ctx, DefaultUserID, analysisType, inputHash, a.Cfg.AI.Model); err == nil {
 		return cached, nil // AI-008 cache
@@ -170,7 +212,7 @@ func (a *App) runAnalysis(ctx context.Context, analysisType, targetType, targetI
 	an := &domain.Analysis{
 		ID: persistence.NewID("ana"), UserID: DefaultUserID,
 		TargetType: targetType, TargetID: targetID, AnalysisType: analysisType,
-		ResultJSON: resultJSON, Model: res.Model, PromptVersion: promptVersion, InputHash: inputHash,
+		ResultJSON: resultJSON, Model: res.Model, PromptVersion: pv, InputHash: inputHash,
 	}
 	if err := a.Store.SaveAnalysis(ctx, an); err != nil {
 		return nil, err
