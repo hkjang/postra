@@ -12,6 +12,7 @@ import (
 	"html/template"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -127,18 +128,25 @@ func (s *Server) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/ui/", http.StatusSeeOther)
 }
 
+const searchPageSize = 50
+
 func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	cursor := r.URL.Query().Get("cursor")
 	data := map[string]any{"Query": q, "Searched": r.URL.Query().Has("q")}
 	if q != "" {
 		res, err := s.app.Search(r.Context(), domain.SearchQuery{
-			UserID: application.DefaultUserID, Text: q, Limit: 100,
+			UserID: application.DefaultUserID, Text: q, Limit: searchPageSize, Cursor: cursor,
 		})
 		if err != nil {
 			s.fail(w, err)
 			return
 		}
 		data["Messages"] = res.Messages
+		if res.NextCursor != "" {
+			// Preserve the query and advance the cursor for the "more" link.
+			data["NextURL"] = "/ui/?q=" + url.QueryEscape(q) + "&cursor=" + url.QueryEscape(res.NextCursor)
+		}
 	}
 	s.render(w, "search", http.StatusOK, data)
 }

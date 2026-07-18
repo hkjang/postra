@@ -2,6 +2,7 @@ package webui
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -93,6 +94,53 @@ func TestSearchAndMessage(t *testing.T) {
 	rec = do(t, h, "GET", "/ui/messages/msg_missing", nil, nil)
 	if rec.Code == 200 {
 		t.Fatalf("unknown message should not render 200, got %d", rec.Code)
+	}
+}
+
+func TestSearchPagination(t *testing.T) {
+	app, _ := newTestApp(t)
+	ctx := context.Background()
+	// Seed one more than a page so a second page (and "더 보기") exists.
+	for i := 0; i < searchPageSize+1; i++ {
+		m := &domain.Message{
+			ID: fmt.Sprintf("msg_%03d", i), UserID: application.DefaultUserID, AccountID: "acc_x",
+			Subject: fmt.Sprintf("page item %d", i), From: domain.Address{Email: "a@x"},
+			Date: int64(1000 + i), RawHash: fmt.Sprintf("h%03d", i), RawURI: "mem://x",
+		}
+		if err := app.Store.InsertMessage(ctx, m, nil, nil); err != nil {
+			t.Fatalf("seed %d: %v", i, err)
+		}
+	}
+	h := New(app, "").Handler()
+
+	// Page 1: full page + a "more" link.
+	rec := do(t, h, "GET", "/ui/?q=page", nil, nil)
+	body := rec.Body.String()
+	if rec.Code != 200 {
+		t.Fatalf("search code=%d", rec.Code)
+	}
+	if !strings.Contains(body, "더 보기") {
+		t.Fatal("expected a '더 보기' pagination link on page 1")
+	}
+	if n := strings.Count(body, "/ui/messages/"); n != searchPageSize {
+		t.Fatalf("page 1 row count = %d, want %d", n, searchPageSize)
+	}
+
+	// Follow the cursor link → page 2 with the remaining item, no further link.
+	// html/template escapes & as &amp; in the href; a browser decodes it back.
+	i := strings.Index(body, `href="/ui/?q=page&amp;cursor=`)
+	if i < 0 {
+		t.Fatal("no cursor link found")
+	}
+	rest := body[i+len(`href="`):]
+	next := strings.ReplaceAll(rest[:strings.IndexByte(rest, '"')], "&amp;", "&")
+	rec2 := do(t, h, "GET", next, nil, nil)
+	body2 := rec2.Body.String()
+	if strings.Count(body2, "/ui/messages/") != 1 {
+		t.Fatalf("page 2 row count = %d, want 1", strings.Count(body2, "/ui/messages/"))
+	}
+	if strings.Contains(body2, "더 보기") {
+		t.Fatal("page 2 should not offer a further page")
 	}
 }
 

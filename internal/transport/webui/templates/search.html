@@ -23,6 +23,7 @@
     </tbody>
   </table>
   </div>
+  {{if .NextURL}}<div class="actions"><a class="btn ghost" href="{{.NextURL}}">더 보기</a></div>{{end}}
   {{else}}
   <p class="muted">검색 결과가 없습니다.</p>
   {{end}}
