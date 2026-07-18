@@ -1,0 +1,37 @@
+{{define "title"}}발송 승인{{end}}
+{{define "content"}}
+{{$p := .Preview}}
+<p class="small"><a href="/ui/drafts/{{$p.DraftID}}" class="muted">← 초안</a></p>
+<h1>발송 미리보기 · 승인</h1>
+
+{{range $p.Warnings}}<div class="warn">⚠ {{.}}</div>{{end}}
+
+<div class="card">
+  <dl class="kv">
+    <dt>보낸이</dt><dd>{{$p.From}}</dd>
+    <dt>받는이</dt><dd>{{join $p.To}}</dd>
+    {{if $p.Cc}}<dt>참조</dt><dd>{{join $p.Cc}}</dd>{{end}}
+    {{if $p.Bcc}}<dt>숨은참조</dt><dd>{{join $p.Bcc}}</dd>{{end}}
+    <dt>수신자 수</dt><dd>{{$p.RecipientCount}}{{if $p.ExternalDomains}} <span class="tag">외부: {{join $p.ExternalDomains}}</span>{{end}}</dd>
+    <dt>제목</dt><dd>{{$p.Subject}}</dd>
+  </dl>
+  <h2>본문</h2>
+  <div class="pre">{{$p.Body}}</div>
+</div>
+
+{{if .Token}}
+  <div class="warn">승인 토큰이 발급되었습니다(1회용, 현재 버전 v{{$p.DraftVersion}}에 한정). 아래 <b>발송 확정</b>을 누르면 즉시 전송됩니다.</div>
+  <form method="post" action="/ui/drafts/{{$p.DraftID}}/send" class="actions">
+    <input type="hidden" name="action" value="confirm">
+    <input type="hidden" name="token" value="{{.Token}}">
+    <button type="submit" class="danger">발송 확정</button>
+    <a class="btn ghost" href="/ui/drafts/{{$p.DraftID}}/send">취소</a>
+  </form>
+{{else}}
+  <form method="post" action="/ui/drafts/{{$p.DraftID}}/send" class="actions">
+    <input type="hidden" name="action" value="approve">
+    <button type="submit">이 내용으로 승인 요청</button>
+  </form>
+  <p class="small muted">승인 후 발송까지 사람이 명시적으로 확인합니다(2단계). 초안이 변경되면 토큰은 무효화됩니다.</p>
+{{end}}
+{{end}}

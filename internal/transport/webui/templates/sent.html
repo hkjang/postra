@@ -1,0 +1,14 @@
+{{define "title"}}발송 결과{{end}}
+{{define "content"}}
+{{$o := .Outbound}}
+<h1>발송 처리됨</h1>
+<div class="card">
+  <dl class="kv">
+    <dt>상태</dt><dd><b>{{$o.Status}}</b></dd>
+    <dt>발신 ID</dt><dd class="small">{{$o.ID}}</dd>
+    <dt>시도</dt><dd>{{$o.Attempts}}</dd>
+    {{if $o.SMTPResponse}}<dt>서버 응답</dt><dd class="small muted">{{$o.SMTPResponse}}</dd>{{end}}
+  </dl>
+</div>
+<div class="actions"><a class="btn ghost" href="/ui/">검색으로</a></div>
+{{end}}

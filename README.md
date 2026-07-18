@@ -87,6 +87,17 @@ POSTRA_ALLOW_INSECURE_MAIL=true ./postra serve
 
 **프롬프트(Prompts)**: `summarize_mail`, `summarize_thread`, `draft_reply`, `extract_action_items`, `review_phishing_risk`, `rewrite_formal`, `rewrite_concise`, `prepare_daily_digest`.
 
+## Web UI (§ mail-web)
+
+`serve` 는 REST 바인드 주소의 `/ui` 에 서버 렌더링 웹 UI를 제공합니다(`config.json` 의 `web_ui_enabled=false` 로 비활성). 외부 의존·빌드 단계·CDN 없이 Go `html/template` + 임베드 자산으로 단일 바이너리에 포함되어 **오프라인망에서 그대로 동작**합니다.
+
+- **검색** (`/ui/`) — 제목·본문·보낸이 검색, 결과에서 메일 상세로 이동
+- **메일 상세** (`/ui/messages/{id}`) — 헤더·본문·첨부(스캔 상태 포함)
+- **초안 검토** (`/ui/drafts/{id}`) — 버전·작성자(AI/사용자)·본문 확인
+- **발송 승인** (`/ui/drafts/{id}/send`) — 미리보기·경고(외부 도메인/다수 수신자) → **승인 요청** → **발송 확정** 2단계. 초안이 바뀌면 토큰 무효화, 동일 버전 재전송은 멱등(이중 발송 없음)
+
+`APIToken` 이 설정되면 UI는 해당 토큰으로 쿠키 로그인(`/ui/login`)을 요구합니다(HttpOnly·SameSite=Strict). 서버는 평문 HTTP로 서빙하므로 인터넷 노출 시 리버스 프록시에서 TLS를 종단하세요.
+
 ## 관측성 · 메트릭 (§18.1)
 
 `serve` 는 REST 바인드 주소에 Prometheus 메트릭을 `GET /metrics` 로 노출합니다(스크레이핑용으로 **인증 불요**, `config.json` 의 `metrics_enabled=false` 로 비활성). 노출 범위는 `http_addr` 바인딩으로 제어하세요.

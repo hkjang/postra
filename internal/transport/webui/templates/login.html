@@ -1,0 +1,12 @@
+{{define "title"}}로그인{{end}}
+{{define "content"}}
+<h1>Postra 로그인</h1>
+<div class="card" style="max-width:420px">
+  {{if .Error}}<p class="err">{{.Error}}</p>{{end}}
+  <form method="post" action="/ui/login">
+    <p class="small muted">API 토큰을 입력하세요.</p>
+    <p><input type="password" name="token" placeholder="API 토큰" autofocus style="width:100%"></p>
+    <button type="submit">로그인</button>
+  </form>
+</div>
+{{end}}

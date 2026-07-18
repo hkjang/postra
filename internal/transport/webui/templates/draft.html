@@ -1,0 +1,20 @@
+{{define "title"}}초안 검토{{end}}
+{{define "content"}}
+{{$d := .View.Draft}}{{$v := .View.Version}}
+<p class="small"><a href="/ui/" class="muted">← 검색</a></p>
+<h1>초안 검토 <span class="tag">{{$d.Status}}</span></h1>
+<div class="card">
+  <dl class="kv">
+    <dt>초안 ID</dt><dd class="small">{{$d.ID}}</dd>
+    <dt>버전</dt><dd>v{{$v.Version}} <span class="tag">{{if eq $v.Author "ai"}}AI 작성{{else}}사용자 작성{{end}}</span></dd>
+    <dt>받는이</dt><dd>{{addrs $v.To}}</dd>
+    {{if $v.Cc}}<dt>참조</dt><dd>{{addrs $v.Cc}}</dd>{{end}}
+    <dt>제목</dt><dd>{{$v.Subject}}</dd>
+  </dl>
+  <h2>본문</h2>
+  <div class="pre">{{$v.BodyText}}</div>
+</div>
+<div class="actions">
+  <a class="btn" href="/ui/drafts/{{$d.ID}}/send">발송 미리보기·승인 →</a>
+</div>
+{{end}}

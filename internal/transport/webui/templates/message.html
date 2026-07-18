@@ -1,0 +1,34 @@
+{{define "title"}}메일{{end}}
+{{define "content"}}
+{{$m := .View.Message}}
+<p class="small"><a href="/ui/" class="muted">← 검색</a></p>
+<h1>{{if $m.Subject}}{{$m.Subject}}{{else}}(제목 없음){{end}}</h1>
+<div class="card">
+  <dl class="kv">
+    <dt>보낸이</dt><dd>{{addr $m.From}}</dd>
+    <dt>받는이</dt><dd>{{addrs $m.To}}</dd>
+    {{if $m.Cc}}<dt>참조</dt><dd>{{addrs $m.Cc}}</dd>{{end}}
+    <dt>날짜</dt><dd>{{ts $m.Date}}</dd>
+    {{if $m.AuthResults}}<dt>인증</dt><dd class="small muted">{{$m.AuthResults}}</dd>{{end}}
+  </dl>
+</div>
+{{if $m.ParseError}}<div class="warn">부분 파싱: {{$m.ParseError}}</div>{{end}}
+<h2>본문</h2>
+{{if .View.Body}}
+  <div class="pre">{{.View.Body.TextBody}}</div>
+{{else}}
+  <p class="muted">본문 없음.</p>
+{{end}}
+{{if .View.Attachments}}
+<h2>첨부 ({{len .View.Attachments}})</h2>
+<div class="card"><table>
+  <thead><tr><th>이름</th><th>유형</th><th>크기</th><th>스캔</th></tr></thead>
+  <tbody>
+  {{range .View.Attachments}}
+    <tr><td>{{.Name}}</td><td class="small muted">{{.MIMEType}}</td><td class="small">{{size .Size}}</td>
+      <td class="small">{{.ScanStatus}}</td></tr>
+  {{end}}
+  </tbody>
+</table></div>
+{{end}}
+{{end}}

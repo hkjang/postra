@@ -1,0 +1,55 @@
+{{define "layout"}}<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{block "title" .}}Postra{{end}} · Postra</title>
+<style>
+:root{--bg:#f7f8fa;--fg:#1c2024;--muted:#6b7280;--line:#e3e6ea;--accent:#2563eb;--warn:#b45309;--danger:#b91c1c;--card:#fff}
+@media(prefers-color-scheme:dark){:root{--bg:#14171a;--fg:#e6e8eb;--muted:#9aa3ad;--line:#2a2f36;--accent:#5b9bff;--warn:#e0a33a;--danger:#f16a6a;--card:#1c2024}}
+*{box-sizing:border-box}
+body{margin:0;font:15px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans KR",sans-serif;background:var(--bg);color:var(--fg)}
+header{background:var(--card);border-bottom:1px solid var(--line);padding:.6rem 1rem;display:flex;gap:1rem;align-items:center}
+header a{color:var(--fg);text-decoration:none;font-weight:600}
+header .brand{color:var(--accent);font-size:1.1rem}
+header nav{display:flex;gap:1rem;font-weight:500}
+header nav a{color:var(--muted)}
+main{max-width:940px;margin:1.4rem auto;padding:0 1rem}
+h1{font-size:1.35rem;margin:.2rem 0 1rem}
+h2{font-size:1.05rem;margin:1.4rem 0 .5rem}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:1rem 1.2rem;margin-bottom:1rem}
+table{width:100%;border-collapse:collapse}
+th,td{text-align:left;padding:.5rem .4rem;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--muted);font-weight:600;font-size:.82rem;text-transform:uppercase;letter-spacing:.03em}
+td.subj a{color:var(--accent);text-decoration:none;font-weight:500}
+.muted{color:var(--muted)}
+.small{font-size:.85rem}
+form.search{display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:1rem}
+input[type=text],input[type=password],textarea{background:var(--bg);border:1px solid var(--line);border-radius:7px;padding:.5rem .6rem;color:var(--fg);font:inherit}
+input[type=text]{flex:1;min-width:200px}
+textarea{width:100%;min-height:9rem;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+button,.btn{background:var(--accent);color:#fff;border:0;border-radius:7px;padding:.5rem 1rem;font:inherit;font-weight:600;cursor:pointer;text-decoration:none;display:inline-block}
+button.danger,.btn.danger{background:var(--danger)}
+button.ghost{background:transparent;color:var(--accent);border:1px solid var(--line)}
+.pre{white-space:pre-wrap;word-break:break-word;background:var(--bg);border:1px solid var(--line);border-radius:7px;padding:.8rem;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.9rem}
+.kv{display:grid;grid-template-columns:110px 1fr;gap:.35rem .8rem;margin:.3rem 0}
+.kv dt{color:var(--muted)}
+.kv dd{margin:0}
+.warn{background:color-mix(in srgb,var(--warn) 14%,transparent);border:1px solid var(--warn);color:var(--warn);border-radius:7px;padding:.6rem .8rem;margin:.5rem 0}
+.tag{display:inline-block;font-size:.72rem;padding:.1rem .45rem;border-radius:5px;border:1px solid var(--line);color:var(--muted);margin-left:.3rem}
+.err{color:var(--danger);font-weight:500}
+.actions{display:flex;gap:.6rem;margin-top:1rem;align-items:center}
+</style>
+</head>
+<body>
+<header>
+  <a href="/ui/" class="brand">✉ Postra</a>
+  <nav>
+    <a href="/ui/">검색</a>
+  </nav>
+</header>
+<main>
+{{block "content" .}}{{end}}
+</main>
+</body>
+</html>{{end}}

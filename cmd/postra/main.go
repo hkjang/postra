@@ -34,6 +34,7 @@ import (
 	"postra/internal/platform/crypto"
 	"postra/internal/transport/httpapi"
 	"postra/internal/transport/mcpserver"
+	"postra/internal/transport/webui"
 )
 
 func main() {
@@ -261,9 +262,18 @@ func serve(configPath string) error {
 	go app.RunScheduler(schedCtx)
 	go app.RunRetryWorker(schedCtx)
 
+	// The REST API owns "/" (its mux registers /api/… and /metrics); the web
+	// UI, when enabled, takes the more-specific "/ui/" prefix so ServeMux
+	// routes UI traffic to it and everything else to the API.
+	root := http.NewServeMux()
+	root.Handle("/", httpapi.New(app, cfg.APIToken).Handler())
+	if cfg.WebUIEnabled {
+		root.Handle("/ui/", webui.New(app, cfg.APIToken).Handler())
+		slog.Info("web UI enabled", "path", "/ui/")
+	}
 	restSrv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           httpapi.New(app, cfg.APIToken).Handler(),
+		Handler:           root,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	errCh := make(chan error, 2)

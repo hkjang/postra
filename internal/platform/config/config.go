@@ -53,6 +53,11 @@ type Config struct {
 	// remove the endpoint entirely. Restrict exposure via HTTPAddr binding.
 	MetricsEnabled bool `json:"metrics_enabled"`
 
+	// WebUIEnabled serves the minimal server-rendered web UI (search, draft
+	// review, send approval) under /ui on the REST bind address. Default true.
+	// When APIToken is set the UI requires a cookie login with that token.
+	WebUIEnabled bool `json:"web_ui_enabled"`
+
 	AI          AIConfig         `json:"ai"`
 	Sync        SyncConfig       `json:"sync"`
 	Send        SendConfig       `json:"send"`
@@ -133,6 +138,7 @@ func Default() Config {
 		AllowPrivateHosts: true,
 		EncryptAtRest:     true,
 		MetricsEnabled:    true,
+		WebUIEnabled:      true,
 		AI: AIConfig{
 			BaseURL:         "http://127.0.0.1:11434/v1",
 			Model:           "llama3.1",
