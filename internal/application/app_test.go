@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -124,6 +126,7 @@ func newTestApp(t *testing.T) (*App, *fakePOP3, *fakeSMTP, *fakeAI) {
 	cfg.DataDir = dir
 	cfg.AllowInsecureMail = true
 	cfg.AllowPrivateHosts = true
+	cfg.EncryptAtRest = true
 	cfg.Sync.MaxMessageBytes = 1 << 20
 	cfg.Sync.MaxPerSync = 100
 
@@ -135,11 +138,13 @@ func newTestApp(t *testing.T) (*App, *fakePOP3, *fakeSMTP, *fakeAI) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	store.EnableEncryption(kek)
 	t.Cleanup(func() { store.Close() })
-	objects, err := objectstore.NewLocal(dir)
+	local, err := objectstore.NewLocal(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
+	objects := objectstore.NewEncrypted(local, kek)
 	pop := &fakePOP3{messages: map[string]string{}}
 	smtp := &fakeSMTP{}
 	aiP := &fakeAI{}
@@ -539,6 +544,89 @@ func TestRawPreservation(t *testing.T) {
 	got, _ := io.ReadAll(rc)
 	if !bytes.Equal(got, []byte(raw)) {
 		t.Fatal("raw MIME was altered")
+	}
+}
+
+// §14 at-rest encryption: neither the raw MIME object nor the parsed body
+// column may appear as plaintext anywhere under the data directory, yet
+// reads still return the original content and FTS search still works.
+func TestEncryptionAtRest(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Default()
+	cfg.DataDir = dir
+	cfg.AllowInsecureMail = true
+	cfg.EncryptAtRest = true
+	cfg.Sync.MaxMessageBytes = 1 << 20
+
+	kek, err := crypto.LoadOrCreateKEK(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := persistence.Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.EnableEncryption(kek)
+	t.Cleanup(func() { store.Close() })
+	local, _ := objectstore.NewLocal(dir)
+	objects := objectstore.NewEncrypted(local, kek)
+	pop := &fakePOP3{messages: map[string]string{}}
+	app, err := New(cfg, store, objects, secretstore.NewLocal(dir, kek), pop, &fakeSMTP{}, &fakeAI{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(app.Shutdown)
+	acc := mustAccount(t, app)
+
+	const marker = "SUPERSECRETBODYMARKER98765"
+	pop.messages["u1"] = testMail("m1", "confidential", "please keep "+marker+" private")
+	if j := syncAndWait(t, app, acc.ID); j.Stats["new"] != 1 {
+		t.Fatalf("sync new=%d (%s)", j.Stats["new"], j.Error)
+	}
+
+	// The object store must contain no plaintext marker; the DB body column
+	// must be sealed. (The FTS index legitimately holds body plaintext, so
+	// exclude the SQLite DB files from the object-store scan.)
+	objectsRoot := filepath.Join(dir, "objects")
+	filepath.WalkDir(objectsRoot, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		b, _ := os.ReadFile(p)
+		if bytes.Contains(b, []byte(marker)) {
+			t.Fatalf("plaintext marker found in object file %s", p)
+		}
+		return nil
+	})
+
+	// Read paths still return the decrypted original.
+	res, _ := app.Search(context.Background(), domain.SearchQuery{})
+	if len(res.Messages) != 1 {
+		t.Fatalf("messages=%d", len(res.Messages))
+	}
+	mv, err := app.GetMessage(context.Background(), res.Messages[0].ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(mv.Body.TextBody, marker) {
+		t.Fatalf("decrypted body missing marker: %q", mv.Body.TextBody)
+	}
+	rc, err := app.GetRawMessage(WithActor(context.Background(), "test"), res.Messages[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := io.ReadAll(rc)
+	rc.Close()
+	if !bytes.Contains(raw, []byte(marker)) {
+		t.Fatal("decrypted raw MIME missing marker")
+	}
+	// FTS content search still works against the plaintext index.
+	fres, err := app.Search(context.Background(), domain.SearchQuery{Text: marker})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fres.Messages) != 1 {
+		t.Fatalf("FTS search over encrypted body returned %d results", len(fres.Messages))
 	}
 }
 

@@ -17,11 +17,16 @@ import (
 	_ "modernc.org/sqlite"
 
 	"postra/internal/domain"
+	"postra/internal/platform/crypto"
 )
 
 type Store struct {
 	db  *sql.DB
 	fts bool
+	// kek, when set, encrypts message body columns at rest. The FTS index
+	// still holds plaintext (search over ciphertext is out of scope); see
+	// EnableEncryption.
+	kek *crypto.KEK
 }
 
 func Open(path string) (*Store, error) {
@@ -39,6 +44,54 @@ func Open(path string) (*Store, error) {
 }
 
 func (s *Store) Close() error { return s.db.Close() }
+
+// EnableEncryption turns on at-rest encryption of message body columns
+// (text + sanitized HTML). Metadata columns used for search/sort (subject,
+// addresses, dates) stay queryable in plaintext by design.
+//
+// Caveat: with FTS available, the full-text index contains body plaintext.
+// For a strict "backup leak → undecryptable" guarantee, disable FTS so
+// content search is not indexed at rest.
+func (s *Store) EnableEncryption(kek *crypto.KEK) { s.kek = kek }
+
+const bodyEncPrefix = "enc:v1:"
+
+// sealBody encrypts a body field when a KEK is configured, tagging the
+// output so openBody can detect and reverse it. AAD binds the ciphertext to
+// its message and field.
+func (s *Store) sealBody(messageID, field, plain string) (string, error) {
+	if s.kek == nil || plain == "" {
+		return plain, nil
+	}
+	env, err := s.kek.Encrypt([]byte(plain), []byte("body:"+messageID+":"+field))
+	if err != nil {
+		return "", err
+	}
+	b, err := json.Marshal(env)
+	if err != nil {
+		return "", err
+	}
+	return bodyEncPrefix + string(b), nil
+}
+
+func (s *Store) openBody(messageID, field, stored string) (string, error) {
+	rest, ok := strings.CutPrefix(stored, bodyEncPrefix)
+	if !ok {
+		return stored, nil // plaintext (encryption off, or pre-encryption row)
+	}
+	if s.kek == nil {
+		return "", errors.New("body is encrypted but no key is configured")
+	}
+	var env crypto.Envelope
+	if err := json.Unmarshal([]byte(rest), &env); err != nil {
+		return "", err
+	}
+	pt, err := s.kek.Decrypt(&env, []byte("body:"+messageID+":"+field))
+	if err != nil {
+		return "", err
+	}
+	return string(pt), nil
+}
 
 func (s *Store) migrate() error {
 	schema := `
@@ -326,9 +379,17 @@ func (s *Store) InsertMessage(ctx context.Context, m *domain.Message, body *doma
 		return err
 	}
 	if body != nil {
+		sealedText, err := s.sealBody(m.ID, "text", body.TextBody)
+		if err != nil {
+			return err
+		}
+		sealedHTML, err := s.sealBody(m.ID, "html", body.HTMLSanitized)
+		if err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO message_bodies (message_id,text_body,html_sanitized,charset) VALUES (?,?,?,?)`,
-			m.ID, body.TextBody, body.HTMLSanitized, body.Charset); err != nil {
+			m.ID, sealedText, sealedHTML, body.Charset); err != nil {
 			return err
 		}
 	}
@@ -420,7 +481,13 @@ func (s *Store) GetBody(ctx context.Context, userID, messageID string) (*domain.
 	if err != nil {
 		return nil, err
 	}
-	b.HTMLSanitized, b.Charset = html.String, charset.String
+	if b.TextBody, err = s.openBody(messageID, "text", b.TextBody); err != nil {
+		return nil, err
+	}
+	if b.HTMLSanitized, err = s.openBody(messageID, "html", html.String); err != nil {
+		return nil, err
+	}
+	b.Charset = charset.String
 	return &b, nil
 }
 

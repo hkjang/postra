@@ -87,9 +87,14 @@ func loadApp(configPath string) (*application.App, config.Config, error) {
 	if err != nil {
 		return nil, cfg, err
 	}
-	objects, err := objectstore.NewLocal(cfg.DataDir)
+	local, err := objectstore.NewLocal(cfg.DataDir)
 	if err != nil {
 		return nil, cfg, err
+	}
+	var objects objectstore.Store = local
+	if cfg.EncryptAtRest {
+		objects = objectstore.NewEncrypted(local, kek)
+		store.EnableEncryption(kek)
 	}
 	secrets := secretstore.NewLocal(cfg.DataDir, kek)
 	app, err := application.New(cfg, store, objects, secrets,

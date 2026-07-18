@@ -37,6 +37,11 @@ type Config struct {
 	// Link-local/metadata ranges (169.254.0.0/16) are always rejected.
 	AllowPrivateHosts bool `json:"allow_private_hosts"`
 
+	// EncryptAtRest encrypts raw MIME originals, attachments, and parsed
+	// message bodies with the KEK. Metadata (subjects, addresses, dates)
+	// stays queryable in plaintext; the FTS index also holds body plaintext.
+	EncryptAtRest bool `json:"encrypt_at_rest"`
+
 	AI   AIConfig   `json:"ai"`
 	Sync SyncConfig `json:"sync"`
 }
@@ -74,6 +79,7 @@ func Default() Config {
 		HTTPAddr:          "127.0.0.1:8480",
 		MCPHTTPAddr:       "127.0.0.1:8481",
 		AllowPrivateHosts: true,
+		EncryptAtRest:     true,
 		AI: AIConfig{
 			BaseURL:    "http://127.0.0.1:11434/v1",
 			Model:      "llama3.1",
