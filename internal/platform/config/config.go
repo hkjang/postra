@@ -44,6 +44,17 @@ type Config struct {
 
 	AI   AIConfig   `json:"ai"`
 	Sync SyncConfig `json:"sync"`
+	Send SendConfig `json:"send"`
+}
+
+type SendConfig struct {
+	// MaxPerMinute / MaxPerHour cap sent messages per account over a rolling
+	// window (SMTP-012). 0 = unlimited.
+	MaxPerMinute int `json:"max_per_minute"`
+	MaxPerHour   int `json:"max_per_hour"`
+	// WarnRecipients surfaces a preview warning when a single send targets at
+	// least this many recipients (SMTP-013). 0 disables the warning.
+	WarnRecipients int `json:"warn_recipients"`
 }
 
 type AIConfig struct {
@@ -95,6 +106,11 @@ func Default() Config {
 			MaxPerSync:        500,
 			ConnectTimeoutSec: 15,
 			CommandTimeoutSec: 60,
+		},
+		Send: SendConfig{
+			MaxPerMinute:   20,
+			MaxPerHour:     200,
+			WarnRecipients: 10,
 		},
 	}
 }

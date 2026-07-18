@@ -598,6 +598,69 @@ func TestSchedulerSyncsActiveAccounts(t *testing.T) {
 	}
 }
 
+// SMTP-012: per-account send quota blocks the send over the limit, and the
+// rejection does not consume the approval prematurely for replays.
+func TestSendRateLimit(t *testing.T) {
+	app, _, smtp, _ := newTestApp(t)
+	app.Cfg.Send.MaxPerMinute = 2
+	app.Cfg.Send.MaxPerHour = 0
+	acc := mustAccount(t, app)
+	ctx := WithActor(context.Background(), "test")
+
+	send := func() error {
+		dv, err := app.CreateDraft(ctx, CreateDraftInput{
+			AccountID: acc.ID, To: []string{"bob@example.com"}, Subject: "s", Body: "b",
+		})
+		if err != nil {
+			return err
+		}
+		_, tok, err := app.RequestSendApproval(ctx, dv.Draft.ID, "t", 60)
+		if err != nil {
+			return err
+		}
+		_, err = app.Send(ctx, SendInput{DraftID: dv.Draft.ID, ApprovalToken: tok.Token})
+		return err
+	}
+	if err := send(); err != nil {
+		t.Fatalf("send 1: %v", err)
+	}
+	if err := send(); err != nil {
+		t.Fatalf("send 2: %v", err)
+	}
+	if err := send(); err == nil {
+		t.Fatal("send 3 must be rejected by rate limit")
+	}
+	if len(smtp.sent) != 2 {
+		t.Fatalf("smtp saw %d sends, want 2", len(smtp.sent))
+	}
+}
+
+// SMTP-013: preview warns when a send targets many recipients.
+func TestManyRecipientWarning(t *testing.T) {
+	app, _, _, _ := newTestApp(t)
+	app.Cfg.Send.WarnRecipients = 3
+	acc := mustAccount(t, app)
+	ctx := WithActor(context.Background(), "test")
+	dv, err := app.CreateDraft(ctx, CreateDraftInput{
+		AccountID: acc.ID,
+		To:        []string{"a@x.com", "b@x.com", "c@x.com", "d@x.com"},
+		Subject:   "broadcast", Body: "hi",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pv, err := app.PreviewSend(ctx, dv.Draft.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pv.RecipientCount != 4 {
+		t.Fatalf("recipient_count=%d", pv.RecipientCount)
+	}
+	if len(pv.Warnings) == 0 {
+		t.Fatal("expected a many-recipient warning")
+	}
+}
+
 // Local delete removes the message and its blobs without touching the server.
 func TestLocalDelete(t *testing.T) {
 	app, pop, _, _ := newTestApp(t)

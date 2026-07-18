@@ -109,7 +109,11 @@ type SendPreview struct {
 	// ExternalDomains flags recipients outside the sender's domain (§13
 	// 잘못된 수신자 발송 통제).
 	ExternalDomains []string `json:"external_domains,omitempty"`
-	PayloadHash     string   `json:"payload_hash"`
+	RecipientCount  int      `json:"recipient_count"`
+	// Warnings surfaces send-time cautions (e.g. many recipients, SMTP-013)
+	// the user should review before approving.
+	Warnings    []string `json:"warnings,omitempty"`
+	PayloadHash string   `json:"payload_hash"`
 }
 
 func (a *App) PreviewSend(ctx context.Context, draftID string) (*SendPreview, error) {
@@ -135,11 +139,20 @@ func (a *App) PreviewSend(ctx context.Context, draftID string) (*SendPreview, er
 	for d := range extSet {
 		ext = append(ext, d)
 	}
+	recipientCount := len(v.To) + len(v.Cc) + len(v.Bcc)
+	var warnings []string
+	if w := a.Cfg.Send.WarnRecipients; w > 0 && recipientCount >= w {
+		warnings = append(warnings, fmt.Sprintf("%d recipients — review carefully before approving", recipientCount))
+	}
+	if len(ext) > 0 {
+		warnings = append(warnings, "recipients on external domains: "+strings.Join(ext, ", "))
+	}
 	return &SendPreview{
 		DraftID: d.ID, DraftVersion: v.Version,
 		From: acc.Email, To: emails(v.To), Cc: emails(v.Cc), Bcc: emails(v.Bcc),
 		Subject: v.Subject, Body: v.BodyText,
-		ExternalDomains: ext, PayloadHash: sendPayloadHash(acc, v),
+		ExternalDomains: ext, RecipientCount: recipientCount,
+		Warnings: warnings, PayloadHash: sendPayloadHash(acc, v),
 	}, nil
 }
 
@@ -188,13 +201,20 @@ func (a *App) Send(ctx context.Context, in SendInput) (*domain.OutboundMessage, 
 		return nil, err
 	}
 
-	// SMTP-007: idempotent replay returns the original outcome.
+	// SMTP-007: idempotent replay returns the original outcome (no new send,
+	// so it must not be counted against the rate limit).
 	idemKey := in.IdempotencyKey
 	if idemKey == "" {
 		idemKey = fmt.Sprintf("draft:%s:v%d", d.ID, v.Version)
 	}
 	if existing, err := a.Store.GetOutboundByIdemKey(ctx, DefaultUserID, idemKey); err == nil {
 		return existing, nil
+	}
+
+	// SMTP-012: rolling-window send quota per account.
+	if err := a.checkSendRate(ctx, acc.ID); err != nil {
+		a.audit(ctx, "mail_send", "draft:"+d.ID, "denied", err.Error())
+		return nil, err
 	}
 
 	// Approval token must match the *current* payload (§9.2): recompute and
@@ -270,6 +290,31 @@ func (a *App) Send(ctx context.Context, in SendInput) (*domain.OutboundMessage, 
 
 func (a *App) GetOutbound(ctx context.Context, id string) (*domain.OutboundMessage, error) {
 	return a.Store.GetOutbound(ctx, DefaultUserID, id)
+}
+
+// checkSendRate enforces per-account per-minute and per-hour send quotas
+// against the durable outbound history (SMTP-012).
+func (a *App) checkSendRate(ctx context.Context, accountID string) error {
+	now := time.Now()
+	if lim := a.Cfg.Send.MaxPerMinute; lim > 0 {
+		n, err := a.Store.CountSentSince(ctx, DefaultUserID, accountID, now.Add(-time.Minute).Unix())
+		if err != nil {
+			return err
+		}
+		if n >= lim {
+			return userErrf("send rate limit reached: %d/min for this account", lim)
+		}
+	}
+	if lim := a.Cfg.Send.MaxPerHour; lim > 0 {
+		n, err := a.Store.CountSentSince(ctx, DefaultUserID, accountID, now.Add(-time.Hour).Unix())
+		if err != nil {
+			return err
+		}
+		if n >= lim {
+			return userErrf("send rate limit reached: %d/hour for this account", lim)
+		}
+	}
+	return nil
 }
 
 // ---------- MIME construction ----------

@@ -905,6 +905,18 @@ func (s *Store) GetOutboundByIdemKey(ctx context.Context, userID, key string) (*
 	return scanOutbound(row)
 }
 
+// CountSentSince counts messages successfully sent for an account since a
+// unix timestamp, used for rolling-window rate limiting (SMTP-012). Account
+// scope is resolved through the draft since outbound rows key off drafts.
+func (s *Store) CountSentSince(ctx context.Context, userID, accountID string, since int64) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM outbound_messages o
+	 JOIN drafts d ON d.id = o.draft_id
+	 WHERE d.user_id=? AND d.account_id=? AND o.status='sent' AND o.updated_at >= ?`,
+		userID, accountID, since).Scan(&n)
+	return n, err
+}
+
 func (s *Store) GetOutbound(ctx context.Context, userID, id string) (*domain.OutboundMessage, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT id,user_id,draft_id,draft_version,idempotency_key,message_id_hdr,status,COALESCE(smtp_response,''),attempts,created_at,updated_at
 	 FROM outbound_messages WHERE user_id=? AND id=?`, userID, id)
