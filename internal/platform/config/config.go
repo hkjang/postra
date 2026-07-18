@@ -168,7 +168,7 @@ func Load(path string) (Config, error) {
 		home, _ := os.UserHomeDir()
 		path = filepath.Join(home, ".postra", "config.json")
 	}
-	if b, err := os.ReadFile(path); err == nil {
+	if b, err := os.ReadFile(path); err == nil { // #nosec G304 -- config path from operator flag/home dir, not untrusted input
 		if err := json.Unmarshal(b, &cfg); err != nil {
 			return cfg, fmt.Errorf("config %s: %w", path, err)
 		}
@@ -212,6 +212,7 @@ func (c Config) Save(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
+	// #nosec G117 -- config intentionally persists the API token to the operator-owned 0700 config file.
 	b, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		return err

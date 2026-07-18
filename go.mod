@@ -2,6 +2,8 @@ module postra
 
 go 1.25.0
 
+toolchain go1.26.5
+
 require (
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/microcosm-cc/bluemonday v1.0.27

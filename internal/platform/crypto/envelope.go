@@ -56,7 +56,7 @@ func LoadOrCreateKEK(dataDir string) (*KEK, error) {
 	}
 
 	ringPath := filepath.Join(dataDir, "keyring.json")
-	if b, err := os.ReadFile(ringPath); err == nil {
+	if b, err := os.ReadFile(ringPath); err == nil { // #nosec G304 -- keyring path is under the app-owned data dir
 		var kf keyringFile
 		if err := json.Unmarshal(b, &kf); err != nil {
 			return nil, fmt.Errorf("corrupt keyring %s: %w", ringPath, err)
@@ -79,7 +79,7 @@ func LoadOrCreateKEK(dataDir string) (*KEK, error) {
 
 	// Migrate a legacy single-key file, else generate a fresh keyring.
 	legacy := filepath.Join(dataDir, "kek.key")
-	if b, err := os.ReadFile(legacy); err == nil {
+	if b, err := os.ReadFile(legacy); err == nil { // #nosec G304 -- legacy KEK path is under the app-owned data dir
 		key, err := base64.StdEncoding.DecodeString(string(b))
 		if err != nil || len(key) != keySize {
 			return nil, fmt.Errorf("corrupt KEK file %s", legacy)

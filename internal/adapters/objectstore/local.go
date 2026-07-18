@@ -93,6 +93,7 @@ func (l *Local) Get(u string) (io.ReadCloser, error) {
 	if err != nil {
 		return nil, err
 	}
+	// #nosec G304 -- kind/name are validated by parseURI; path is scoped under the app-owned store root.
 	return os.Open(filepath.Join(l.root, kind, name[:2], name))
 }
 
@@ -124,7 +125,7 @@ func (l *Local) Walk(fn func(kind, name string, blob []byte) error) error {
 			return nil
 		}
 		kind, name := parts[0], parts[2]
-		blob, err := os.ReadFile(p)
+		blob, err := os.ReadFile(p) // #nosec G122 G304 -- walking the app-owned store root; p is derived from that root, not user input
 		if err != nil {
 			return err
 		}

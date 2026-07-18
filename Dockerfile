@@ -1,5 +1,7 @@
 # Build stage
-FROM golang:1.26 AS build
+# Pinned patch release: includes the stdlib security fixes govulncheck flags
+# (kept in sync with go.mod `toolchain` and .github/workflows/ci.yml GO_VERSION).
+FROM golang:1.26.5 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

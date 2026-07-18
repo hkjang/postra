@@ -141,7 +141,7 @@ func run(cmd string, args []string) error {
 			home, _ := os.UserHomeDir()
 			path = filepath.Join(home, ".postra", "config.json")
 		}
-		if _, err := os.Stat(path); err == nil {
+		if _, err := os.Stat(path); err == nil { // #nosec G703 -- config path from operator flag/home dir, not untrusted input
 			return fmt.Errorf("config already exists at %s", path)
 		}
 		if err := cfg.Save(path); err != nil {

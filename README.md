@@ -109,6 +109,25 @@ go test -race ./...      # 동시성 검사
 
 수집 멱등성, UIDL 미지원 폴백, 승인 토큰 무효화, 발송 멱등성, CRLF 헤더 인젝션 차단, Prompt Injection 격리, 비밀값 비평문, 감사 추적, 비활성 계정 차단, send_uncertain 무재발송, 스레딩, 원본 MIME 보존, 초안 버전 작성자 구분을 커버합니다.
 
+## CI · 공급망 보안 (§20.3)
+
+`.github/workflows/ci.yml` 가 push/PR 마다 아래를 자동 실행합니다.
+
+| 잡 | 내용 |
+|----|------|
+| **build · vet · test** | `go build` / `go vet` / `go test -race -cover`, `go mod tidy` drift 검사 |
+| **govulncheck** | Go 취약점 DB 대조 (호출 그래프 기반) |
+| **gosec** | 정적 보안 스캐너. medium+ 심각도는 차단, LOW(G104)는 리포트만. 의도된 항목은 `#nosec <규칙> -- <근거>` 로 명시 |
+| **SBOM** | CycloneDX(`cyclonedx-gomod`) 소프트웨어 자재명세서 아티팩트 |
+| **docker** | 배포 이미지 빌드 검증 |
+
+빌드 툴체인은 `go.mod` 의 `toolchain` / Dockerfile / 워크플로 `GO_VERSION` 에서 동일 패치 버전으로 고정하며, 셋을 함께 올립니다(표준 라이브러리 보안 픽스 반영). 로컬에서도 동일 검사 실행:
+
+```bash
+go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+go run github.com/securego/gosec/v2/cmd/gosec@latest -severity medium -exclude-dir=scripts ./...
+```
+
 ## 확장 (post-MVP)
 
 Vault/OpenBao SecretStore, S3 ObjectStore, PostgreSQL+pgvector, IMAP/OAuth2 어댑터, 규칙 자동화. 모든 외부 의존은 포트 인터페이스 뒤에 있어 어댑터 교체만으로 확장됩니다.

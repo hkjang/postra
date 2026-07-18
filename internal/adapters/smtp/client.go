@@ -29,6 +29,9 @@ func dialTLSConfig(opts domain.SMTPSendOptions) *tls.Config {
 	return &tls.Config{
 		ServerName:         opts.Host,
 		MinVersion:         tls.VersionTLS12,
+		// #nosec G402 -- offline/self-hosted relays may use self-signed certs;
+		// skipping verification is an explicit per-account opt-in (default false),
+		// required by the offline-network mail support in the spec.
 		InsecureSkipVerify: opts.InsecureSkipVerify,
 	}
 }

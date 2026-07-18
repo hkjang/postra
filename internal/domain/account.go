@@ -21,7 +21,7 @@ type AccountStatus string
 const (
 	AccountActive          AccountStatus = "active"
 	AccountDisabled        AccountStatus = "disabled"
-	AccountCredentialError AccountStatus = "credential_error"
+	AccountCredentialError AccountStatus = "credential_error" // #nosec G101 -- status enum value, not a credential
 )
 
 type MailAccount struct {

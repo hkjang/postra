@@ -737,6 +737,7 @@ func (s *Store) Search(ctx context.Context, q domain.SearchQuery) (*domain.Searc
 			args = append(args, p, p, p)
 		}
 	}
+	// #nosec G202 -- concatenated fragments are all static (column list, join, hardcoded conditions); every user value is bound via ? placeholders in args.
 	query := `SELECT ` + prefixCols(msgCols, "m.") + ` FROM messages m` + join +
 		` WHERE ` + strings.Join(conds, " AND ") +
 		` ORDER BY m.date DESC, m.id DESC LIMIT ?`
