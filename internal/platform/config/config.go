@@ -96,6 +96,9 @@ type AIConfig struct {
 	MaxTokens  int    `json:"max_tokens"`
 	// AllowExternal gates sending mail content to non-loopback AI endpoints.
 	AllowExternal bool `json:"allow_external"`
+	// MaskExternalPII redacts PII/secrets from mail content before it is sent
+	// to an external (non-local) AI endpoint (AI-011).
+	MaskExternalPII bool `json:"mask_external_pii"`
 }
 
 type SyncConfig struct {
@@ -122,10 +125,11 @@ func Default() Config {
 		AllowPrivateHosts: true,
 		EncryptAtRest:     true,
 		AI: AIConfig{
-			BaseURL:    "http://127.0.0.1:11434/v1",
-			Model:      "llama3.1",
-			TimeoutSec: 120,
-			MaxTokens:  2048,
+			BaseURL:         "http://127.0.0.1:11434/v1",
+			Model:           "llama3.1",
+			TimeoutSec:      120,
+			MaxTokens:       2048,
+			MaskExternalPII: true,
 		},
 		Sync: SyncConfig{
 			MaxMessageBytes:   50 << 20,

@@ -720,6 +720,65 @@ func TestManyRecipientWarning(t *testing.T) {
 	}
 }
 
+// AI-011: when the AI endpoint is external, PII/secrets in mail content are
+// masked before reaching the model.
+func TestExternalAIMasking(t *testing.T) {
+	app, pop, _, aiP := newTestApp(t)
+	app.Cfg.AI.BaseURL = "https://8.8.8.8/v1" // external (public IP, no DNS)
+	app.Cfg.AI.AllowExternal = true
+	app.Cfg.AI.MaskExternalPII = true
+	acc := mustAccount(t, app)
+	pop.messages["u1"] = testMail("m1", "info", "my RRN is 900101-1234567 and email me@corp.local")
+	syncAndWait(t, app, acc.ID)
+
+	ctx := WithActor(context.Background(), "test")
+	res, _ := app.Search(ctx, domain.SearchQuery{})
+	if _, err := app.AnalyzeMessage(ctx, res.Messages[0].ID, "summarize"); err != nil {
+		t.Fatal(err)
+	}
+	sent := aiP.lastRequest.Untrusted
+	if strings.Contains(sent, "900101-1234567") {
+		t.Fatalf("RRN leaked to external AI: %q", sent)
+	}
+	if !strings.Contains(sent, "[REDACTED-RRN]") {
+		t.Fatalf("expected RRN redaction marker in: %q", sent)
+	}
+}
+
+// Local AI endpoints skip masking (no exfiltration risk).
+func TestLocalAINoMasking(t *testing.T) {
+	app, pop, _, aiP := newTestApp(t)
+	// default BaseURL is 127.0.0.1 (local)
+	acc := mustAccount(t, app)
+	pop.messages["u1"] = testMail("m1", "info", "RRN 900101-1234567")
+	syncAndWait(t, app, acc.ID)
+	ctx := WithActor(context.Background(), "test")
+	res, _ := app.Search(ctx, domain.SearchQuery{})
+	if _, err := app.AnalyzeMessage(ctx, res.Messages[0].ID, "summarize"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(aiP.lastRequest.Untrusted, "900101-1234567") {
+		t.Fatal("local endpoint should receive unmasked content")
+	}
+}
+
+// §7 보안 검색: masked read redacts sensitive body content.
+func TestMaskedMessageRead(t *testing.T) {
+	app, pop, _, _ := newTestApp(t)
+	acc := mustAccount(t, app)
+	pop.messages["u1"] = testMail("m1", "acct", "card 4111 1111 1111 1111 attached")
+	syncAndWait(t, app, acc.ID)
+	ctx := WithActor(context.Background(), "test")
+	res, _ := app.Search(ctx, domain.SearchQuery{})
+	mv, err := app.GetMessageMasked(ctx, res.Messages[0].ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(mv.Body.TextBody, "4111 1111 1111 1111") {
+		t.Fatalf("card number not masked: %q", mv.Body.TextBody)
+	}
+}
+
 // SMTP-010/011: a temporary failure is retried via the outbox and eventually
 // delivered; the message is sent exactly once.
 func TestOutboxRetrySucceeds(t *testing.T) {

@@ -296,7 +296,14 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getMessage(w http.ResponseWriter, r *http.Request) {
-	mv, err := s.app.GetMessage(r.Context(), r.PathValue("id"), r.URL.Query().Get("body") != "false")
+	includeBody := r.URL.Query().Get("body") != "false"
+	var mv *application.MessageView
+	var err error
+	if r.URL.Query().Get("mask") == "true" {
+		mv, err = s.app.GetMessageMasked(r.Context(), r.PathValue("id"), includeBody)
+	} else {
+		mv, err = s.app.GetMessage(r.Context(), r.PathValue("id"), includeBody)
+	}
 	if err != nil {
 		writeErr(w, err)
 		return

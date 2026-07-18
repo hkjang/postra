@@ -6,6 +6,7 @@ import (
 	"io"
 
 	"postra/internal/domain"
+	"postra/internal/platform/mask"
 )
 
 func (a *App) Search(ctx context.Context, q domain.SearchQuery) (*domain.SearchResult, error) {
@@ -23,13 +24,30 @@ type MessageView struct {
 }
 
 func (a *App) GetMessage(ctx context.Context, id string, includeBody bool) (*MessageView, error) {
+	return a.getMessage(ctx, id, includeBody, false)
+}
+
+// GetMessageMasked returns a message with sensitive patterns redacted in the
+// body and subject (§7 보안 검색).
+func (a *App) GetMessageMasked(ctx context.Context, id string, includeBody bool) (*MessageView, error) {
+	return a.getMessage(ctx, id, includeBody, true)
+}
+
+func (a *App) getMessage(ctx context.Context, id string, includeBody, doMask bool) (*MessageView, error) {
 	m, err := a.Store.GetMessage(ctx, DefaultUserID, id)
 	if err != nil {
 		return nil, err
 	}
+	if doMask {
+		m.Subject, _ = mask.Mask(m.Subject)
+	}
 	v := &MessageView{Message: *m}
 	if includeBody {
 		if b, err := a.Store.GetBody(ctx, DefaultUserID, id); err == nil {
+			if doMask {
+				b.TextBody, _ = mask.Mask(b.TextBody)
+				b.HTMLSanitized, _ = mask.Mask(b.HTMLSanitized)
+			}
 			v.Body = b
 		}
 		if atts, err := a.Store.ListAttachments(ctx, DefaultUserID, id); err == nil {

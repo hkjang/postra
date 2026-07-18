@@ -13,6 +13,7 @@ import (
 
 	"postra/internal/adapters/persistence"
 	"postra/internal/domain"
+	"postra/internal/platform/mask"
 )
 
 const promptVersion = "v1"
@@ -76,33 +77,42 @@ JSON schema: {"subject": string, "body": string}`,
 	},
 }
 
+// aiEndpointLocal reports whether the configured AI endpoint resolves only to
+// loopback/private addresses (no exfiltration risk).
+func (a *App) aiEndpointLocal(ctx context.Context) bool {
+	u, err := url.Parse(a.Cfg.AI.BaseURL)
+	if err != nil {
+		return false
+	}
+	host := u.Hostname()
+	if host == "localhost" {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback() || ip.IsPrivate()
+	}
+	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+	if err != nil {
+		return false
+	}
+	for _, ip := range ips {
+		if !ip.IsLoopback() && !ip.IsPrivate() {
+			return false
+		}
+	}
+	return len(ips) > 0
+}
+
 // checkAIPolicy blocks sending mail content to non-local AI endpoints unless
 // explicitly allowed (AI-011/012, §13 data-exfiltration control).
 func (a *App) checkAIPolicy(ctx context.Context) error {
-	if a.Cfg.AI.AllowExternal {
+	if a.Cfg.AI.AllowExternal || a.aiEndpointLocal(ctx) {
 		return nil
 	}
-	u, err := url.Parse(a.Cfg.AI.BaseURL)
-	if err != nil {
-		return userErrf("invalid AI base_url: %v", err)
-	}
-	host := u.Hostname()
-	if ip := net.ParseIP(host); ip != nil {
-		if ip.IsLoopback() || ip.IsPrivate() {
-			return nil
-		}
-	} else if host == "localhost" {
-		return nil
-	} else if ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host); err == nil {
-		local := true
-		for _, ip := range ips {
-			if !ip.IsLoopback() && !ip.IsPrivate() {
-				local = false
-			}
-		}
-		if local {
-			return nil
-		}
+	u, _ := url.Parse(a.Cfg.AI.BaseURL)
+	host := ""
+	if u != nil {
+		host = u.Hostname()
 	}
 	return userErrf("AI endpoint %s is external; set ai.allow_external=true to permit sending mail content outside", host)
 }
@@ -133,10 +143,20 @@ func (a *App) runAnalysis(ctx context.Context, analysisType, targetType, targetI
 	if userTask != "" {
 		task += "\n\nUser instruction: " + userTask
 	}
+	// AI-011: mask PII/secrets before content leaves the box to an external
+	// endpoint. Local endpoints skip masking unless forced by policy.
+	content := truncateRunes(untrusted, maxAIBodyChars)
+	if a.Cfg.AI.MaskExternalPII && !a.aiEndpointLocal(ctx) {
+		masked, hits := mask.Mask(content)
+		content = masked
+		if len(hits) > 0 {
+			a.audit(ctx, "ai_pii_masked", targetType+":"+targetID, "ok", fmt.Sprintf("%v", hits))
+		}
+	}
 	res, err := a.AI.Generate(ctx, domain.GenerationRequest{
 		System:    spec.system,
 		User:      task,
-		Untrusted: truncateRunes(untrusted, maxAIBodyChars),
+		Untrusted: content,
 		JSONMode:  true,
 	})
 	if err != nil {

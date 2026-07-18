@@ -344,10 +344,17 @@ func registerQueryTools(s *mcp.Server, app *application.App) {
 	}
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "mail_message_get",
-		Description: "Get a parsed message: headers, text body, sanitized HTML, attachment list.",
+		Description: "Get a parsed message: headers, text body, sanitized HTML, attachment list. Set mask=true to redact PII/secrets.",
 		Annotations: readOnly,
-	}, func(ctx context.Context, req *mcp.CallToolRequest, in messageIDInput) (*mcp.CallToolResult, any, error) {
-		mv, err := app.GetMessage(ctx, in.MessageID, true)
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct {
+		MessageID string `json:"message_id" jsonschema:"the internal message ID (msg_...)"`
+		Mask      bool   `json:"mask,omitempty" jsonschema:"redact PII/secrets in subject and body"`
+	}) (*mcp.CallToolResult, any, error) {
+		get := app.GetMessage
+		if in.Mask {
+			get = app.GetMessageMasked
+		}
+		mv, err := get(ctx, in.MessageID, true)
 		if err != nil {
 			return nil, nil, err
 		}
