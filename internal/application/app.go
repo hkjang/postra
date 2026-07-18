@@ -44,7 +44,7 @@ func New(cfg config.Config, store Storage, objects objectstore.Store,
 	bg, cancel := context.WithCancel(context.Background())
 	a := &App{
 		Cfg: cfg, Store: store, Objects: objects, Secrets: secrets,
-		POP3: pop3, SMTP: smtp, AI: ai,
+		POP3: pop3, SMTP: smtp, AI: meteredAI{inner: ai},
 		Scanner:    malware.NewHeuristic(cfg.Attachments),
 		background: bg, cancelAll: cancel,
 	}

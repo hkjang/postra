@@ -14,6 +14,7 @@ import (
 	"postra/internal/adapters/persistence"
 	"postra/internal/adapters/pop3"
 	"postra/internal/domain"
+	"postra/internal/platform/metrics"
 )
 
 type SyncOptions struct {
@@ -86,6 +87,8 @@ func (a *App) runSync(ctx context.Context, job *domain.Job, acc *domain.MailAcco
 			"failed": stats.Failed, "oversize": stats.Oversize, "parse_error": stats.ParseError,
 		}
 		_ = a.Store.UpdateJob(context.Background(), job)
+		metrics.SyncTotal.WithLabelValues(string(status)).Inc()
+		metrics.MessagesFetched.Add(float64(stats.New))
 		a.audit(context.Background(), "sync_finish", "account:"+acc.ID, string(status),
 			fmt.Sprintf("job:%s new=%d dup=%d failed=%d", job.ID, stats.New, stats.Duplicate, stats.Failed))
 	}

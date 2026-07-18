@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"postra/internal/domain"
+	"postra/internal/platform/metrics"
 )
 
 // RecoverStaleJobs marks jobs interrupted by a restart as failed so they are
@@ -74,6 +75,8 @@ func (a *App) ProcessRetries(ctx context.Context) int {
 		slog.Error("list due retries failed", "err", err)
 		return 0
 	}
+	metrics.OutboxPending.Set(float64(len(due)))
+	metrics.SMTPRetries.Add(float64(len(due)))
 	wctx := WithActor(ctx, "worker")
 	for _, out := range due {
 		o := out // copy

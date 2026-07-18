@@ -15,6 +15,7 @@ import (
 
 	"postra/internal/adapters/persistence"
 	"postra/internal/domain"
+	"postra/internal/platform/metrics"
 )
 
 // ---------- payload hash & approval (§9.2) ----------
@@ -315,7 +316,25 @@ func (a *App) applySendResult(ctx context.Context, out *domain.OutboundMessage, 
 		out.Status, out.SMTPResponse = domain.OutboundSent, receipt.ServerResponse
 		a.audit(ctx, "mail_send", "draft:"+draftID, "ok", "outbound="+out.ID)
 	}
+	metrics.SMTPSend.WithLabelValues(sendResultLabel(out.Status)).Inc()
 	return out
+}
+
+// sendResultLabel maps a terminal/interim outbound status to a stable,
+// low-cardinality Prometheus label.
+func sendResultLabel(s domain.OutboundStatus) string {
+	switch s {
+	case domain.OutboundSent:
+		return "sent"
+	case domain.OutboundRetryWait:
+		return "deferred"
+	case domain.OutboundUncertain:
+		return "uncertain"
+	case domain.OutboundFailed:
+		return "failed"
+	default:
+		return "unknown"
+	}
 }
 
 // retryBackoff is exponential (base * 2^(attempt-1)) capped at RetryMaxSeconds.

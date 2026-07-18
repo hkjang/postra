@@ -11,9 +11,11 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"postra/internal/application"
 	"postra/internal/domain"
+	"postra/internal/platform/metrics"
 )
 
 type Server struct {
@@ -74,20 +76,54 @@ func (s *Server) Handler() http.Handler {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 
+	// Prometheus scrape endpoint (§18.1): unauthenticated so scrapers need no
+	// token; gated by config and by whatever the operator binds HTTPAddr to.
+	if s.app.Cfg.MetricsEnabled {
+		mux.Handle("GET /metrics", metrics.Handler())
+	}
+
 	return s.middleware(mux)
 }
 
-func (s *Server) middleware(next http.Handler) http.Handler {
+// statusRecorder captures the response status code for request metrics.
+type statusRecorder struct {
+	http.ResponseWriter
+	code int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	r.code = code
+	r.ResponseWriter.WriteHeader(code)
+}
+
+func (s *Server) middleware(mux *http.ServeMux) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.apiToken != "" {
-			got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-			if subtle.ConstantTimeCompare([]byte(got), []byte(s.apiToken)) != 1 {
-				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid or missing bearer token"})
-				return
-			}
+		// /metrics bypasses auth and is not self-instrumented.
+		if r.URL.Path == "/metrics" {
+			mux.ServeHTTP(w, r)
+			return
 		}
-		ctx := application.WithActor(r.Context(), "rest")
-		next.ServeHTTP(w, r.WithContext(ctx))
+		// Label by the matched route pattern (e.g. "GET /api/messages/{id}")
+		// so path parameters do not explode series cardinality.
+		route := "unmatched"
+		if _, pattern := mux.Handler(r); pattern != "" {
+			route = pattern
+		}
+		rec := &statusRecorder{ResponseWriter: w, code: http.StatusOK}
+		start := time.Now()
+		func() {
+			if s.apiToken != "" {
+				got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+				if subtle.ConstantTimeCompare([]byte(got), []byte(s.apiToken)) != 1 {
+					writeJSON(rec, http.StatusUnauthorized, map[string]string{"error": "invalid or missing bearer token"})
+					return
+				}
+			}
+			ctx := application.WithActor(r.Context(), "rest")
+			mux.ServeHTTP(rec, r.WithContext(ctx))
+		}()
+		metrics.HTTPRequests.WithLabelValues(route, r.Method, strconv.Itoa(rec.code)).Inc()
+		metrics.HTTPLatency.WithLabelValues(route).Observe(time.Since(start).Seconds())
 	})
 }
 

@@ -48,6 +48,11 @@ type Config struct {
 	// stays queryable in plaintext; the FTS index also holds body plaintext.
 	EncryptAtRest bool `json:"encrypt_at_rest"`
 
+	// MetricsEnabled exposes Prometheus metrics at GET /metrics on the REST
+	// bind address, unauthenticated (for scraping). Default true; disable to
+	// remove the endpoint entirely. Restrict exposure via HTTPAddr binding.
+	MetricsEnabled bool `json:"metrics_enabled"`
+
 	AI          AIConfig         `json:"ai"`
 	Sync        SyncConfig       `json:"sync"`
 	Send        SendConfig       `json:"send"`
@@ -127,6 +132,7 @@ func Default() Config {
 		MCPHTTPAddr:       "127.0.0.1:8481",
 		AllowPrivateHosts: true,
 		EncryptAtRest:     true,
+		MetricsEnabled:    true,
 		AI: AIConfig{
 			BaseURL:         "http://127.0.0.1:11434/v1",
 			Model:           "llama3.1",

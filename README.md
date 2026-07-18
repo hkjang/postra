@@ -87,6 +87,25 @@ POSTRA_ALLOW_INSECURE_MAIL=true ./postra serve
 
 **프롬프트(Prompts)**: `summarize_mail`, `summarize_thread`, `draft_reply`, `extract_action_items`, `review_phishing_risk`, `rewrite_formal`, `rewrite_concise`, `prepare_daily_digest`.
 
+## 관측성 · 메트릭 (§18.1)
+
+`serve` 는 REST 바인드 주소에 Prometheus 메트릭을 `GET /metrics` 로 노출합니다(스크레이핑용으로 **인증 불요**, `config.json` 의 `metrics_enabled=false` 로 비활성). 노출 범위는 `http_addr` 바인딩으로 제어하세요.
+
+| 메트릭 | 타입 | 라벨 | 의미 |
+|--------|------|------|------|
+| `postra_pop3_sync_total` | counter | `status` | POP3 동기화 잡 종료 상태별 수 |
+| `postra_pop3_messages_fetched_total` | counter | — | 신규 수집 메일 수 |
+| `postra_ai_requests_total` | counter | `op`,`result` | AI 호출(generate/embed) 수 |
+| `postra_ai_request_duration_seconds` | histogram | `op` | AI 호출 지연 |
+| `postra_smtp_send_total` | counter | `result` | 발송 결과별(sent/deferred/uncertain/failed) |
+| `postra_smtp_retry_total` | counter | — | Outbox 재시도 처리 수 |
+| `postra_outbox_pending` | gauge | — | 재발송 대기 중인 발신 메일 |
+| `postra_mcp_requests_total` | counter | `tool`,`result` | MCP 도구 호출 수 |
+| `postra_http_requests_total` | counter | `route`,`method`,`code` | REST 요청(경로 패턴 라벨) |
+| `postra_http_request_duration_seconds` | histogram | `route` | REST 요청 지연 |
+
+Go 런타임·프로세스 표준 메트릭(`go_*`, `process_*`)도 함께 노출됩니다. 라벨은 저카디널리티(계정·메시지 ID 미포함)로 유지해 장기 구동 시 시계열 폭증을 막습니다.
+
 ## 구조 (§15)
 
 ```

@@ -14,6 +14,7 @@ import (
 
 	"postra/internal/application"
 	"postra/internal/domain"
+	"postra/internal/platform/metrics"
 )
 
 const serverVersion = "0.1.0"
@@ -28,9 +29,35 @@ var (
 	destructive = &mcp.ToolAnnotations{DestructiveHint: boolPtr(true), OpenWorldHint: boolPtr(true)}
 )
 
+// metricsMiddleware records every MCP tool invocation (§18.1). It labels by
+// tool name and result (ok/error), covering both handler errors and tool
+// results flagged IsError. Non-tool methods (initialize, list, …) pass through
+// unmeasured to keep the series set focused on tool usage.
+func metricsMiddleware(next mcp.MethodHandler) mcp.MethodHandler {
+	return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+		if method != "tools/call" {
+			return next(ctx, method, req)
+		}
+		tool := "unknown"
+		if p, ok := req.GetParams().(*mcp.CallToolParamsRaw); ok && p.Name != "" {
+			tool = p.Name
+		}
+		res, err := next(ctx, method, req)
+		result := "ok"
+		if err != nil {
+			result = "error"
+		} else if ctr, ok := res.(*mcp.CallToolResult); ok && ctr.IsError {
+			result = "error"
+		}
+		metrics.MCPRequests.WithLabelValues(tool, result).Inc()
+		return res, err
+	}
+}
+
 // NewServer builds the MCP server with the full tool catalog.
 func NewServer(app *application.App) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: "postra-mail", Version: serverVersion}, nil)
+	s.AddReceivingMiddleware(metricsMiddleware)
 	registerAccountTools(s, app)
 	registerSyncTools(s, app)
 	registerQueryTools(s, app)
