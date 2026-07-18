@@ -78,7 +78,7 @@ func (Dialer) Dial(ctx context.Context, opts domain.POP3DialOptions) (domain.POP
 	if opts.Username != "" {
 		if _, err := s.cmd("USER %s", opts.Username); err != nil {
 			s.Close()
-			return nil, &AuthError{fmt.Errorf("USER: %w", err)}
+			return nil, &AuthError{Err: fmt.Errorf("USER: %w", err)}
 		}
 		pass := ""
 		if opts.Password != nil {
@@ -89,18 +89,15 @@ func (Dialer) Dial(ctx context.Context, opts domain.POP3DialOptions) (domain.POP
 		_ = pass
 		if err != nil {
 			s.Close()
-			return nil, &AuthError{fmt.Errorf("PASS rejected: %w", err)}
+			return nil, &AuthError{Err: fmt.Errorf("PASS rejected: %w", err)}
 		}
 	}
 	return s, nil
 }
 
-// AuthError distinguishes credential failures so the sync layer can move the
-// account to credential_error instead of retrying (POP-011).
-type AuthError struct{ Err error }
-
-func (e *AuthError) Error() string { return e.Err.Error() }
-func (e *AuthError) Unwrap() error { return e.Err }
+// AuthError aliases the shared domain type so the sync layer can recognize
+// credential failures from any inbound adapter (POP-011).
+type AuthError = domain.AuthError
 
 type session struct {
 	conn      net.Conn

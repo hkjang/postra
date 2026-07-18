@@ -25,6 +25,7 @@ import (
 	"postra/internal/adapters/objectstore"
 	"postra/internal/adapters/persistence"
 	"postra/internal/adapters/pgstore"
+	"postra/internal/adapters/imap"
 	"postra/internal/adapters/pop3"
 	"postra/internal/adapters/secretstore"
 	adsmtp "postra/internal/adapters/smtp"
@@ -102,6 +103,9 @@ func loadApp(configPath string) (*application.App, config.Config, error) {
 	secrets := secretstore.NewLocal(cfg.DataDir, kek)
 	app, err := application.New(cfg, store, objects, secrets,
 		pop3.Dialer{}, adsmtp.Client{}, ai.New(cfg.AI, secrets))
+	if app != nil {
+		app.IMAP = imap.Dialer{} // inbound adapter selected per-account by protocol
+	}
 	return app, cfg, err
 }
 
@@ -503,7 +507,8 @@ func accountCmd(args []string) error {
 
 	name := fs.String("name", "", "account display name")
 	email := fs.String("email", "", "mail address")
-	pop3Host := fs.String("pop3-host", "", "POP3 host")
+	inbound := fs.String("inbound-protocol", "pop3", "pop3 | imap (inbound fetch protocol)")
+	pop3Host := fs.String("pop3-host", "", "inbound (POP3/IMAP) host")
 	pop3Port := fs.Int("pop3-port", 0, "POP3 port (default by security mode)")
 	pop3Sec := fs.String("pop3-security", "tls", "tls | starttls | none")
 	pop3User := fs.String("pop3-user", "", "POP3 username")
@@ -527,7 +532,7 @@ func accountCmd(args []string) error {
 	switch sub {
 	case "add":
 		acc, err := app.CreateAccount(ctx, application.CreateAccountInput{
-			Name: *name, Email: *email,
+			Name: *name, Email: *email, InboundProtocol: *inbound,
 			POP3Host: *pop3Host, POP3Port: *pop3Port, POP3Security: *pop3Sec,
 			POP3Username: *pop3User, POP3SecretRef: *pop3Ref,
 			SMTPHost: *smtpHost, SMTPPort: *smtpPort, SMTPSecurity: *smtpSec,

@@ -28,6 +28,7 @@ type App struct {
 	Objects objectstore.Store
 	Secrets domain.SecretStore
 	POP3    domain.POP3Dialer
+	IMAP    domain.InboundDialer // optional; used when an account's InboundProtocol is "imap"
 	SMTP    domain.SMTPClient
 	AI      domain.AIProvider
 	Scanner domain.AttachmentScanner
@@ -140,12 +141,16 @@ func (a *App) checkInsecureAllowed(ctx context.Context, acc *domain.MailAccount)
 	return nil
 }
 
-// dialPOP3 acquires the account's POP3 secret (if any), opens a session, and
-// zeroes the secret immediately after the handshake. The handle never leaves
-// this call (SEC-KEY-005).
-func (a *App) dialPOP3(ctx context.Context, acc *domain.MailAccount, purpose domain.SecretPurpose) (domain.POP3Session, error) {
+// dialInbound acquires the account's inbound secret (if any), opens a session
+// with the protocol-appropriate adapter (POP3 or IMAP), and zeroes the secret
+// immediately after the handshake. The handle never leaves this call
+// (SEC-KEY-005).
+func (a *App) dialInbound(ctx context.Context, acc *domain.MailAccount, purpose domain.SecretPurpose) (domain.InboundSession, error) {
+	dialer, err := a.inboundDialer(acc)
+	if err != nil {
+		return nil, err
+	}
 	var secret *domain.SecretHandle
-	var err error
 	if acc.POP3Secret != "" {
 		secret, err = a.Secrets.Acquire(ctx, acc.POP3Secret, purpose)
 		if err != nil {
@@ -153,7 +158,7 @@ func (a *App) dialPOP3(ctx context.Context, acc *domain.MailAccount, purpose dom
 		}
 		a.Store.TouchCredential(ctx, acc.POP3Secret)
 	}
-	sess, err := a.POP3.Dial(ctx, domain.POP3DialOptions{
+	sess, err := dialer.Dial(ctx, domain.InboundDialOptions{
 		Host: acc.POP3Host, Port: acc.POP3Port, Security: acc.POP3Security,
 		Username: acc.POP3Username, Password: secret,
 		InsecureSkipVerify: acc.InsecureSkipVerify,
@@ -164,6 +169,22 @@ func (a *App) dialPOP3(ctx context.Context, acc *domain.MailAccount, purpose dom
 		secret.Zero()
 	}
 	return sess, err
+}
+
+// inboundDialer picks the fetch adapter for the account's protocol. Empty
+// protocol means POP3 (accounts created before IMAP support).
+func (a *App) inboundDialer(acc *domain.MailAccount) (domain.InboundDialer, error) {
+	switch acc.InboundProtocol {
+	case "", domain.InboundPOP3:
+		return a.POP3, nil
+	case domain.InboundIMAP:
+		if a.IMAP == nil {
+			return nil, userErrf("IMAP adapter is not configured")
+		}
+		return a.IMAP, nil
+	default:
+		return nil, userErrf("unknown inbound protocol %q", acc.InboundProtocol)
+	}
 }
 
 func randomToken(n int) string {

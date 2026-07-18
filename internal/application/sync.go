@@ -12,7 +12,6 @@ import (
 
 	"postra/internal/adapters/mailparse"
 	"postra/internal/adapters/persistence"
-	"postra/internal/adapters/pop3"
 	"postra/internal/domain"
 	"postra/internal/platform/metrics"
 )
@@ -96,9 +95,9 @@ func (a *App) runSync(ctx context.Context, job *domain.Job, acc *domain.MailAcco
 	job.Status = domain.JobRunning
 	_ = a.Store.UpdateJob(ctx, job)
 
-	sess, err := a.dialPOP3(ctx, acc, domain.PurposePOP3Auth)
+	sess, err := a.dialInbound(ctx, acc, domain.PurposePOP3Auth)
 	if err != nil {
-		var authErr *pop3.AuthError
+		var authErr *domain.AuthError
 		if errors.As(err, &authErr) {
 			// POP-011: no endless retries on bad credentials.
 			_ = a.Store.SetAccountStatus(context.Background(), DefaultUserID, acc.ID, domain.AccountCredentialError)

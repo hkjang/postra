@@ -14,6 +14,10 @@ type CreateAccountInput struct {
 	Name  string `json:"name"`
 	Email string `json:"email"`
 
+	// InboundProtocol selects the fetch adapter: "pop3" (default) or "imap".
+	// The POP3* fields carry the inbound server coordinates for either.
+	InboundProtocol string `json:"inbound_protocol,omitempty"`
+
 	POP3Host     string `json:"pop3_host"`
 	POP3Port     int    `json:"pop3_port"`
 	POP3Security string `json:"pop3_security"` // tls | starttls | none
@@ -30,6 +34,16 @@ type CreateAccountInput struct {
 	SMTPSecretRef string `json:"smtp_secret_ref"`
 
 	InsecureSkipVerify bool `json:"insecure_skip_verify"`
+}
+
+func normInboundProtocol(p string) (string, error) {
+	switch p {
+	case "", domain.InboundPOP3:
+		return domain.InboundPOP3, nil
+	case domain.InboundIMAP:
+		return domain.InboundIMAP, nil
+	}
+	return "", userErrf("invalid inbound protocol %q (pop3|imap)", p)
 }
 
 func normSecurity(s string, def domain.Security) (domain.Security, error) {
@@ -57,10 +71,20 @@ func (a *App) CreateAccount(ctx context.Context, in CreateAccountInput) (*domain
 	if in.SMTPAuth == "" {
 		in.SMTPAuth = "auto"
 	}
+	protocol, err := normInboundProtocol(in.InboundProtocol)
+	if err != nil {
+		return nil, err
+	}
+	// Default inbound port depends on protocol: POP3 995/110, IMAP 993/143.
+	tlsPort, plainPort := 995, 110
+	if protocol == domain.InboundIMAP {
+		tlsPort, plainPort = 993, 143
+	}
 	acc := &domain.MailAccount{
 		ID: persistence.NewID("acc"), UserID: DefaultUserID,
 		Name: in.Name, Email: in.Email, Status: domain.AccountActive,
-		POP3Host: in.POP3Host, POP3Port: portOr(in.POP3Port, pop3Sec, 995, 110),
+		InboundProtocol: protocol,
+		POP3Host:        in.POP3Host, POP3Port: portOr(in.POP3Port, pop3Sec, tlsPort, plainPort),
 		POP3Security: pop3Sec, POP3Username: in.POP3Username,
 		POP3Secret: domain.SecretRef(in.POP3SecretRef),
 		SMTPHost:   in.SMTPHost, SMTPPort: portOr(in.SMTPPort, smtpSec, 465, 587),

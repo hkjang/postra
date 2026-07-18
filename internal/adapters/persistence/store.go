@@ -160,6 +160,7 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS mail_accounts (
   id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL,
   email TEXT NOT NULL, status TEXT NOT NULL,
+  inbound_protocol TEXT NOT NULL DEFAULT 'pop3',
   pop3_host TEXT, pop3_port INTEGER, pop3_security TEXT, pop3_username TEXT, pop3_secret_ref TEXT,
   smtp_host TEXT, smtp_port INTEGER, smtp_security TEXT, smtp_username TEXT, smtp_auth TEXT, smtp_secret_ref TEXT,
   insecure_skip_verify INTEGER NOT NULL DEFAULT 0,
@@ -261,6 +262,7 @@ CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_events(at DESC);
 		`ALTER TABLE attachments ADD COLUMN scan_status TEXT DEFAULT 'clean'`,
 		`ALTER TABLE attachments ADD COLUMN scan_detail TEXT`,
 		`ALTER TABLE outbound_messages ADD COLUMN next_attempt_at INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE mail_accounts ADD COLUMN inbound_protocol TEXT NOT NULL DEFAULT 'pop3'`,
 	} {
 		if _, err := s.db.Exec(alt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return fmt.Errorf("migrate attachments: %w", err)
@@ -300,10 +302,10 @@ func (s *Store) EnsureUser(ctx context.Context, id, loginID string) error {
 func (s *Store) CreateAccount(ctx context.Context, a *domain.MailAccount) error {
 	a.CreatedAt, a.UpdatedAt = now(), now()
 	_, err := s.db.ExecContext(ctx, `INSERT INTO mail_accounts
-	 (id,user_id,name,email,status,pop3_host,pop3_port,pop3_security,pop3_username,pop3_secret_ref,
+	 (id,user_id,name,email,status,inbound_protocol,pop3_host,pop3_port,pop3_security,pop3_username,pop3_secret_ref,
 	  smtp_host,smtp_port,smtp_security,smtp_username,smtp_auth,smtp_secret_ref,insecure_skip_verify,created_at,updated_at)
-	 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		a.ID, a.UserID, a.Name, a.Email, a.Status,
+	 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		a.ID, a.UserID, a.Name, a.Email, a.Status, a.InboundProtocol,
 		a.POP3Host, a.POP3Port, a.POP3Security, a.POP3Username, string(a.POP3Secret),
 		a.SMTPHost, a.SMTPPort, a.SMTPSecurity, a.SMTPUsername, a.SMTPAuth, string(a.SMTPSecret),
 		boolInt(a.InsecureSkipVerify), a.CreatedAt, a.UpdatedAt)
@@ -314,7 +316,7 @@ func (s *Store) scanAccount(row interface{ Scan(...any) error }) (*domain.MailAc
 	var a domain.MailAccount
 	var pop3Ref, smtpRef string
 	var insecure int
-	err := row.Scan(&a.ID, &a.UserID, &a.Name, &a.Email, &a.Status,
+	err := row.Scan(&a.ID, &a.UserID, &a.Name, &a.Email, &a.Status, &a.InboundProtocol,
 		&a.POP3Host, &a.POP3Port, &a.POP3Security, &a.POP3Username, &pop3Ref,
 		&a.SMTPHost, &a.SMTPPort, &a.SMTPSecurity, &a.SMTPUsername, &a.SMTPAuth, &smtpRef,
 		&insecure, &a.CreatedAt, &a.UpdatedAt)
@@ -330,7 +332,7 @@ func (s *Store) scanAccount(row interface{ Scan(...any) error }) (*domain.MailAc
 	return &a, nil
 }
 
-const accountCols = `id,user_id,name,email,status,pop3_host,pop3_port,pop3_security,pop3_username,pop3_secret_ref,
+const accountCols = `id,user_id,name,email,status,inbound_protocol,pop3_host,pop3_port,pop3_security,pop3_username,pop3_secret_ref,
  smtp_host,smtp_port,smtp_security,smtp_username,smtp_auth,smtp_secret_ref,insecure_skip_verify,created_at,updated_at`
 
 func (s *Store) GetAccount(ctx context.Context, userID, id string) (*domain.MailAccount, error) {
@@ -360,10 +362,10 @@ func (s *Store) ListAccounts(ctx context.Context, userID string) ([]domain.MailA
 func (s *Store) UpdateAccount(ctx context.Context, a *domain.MailAccount) error {
 	a.UpdatedAt = now()
 	res, err := s.db.ExecContext(ctx, `UPDATE mail_accounts SET
-	 name=?,email=?,status=?,pop3_host=?,pop3_port=?,pop3_security=?,pop3_username=?,pop3_secret_ref=?,
+	 name=?,email=?,status=?,inbound_protocol=?,pop3_host=?,pop3_port=?,pop3_security=?,pop3_username=?,pop3_secret_ref=?,
 	 smtp_host=?,smtp_port=?,smtp_security=?,smtp_username=?,smtp_auth=?,smtp_secret_ref=?,
 	 insecure_skip_verify=?,updated_at=? WHERE id=? AND user_id=?`,
-		a.Name, a.Email, a.Status,
+		a.Name, a.Email, a.Status, a.InboundProtocol,
 		a.POP3Host, a.POP3Port, a.POP3Security, a.POP3Username, string(a.POP3Secret),
 		a.SMTPHost, a.SMTPPort, a.SMTPSecurity, a.SMTPUsername, a.SMTPAuth, string(a.SMTPSecret),
 		boolInt(a.InsecureSkipVerify), a.UpdatedAt, a.ID, a.UserID)

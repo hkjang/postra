@@ -31,6 +31,11 @@ type MailAccount struct {
 	Email  string        `json:"email"`
 	Status AccountStatus `json:"status"`
 
+	// InboundProtocol selects the fetch adapter: "pop3" (default) or "imap".
+	// The POP3* fields below carry the inbound server coordinates for both
+	// protocols (host/port/security/username/secret).
+	InboundProtocol string `json:"inbound_protocol,omitempty"`
+
 	POP3Host     string    `json:"pop3_host"`
 	POP3Port     int       `json:"pop3_port"`
 	POP3Security Security  `json:"pop3_security"`
@@ -100,6 +105,31 @@ type POP3DialOptions struct {
 type POP3Dialer interface {
 	Dial(ctx context.Context, opts POP3DialOptions) (POP3Session, error)
 }
+
+// The inbound-fetch port is protocol-neutral: POP3 and IMAP adapters both
+// implement it, and the sync loop is written against these names. The aliases
+// document that intent without churning the existing POP3 call sites.
+type (
+	InboundSession     = POP3Session
+	InboundDialOptions = POP3DialOptions
+	InboundDialer      = POP3Dialer
+)
+
+// Inbound protocol selectors stored on MailAccount.InboundProtocol. Empty is
+// treated as POP3 for backward compatibility with accounts created earlier.
+const (
+	InboundPOP3 = "pop3"
+	InboundIMAP = "imap"
+)
+
+// AuthError distinguishes credential failures from transient faults so the
+// sync layer can move an account to credential_error instead of retrying
+// forever (POP-011). Both the POP3 and IMAP adapters return it on login
+// rejection.
+type AuthError struct{ Err error }
+
+func (e *AuthError) Error() string { return e.Err.Error() }
+func (e *AuthError) Unwrap() error { return e.Err }
 
 type Envelope struct {
 	From string

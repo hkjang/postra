@@ -5,7 +5,7 @@
 # Postra — 개인 메일 AI · MCP 플랫폼
 
 
-Go로 작성한 개인/사내 구축형 메일 서비스입니다. 사용자의 **POP3/SMTP** 계정을 연결해 메일을 안전하게 **수집·검색·분석·작성·발송**하며, 모든 업무 기능을 **REST API / CLI / MCP** 세 인터페이스로 동일하게 제공합니다.
+Go로 작성한 개인/사내 구축형 메일 서비스입니다. 사용자의 **POP3/IMAP/SMTP** 계정을 연결해 메일을 안전하게 **수집·검색·분석·작성·발송**하며, 모든 업무 기능을 **REST API / CLI / MCP / Web UI** 로 제공합니다.
 
 ## 설계 핵심
 
@@ -67,9 +67,21 @@ go build -o postra ./cmd/postra
 
 Postgres 어댑터 통합 테스트는 `POSTRA_TEST_PG` DSN이 설정된 경우에만 실행됩니다(미설정 시 skip).
 
+## 수집 프로토콜 (POP3 / IMAP)
+
+인바운드 수집은 **POP3**(기본)와 **IMAP** 을 지원합니다. 계정 등록 시 `--inbound-protocol imap` 로 선택하며, 이후 수집·검색·분석·삭제 경로는 동일합니다(IMAP 세션이 동일 인바운드 포트를 구현). 포트 미지정 시 프로토콜·보안 모드에 따라 기본값이 정해집니다(POP3 995/110, IMAP 993/143). IMAP은 `UIDVALIDITY.UID` 를 중복 제거 체크포인트로 사용합니다.
+
+```bash
+./postra account add --name Work --email me@corp.local \
+  --inbound-protocol imap --pop3-host imap.corp.local --pop3-security tls \
+  --pop3-user me --pop3-secret-ref sec_xxx  --smtp-host smtp.corp.local
+```
+
+> 인바운드 서버 좌표는 프로토콜과 무관하게 `--pop3-*` 플래그로 지정합니다.
+
 ## 오프라인 / 격리망
 
-TLS·인증이 없는 사내 메일 서버는 다음으로 허용합니다(감사 로그에 기록됨):
+TLS·인증이 없는 사내 메일 서버(POP3/IMAP/SMTP)는 다음으로 허용합니다(감사 로그에 기록됨):
 
 ```bash
 POSTRA_ALLOW_INSECURE_MAIL=true ./postra serve
@@ -160,4 +172,4 @@ go run github.com/securego/gosec/v2/cmd/gosec@latest -severity medium -exclude-d
 
 ## 확장 (post-MVP)
 
-Vault/OpenBao SecretStore, S3 ObjectStore, PostgreSQL+pgvector, IMAP/OAuth2 어댑터, 규칙 자동화. 모든 외부 의존은 포트 인터페이스 뒤에 있어 어댑터 교체만으로 확장됩니다.
+Vault/OpenBao SecretStore, S3 ObjectStore, PostgreSQL+pgvector, OAuth2 인증, 규칙 자동화. 모든 외부 의존은 포트 인터페이스 뒤에 있어 어댑터 교체만으로 확장됩니다.

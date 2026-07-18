@@ -69,6 +69,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			status TEXT NOT NULL DEFAULT 'active', timezone TEXT DEFAULT 'UTC', created_at BIGINT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS mail_accounts (
 			id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL, email TEXT NOT NULL, status TEXT NOT NULL,
+			inbound_protocol TEXT NOT NULL DEFAULT 'pop3',
 			pop3_host TEXT, pop3_port INT, pop3_security TEXT, pop3_username TEXT, pop3_secret_ref TEXT,
 			smtp_host TEXT, smtp_port INT, smtp_security TEXT, smtp_username TEXT, smtp_auth TEXT, smtp_secret_ref TEXT,
 			insecure_skip_verify BOOL NOT NULL DEFAULT false, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL)`,
@@ -125,6 +126,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			attempts INT NOT NULL DEFAULT 0, next_attempt_at BIGINT NOT NULL DEFAULT 0,
 			created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL)`,
 		`ALTER TABLE outbound_messages ADD COLUMN IF NOT EXISTS next_attempt_at BIGINT NOT NULL DEFAULT 0`,
+		`ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS inbound_protocol TEXT NOT NULL DEFAULT 'pop3'`,
 		`CREATE INDEX IF NOT EXISTS idx_outbound_retry ON outbound_messages(status, next_attempt_at)`,
 		`CREATE TABLE IF NOT EXISTS jobs (
 			id TEXT PRIMARY KEY, user_id TEXT NOT NULL, type TEXT NOT NULL, account_id TEXT, status TEXT NOT NULL,
@@ -184,14 +186,14 @@ func (s *Store) EnsureUser(ctx context.Context, id, loginID string) error {
 
 // ---------- accounts ----------
 
-const accountCols = `id,user_id,name,email,status,pop3_host,pop3_port,pop3_security,pop3_username,pop3_secret_ref,
+const accountCols = `id,user_id,name,email,status,inbound_protocol,pop3_host,pop3_port,pop3_security,pop3_username,pop3_secret_ref,
  smtp_host,smtp_port,smtp_security,smtp_username,smtp_auth,smtp_secret_ref,insecure_skip_verify,created_at,updated_at`
 
 func (s *Store) CreateAccount(ctx context.Context, a *domain.MailAccount) error {
 	a.CreatedAt, a.UpdatedAt = now(), now()
 	_, err := s.pool.Exec(ctx, `INSERT INTO mail_accounts (`+accountCols+`)
-	 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
-		a.ID, a.UserID, a.Name, a.Email, a.Status,
+	 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
+		a.ID, a.UserID, a.Name, a.Email, a.Status, a.InboundProtocol,
 		a.POP3Host, a.POP3Port, a.POP3Security, a.POP3Username, string(a.POP3Secret),
 		a.SMTPHost, a.SMTPPort, a.SMTPSecurity, a.SMTPUsername, a.SMTPAuth, string(a.SMTPSecret),
 		a.InsecureSkipVerify, a.CreatedAt, a.UpdatedAt)
@@ -201,7 +203,7 @@ func (s *Store) CreateAccount(ctx context.Context, a *domain.MailAccount) error 
 func scanAccount(row pgx.Row) (*domain.MailAccount, error) {
 	var a domain.MailAccount
 	var pop3Ref, smtpRef string
-	err := row.Scan(&a.ID, &a.UserID, &a.Name, &a.Email, &a.Status,
+	err := row.Scan(&a.ID, &a.UserID, &a.Name, &a.Email, &a.Status, &a.InboundProtocol,
 		&a.POP3Host, &a.POP3Port, &a.POP3Security, &a.POP3Username, &pop3Ref,
 		&a.SMTPHost, &a.SMTPPort, &a.SMTPSecurity, &a.SMTPUsername, &a.SMTPAuth, &smtpRef,
 		&a.InsecureSkipVerify, &a.CreatedAt, &a.UpdatedAt)
@@ -239,10 +241,10 @@ func (s *Store) ListAccounts(ctx context.Context, userID string) ([]domain.MailA
 func (s *Store) UpdateAccount(ctx context.Context, a *domain.MailAccount) error {
 	a.UpdatedAt = now()
 	ct, err := s.pool.Exec(ctx, `UPDATE mail_accounts SET
-	 name=$1,email=$2,status=$3,pop3_host=$4,pop3_port=$5,pop3_security=$6,pop3_username=$7,pop3_secret_ref=$8,
-	 smtp_host=$9,smtp_port=$10,smtp_security=$11,smtp_username=$12,smtp_auth=$13,smtp_secret_ref=$14,
-	 insecure_skip_verify=$15,updated_at=$16 WHERE id=$17 AND user_id=$18`,
-		a.Name, a.Email, a.Status, a.POP3Host, a.POP3Port, a.POP3Security, a.POP3Username, string(a.POP3Secret),
+	 name=$1,email=$2,status=$3,inbound_protocol=$4,pop3_host=$5,pop3_port=$6,pop3_security=$7,pop3_username=$8,pop3_secret_ref=$9,
+	 smtp_host=$10,smtp_port=$11,smtp_security=$12,smtp_username=$13,smtp_auth=$14,smtp_secret_ref=$15,
+	 insecure_skip_verify=$16,updated_at=$17 WHERE id=$18 AND user_id=$19`,
+		a.Name, a.Email, a.Status, a.InboundProtocol, a.POP3Host, a.POP3Port, a.POP3Security, a.POP3Username, string(a.POP3Secret),
 		a.SMTPHost, a.SMTPPort, a.SMTPSecurity, a.SMTPUsername, a.SMTPAuth, string(a.SMTPSecret),
 		a.InsecureSkipVerify, a.UpdatedAt, a.ID, a.UserID)
 	if err != nil {

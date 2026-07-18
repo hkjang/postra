@@ -62,7 +62,7 @@ func (a *App) ServerDeletePreview(ctx context.Context, accountID string) (*Serve
 	if err != nil {
 		return nil, err
 	}
-	sess, err := a.dialPOP3(ctx, acc, domain.PurposePOP3Auth)
+	sess, err := a.dialInbound(ctx, acc, domain.PurposePOP3Auth)
 	if err != nil {
 		return nil, err
 	}
@@ -147,7 +147,7 @@ func (a *App) ServerDelete(ctx context.Context, accountID string, uidls []string
 		}
 	}
 
-	sess, err := a.dialPOP3(ctx, acc, domain.PurposePOP3Auth)
+	sess, err := a.dialInbound(ctx, acc, domain.PurposePOP3Auth)
 	if err != nil {
 		return nil, err
 	}
