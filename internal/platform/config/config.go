@@ -70,6 +70,10 @@ type SyncConfig struct {
 	InitialWindowDays int `json:"initial_window_days"`
 	ConnectTimeoutSec int `json:"connect_timeout_sec"`
 	CommandTimeoutSec int `json:"command_timeout_sec"`
+	// AutoSyncMinutes, when > 0, enables the background scheduler to sync all
+	// active POP3 accounts on this cadence (POP-001 주기 동기화). It also acts
+	// as the per-account minimum interval (POP-002). 0 disables auto-sync.
+	AutoSyncMinutes int `json:"auto_sync_minutes"`
 }
 
 func Default() Config {

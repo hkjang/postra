@@ -886,6 +886,20 @@ func (s *Store) UpdateJob(ctx context.Context, j *domain.Job) error {
 	return err
 }
 
+// RecoverStaleJobs marks jobs left in queued/running (e.g. after a crash)
+// as failed so they are not reported as live forever. The scheduler can then
+// re-enqueue eligible work (비기능 "Worker 장애 후 Job 재개").
+func (s *Store) RecoverStaleJobs(ctx context.Context) (int64, error) {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE jobs SET status='failed', error='interrupted (process restart)', updated_at=?
+		 WHERE status IN ('queued','running')`, now())
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
 func (s *Store) GetJob(ctx context.Context, userID, id string) (*domain.Job, error) {
 	var j domain.Job
 	var stats, meta, accountID, progress, jerr sql.NullString

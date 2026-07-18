@@ -34,6 +34,10 @@ go build -o postra ./cmd/postra
 ./postra mcp                           # 로컬 MCP 클라이언트용 stdio 서버
 ```
 
+## 주기 동기화
+
+`config.json` 의 `sync.auto_sync_minutes` 를 0보다 크게 두면 `serve` 실행 시 백그라운드 스케줄러가 활성 POP3 계정을 해당 주기로 자동 동기화합니다(계정별 최소 간격 겸용). 또한 기동 시 재기동으로 중단된 `running`/`queued` job을 `failed` 로 정리해 유령 작업을 남기지 않습니다. 0이면 수동 동기화만 사용합니다.
+
 ## 오프라인 / 격리망
 
 TLS·인증이 없는 사내 메일 서버는 다음으로 허용합니다(감사 로그에 기록됨):

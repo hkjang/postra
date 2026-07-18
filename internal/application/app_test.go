@@ -547,6 +547,57 @@ func TestRawPreservation(t *testing.T) {
 	}
 }
 
+// 비기능 "Worker 장애 후 Job 재개": jobs stuck in running/queued after a
+// restart are marked failed by recovery, not left live forever.
+func TestJobRecovery(t *testing.T) {
+	app, _, _, _ := newTestApp(t)
+	ctx := WithActor(context.Background(), "test")
+	// Simulate a job that was interrupted mid-flight.
+	stuck := &domain.Job{ID: "job_stuck", UserID: DefaultUserID, Type: "sync", Status: domain.JobRunning}
+	if err := app.Store.CreateJob(ctx, stuck); err != nil {
+		t.Fatal(err)
+	}
+	app.RecoverStaleJobs(ctx)
+	got, err := app.GetJob(ctx, "job_stuck")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != domain.JobFailed {
+		t.Fatalf("stuck job status=%s, want failed", got.Status)
+	}
+}
+
+// Scheduler tick syncs every active POP3 account once.
+func TestSchedulerSyncsActiveAccounts(t *testing.T) {
+	app, pop, _, _ := newTestApp(t)
+	acc := mustAccount(t, app)
+	pop.messages["u1"] = testMail("m1", "scheduled", "body")
+
+	app.syncAllActive(context.Background())
+	// wait for the async sync job to finish
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		res, _ := app.Search(context.Background(), domain.SearchQuery{})
+		if len(res.Messages) == 1 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	res, _ := app.Search(context.Background(), domain.SearchQuery{})
+	if len(res.Messages) != 1 {
+		t.Fatalf("scheduler did not sync account: %d messages", len(res.Messages))
+	}
+	// disabled account is skipped
+	app.DisableAccount(WithActor(context.Background(), "test"), acc.ID)
+	pop.messages["u2"] = testMail("m2", "after disable", "body2")
+	app.syncAllActive(context.Background())
+	time.Sleep(200 * time.Millisecond)
+	res, _ = app.Search(context.Background(), domain.SearchQuery{})
+	if len(res.Messages) != 1 {
+		t.Fatalf("disabled account should not sync: %d messages", len(res.Messages))
+	}
+}
+
 // §14 at-rest encryption: neither the raw MIME object nor the parsed body
 // column may appear as plaintext anywhere under the data directory, yet
 // reads still return the original content and FTS search still works.

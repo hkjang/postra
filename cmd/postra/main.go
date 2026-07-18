@@ -226,6 +226,11 @@ func serve(configPath string) error {
 
 	warnIfNonLoopback(cfg)
 
+	// Background scheduler: recover interrupted jobs, then periodic sync.
+	schedCtx, schedCancel := context.WithCancel(context.Background())
+	defer schedCancel()
+	go app.RunScheduler(schedCtx)
+
 	restSrv := &http.Server{
 		Addr:              cfg.HTTPAddr,
 		Handler:           httpapi.New(app, cfg.APIToken).Handler(),
