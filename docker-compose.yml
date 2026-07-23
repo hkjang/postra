@@ -7,12 +7,10 @@ services:
     image: postra:latest
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8480:8480"   # REST API
-      - "127.0.0.1:8481:8481"   # MCP Streamable HTTP
+      - "127.0.0.1:8480:8480"   # REST API + Web UI + MCP (/mcp)
     environment:
       POSTRA_DATA_DIR: /data
       POSTRA_HTTP_ADDR: "0.0.0.0:8480"
-      POSTRA_MCP_HTTP_ADDR: "0.0.0.0:8481"
       # Require a bearer token whenever bound to a non-loopback interface.
       POSTRA_API_TOKEN: "${POSTRA_API_TOKEN:?set POSTRA_API_TOKEN}"
       # In production inject the KEK from a secret manager, not the on-disk file:

@@ -22,10 +22,9 @@ docker image ls | grep postra
 
 # 오프라인망(평문 POP3/SMTP 허용) 실행 예시
 docker run -d --name postra \
-  -p 8480:8480 -p 8481:8481 \
+  -p 8480:8480 \
   -v postra-data:/data \
   -e POSTRA_HTTP_ADDR=0.0.0.0:8480 \
-  -e POSTRA_MCP_HTTP_ADDR=0.0.0.0:8481 \
   -e POSTRA_ALLOW_INSECURE_MAIL=true \
   -e POSTRA_API_TOKEN=change-me \
   postra:0.4.0
@@ -35,7 +34,7 @@ docker exec -it postra postra account list
 docker exec -it postra postra secret set --type mail_password --label "내 메일"
 ```
 
-비로컬 인터페이스(`0.0.0.0`)로 바인딩하므로 `POSTRA_API_TOKEN` 설정을 권장합니다. 완전 격리망이라면 생략 가능하나 기동 시 경고가 출력됩니다.
+REST API는 `/api`, Web UI는 `/ui`, MCP Streamable HTTP는 `/mcp`이며 모두 8480 포트를 공유합니다. 비로컬 인터페이스(`0.0.0.0`)로 바인딩하므로 `POSTRA_API_TOKEN` 설정을 권장합니다. 완전 격리망이라면 생략 가능하나 기동 시 경고가 출력됩니다.
 
 ## 2) 바이너리 단독 실행 (Docker 불필요)
 

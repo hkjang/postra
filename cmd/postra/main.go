@@ -274,11 +274,11 @@ func serve(configPath string) error {
 	go app.RunScheduler(schedCtx)
 	go app.RunRetryWorker(schedCtx)
 
-	// The REST API owns "/" (its mux registers /api/… and /metrics); the web
-	// UI, when enabled, takes the more-specific "/ui/" prefix so ServeMux
-	// routes UI traffic to it and everything else to the API.
+	// REST, Web UI, and Streamable HTTP MCP share the primary listener. A
+	// separate MCPHTTPAddr remains optional for existing deployments.
 	root := http.NewServeMux()
 	root.Handle("/", httpapi.New(app, cfg.APIToken).Handler())
+	root.Handle("/mcp", mcpserver.HTTPHandler(app, cfg.APIToken))
 	if cfg.WebUIEnabled {
 		root.Handle("/ui/", webui.New(app, cfg.APIToken).Handler())
 		slog.Info("web UI enabled", "path", "/ui/")
@@ -290,7 +290,7 @@ func serve(configPath string) error {
 	}
 	errCh := make(chan error, 2)
 	go func() {
-		slog.Info("REST API listening", "addr", cfg.HTTPAddr)
+		slog.Info("HTTP listening", "addr", cfg.HTTPAddr, "rest", "/api", "mcp", "/mcp", "ui", "/ui/")
 		errCh <- restSrv.ListenAndServe()
 	}()
 

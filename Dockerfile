@@ -22,7 +22,7 @@ COPY --from=build /out/postra /usr/local/bin/postra
 # Vault/OpenBao instead of relying on the on-disk KEK file.
 ENV POSTRA_DATA_DIR=/data
 VOLUME ["/data"]
-EXPOSE 8480 8481
+EXPOSE 8480
 USER nonroot:nonroot
 ENTRYPOINT ["postra"]
 CMD ["serve"]

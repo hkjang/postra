@@ -35,7 +35,7 @@ go build -o postra ./cmd/postra
 ./postra sync --account acc_xxx --wait # POP3 수집
 ./postra search --q "invoice"
 
-./postra serve                         # REST(:8480) + MCP Streamable HTTP(:8481)
+./postra serve                         # REST·Web UI + MCP(:8480/mcp)
 ./postra mcp                           # 로컬 MCP 클라이언트용 stdio 서버
 ```
 
@@ -91,7 +91,7 @@ POSTRA_ALLOW_INSECURE_MAIL=true ./postra serve
 ## MCP
 
 - **로컬(stdio)**: `postra mcp` — Claude Code 등 로컬 MCP 클라이언트에 연결
-- **원격(Streamable HTTP)**: `postra serve` 의 `:8481`. 비로컬 인터페이스 바인딩 시 `POSTRA_API_TOKEN` 을 요구합니다.
+- **원격(Streamable HTTP)**: `postra serve` 의 `http://127.0.0.1:8480/mcp`. REST·Web UI와 같은 포트를 사용하며 비로컬 인터페이스 바인딩 시 `POSTRA_API_TOKEN` 을 요구합니다. 기존 배포 호환용 별도 리스너가 필요할 때만 `mcp_http_addr`/`POSTRA_MCP_HTTP_ADDR`를 설정하세요.
 
 주요 **도구(Tools)**: `mail_account_*`, `secret_registration_begin`, `mail_sync_start`, `job_status`, `mail_search`, `mail_message_get`, `mail_thread_get`, `mail_summarize` / `mail_classify` / `mail_action_items_extract` / `mail_phishing_inspect` / `mail_question_answer`, `mail_draft_create`, `mail_draft_rewrite`, `mail_send_preview`, `mail_send_request_approval`, `mail_send`, `mail_local_delete`, `mail_server_delete_preview`, `mail_server_delete_request_approval`, `mail_server_delete`, `mail_audit_search`.
 

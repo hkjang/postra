@@ -23,8 +23,9 @@ type Config struct {
 
 	// HTTPAddr is the REST API bind address (e.g. "127.0.0.1:8480").
 	HTTPAddr string `json:"http_addr"`
-	// MCPHTTPAddr is the Streamable HTTP MCP bind address (e.g. "127.0.0.1:8481").
-	// Empty disables the remote MCP endpoint.
+	// MCPHTTPAddr optionally exposes a second, legacy-compatible dedicated
+	// MCP listener (e.g. "127.0.0.1:8481"). Streamable HTTP MCP is always
+	// available at /mcp on HTTPAddr; empty keeps the default single-port mode.
 	MCPHTTPAddr string `json:"mcp_http_addr"`
 
 	// APIToken, when set, is required as "Authorization: Bearer <token>" on
@@ -134,7 +135,7 @@ func Default() Config {
 		DataDir:           filepath.Join(home, ".postra"),
 		StorageDriver:     "sqlite",
 		HTTPAddr:          "127.0.0.1:8480",
-		MCPHTTPAddr:       "127.0.0.1:8481",
+		MCPHTTPAddr:       "",
 		AllowPrivateHosts: true,
 		EncryptAtRest:     true,
 		MetricsEnabled:    true,
