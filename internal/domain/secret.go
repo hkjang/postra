@@ -19,11 +19,12 @@ type SecretRef string
 type SecretPurpose string
 
 const (
-	PurposePOP3Auth SecretPurpose = "pop3_auth"
-	PurposeSMTPAuth SecretPurpose = "smtp_auth"
-	PurposeAIKey    SecretPurpose = "ai_api_key"
-	PurposeTest     SecretPurpose = "connection_test"
-	PurposeOIDC     SecretPurpose = "oidc_client_secret"
+	PurposePOP3Auth    SecretPurpose = "pop3_auth"
+	PurposeSMTPAuth    SecretPurpose = "smtp_auth"
+	PurposeAIKey       SecretPurpose = "ai_api_key"
+	PurposeTest        SecretPurpose = "connection_test"
+	PurposeOIDC        SecretPurpose = "oidc_client_secret"
+	PurposeVectorToken SecretPurpose = "vector_store_token"
 )
 
 type SecretType string

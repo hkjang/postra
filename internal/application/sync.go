@@ -15,8 +15,8 @@ import (
 	"postra/internal/adapters/persistence"
 	"postra/internal/domain"
 	"postra/internal/platform/metrics"
+	"postra/internal/platform/telemetry"
 )
-
 
 type SyncOptions struct {
 	MaxMessages int  `json:"max_messages,omitempty"`
@@ -24,7 +24,6 @@ type SyncOptions struct {
 	// DeleteAfterFetch is intentionally absent from the MVP sync path:
 	// server-side deletion is a separate, approval-gated flow (§5.2).
 }
-
 
 // StartSync launches an asynchronous POP3 sync job and returns its job ID.
 func (a *App) StartSync(ctx context.Context, accountID string, opts SyncOptions) (*domain.Job, error) {
@@ -88,8 +87,10 @@ func (a *App) ListJobs(ctx context.Context, limit int) ([]domain.Job, error) {
 	return a.Store.ListJobs(ctx, userIDFrom(ctx), limit)
 }
 
-
 func (a *App) runSync(ctx context.Context, job *domain.Job, acc *domain.MailAccount, opts SyncOptions) {
+	ctx, span := telemetry.Start(ctx, "sync.run",
+		telemetry.Attr("account.id", acc.ID), telemetry.Attr("inbound.protocol", acc.InboundProtocol))
+	defer span.End()
 	stats := domain.SyncStats{}
 	finish := func(status domain.JobStatus, errMsg string) {
 		job.Status = status
@@ -304,6 +305,8 @@ func (a *App) ingestOne(ctx context.Context, sess domain.POP3Session, acc *domai
 	}
 	_ = a.Store.AddCheckpoint(ctx, acc.ID, uidl, msg.ID)
 	stats.New++
+	// Apply the user's automation rules to the freshly ingested message
+	// (§자동화 메일 규칙 엔진). Best-effort: never fails the sync.
+	a.evaluateRulesOnIngest(ctx, msg, body)
 	return nil
 }
-

@@ -3,6 +3,7 @@
 package ai
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -78,6 +79,19 @@ type chatResponse struct {
 	} `json:"error,omitempty"`
 }
 
+// chatStreamChunk is one Server-Sent Events data frame of a streaming
+// chat-completions response (choices[].delta.content).
+type chatStreamChunk struct {
+	Choices []struct {
+		Delta struct {
+			Content string `json:"content"`
+		} `json:"delta"`
+	} `json:"choices"`
+	Error *struct {
+		Message string `json:"message"`
+	} `json:"error,omitempty"`
+}
+
 // untrustedBlock wraps mail-derived content in an explicit data-only frame.
 // The system prompt instructs the model that nothing inside is an
 // instruction (AI-014); the random-free fixed delimiter is fine because the
@@ -98,29 +112,56 @@ func (p *OpenAICompat) Generate(ctx context.Context, req domain.GenerationReques
 	}
 	msgs = append(msgs, chatMessage{Role: "user", Content: user})
 
+	route := cfg.RouteForTask(req.Task)
+	text, err := p.generateOnce(ctx, cfg, client, route, req, msgs)
+	if err != nil && req.Task != "" {
+		// Automatic fallback to the default endpoint when a per-task model
+		// fails (§AI 작업별 모델 라우팅 "실패 시 대체 모델").
+		def := cfg.RouteForTask("")
+		if def != route {
+			text, err = p.generateOnce(ctx, cfg, client, def, req, msgs)
+			if err == nil {
+				route = def
+			}
+		}
+	}
+	if err != nil {
+		return domain.GenerationResult{}, err
+	}
+	sum := sha256.Sum256([]byte(req.System + "\x00" + user))
+	return domain.GenerationResult{
+		Text:      text,
+		Model:     route.Model,
+		InputHash: hex.EncodeToString(sum[:]),
+	}, nil
+}
+
+// generateOnce performs a single chat-completion call against a resolved route.
+func (p *OpenAICompat) generateOnce(ctx context.Context, cfg config.AIConfig, client *http.Client,
+	route config.AITaskRoute, req domain.GenerationRequest, msgs []chatMessage) (string, error) {
 	maxTokens := req.MaxTokens
 	if maxTokens <= 0 {
-		maxTokens = cfg.MaxTokens
+		maxTokens = route.MaxTokens
 	}
-	body := chatRequest{Model: cfg.Model, Messages: msgs, MaxTokens: maxTokens, Temperature: 0.2, Stream: cfg.Stream}
+	body := chatRequest{Model: route.Model, Messages: msgs, MaxTokens: maxTokens, Temperature: 0.2, Stream: cfg.Stream}
 	if req.JSONMode {
 		body.ResponseFormat = &respFormat{Type: "json_object"}
 	}
 	b, err := json.Marshal(body)
 	if err != nil {
-		return domain.GenerationResult{}, err
+		return "", err
 	}
 
-	url := strings.TrimSuffix(cfg.BaseURL, "/") + "/chat/completions"
+	url := strings.TrimSuffix(route.BaseURL, "/") + "/chat/completions"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(b))
 	if err != nil {
-		return domain.GenerationResult{}, err
+		return "", err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	if cfg.APIKeyRef != "" {
-		h, err := p.secrets.Acquire(ctx, domain.SecretRef(cfg.APIKeyRef), domain.PurposeAIKey)
+	if route.APIKeyRef != "" && p.secrets != nil {
+		h, err := p.secrets.Acquire(ctx, domain.SecretRef(route.APIKeyRef), domain.PurposeAIKey)
 		if err != nil {
-			return domain.GenerationResult{}, fmt.Errorf("acquire AI key: %w", err)
+			return "", fmt.Errorf("acquire AI key: %w", err)
 		}
 		httpReq.Header.Set("Authorization", "Bearer "+string(h.Reveal()))
 		defer h.Zero()
@@ -129,32 +170,72 @@ func (p *OpenAICompat) Generate(ctx context.Context, req domain.GenerationReques
 
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return domain.GenerationResult{}, fmt.Errorf("AI request: %w", err)
+		return "", fmt.Errorf("AI request: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
+		return "", fmt.Errorf("AI API %d: %s", resp.StatusCode, truncate(string(respBody), 300))
+	}
+
+	if isEventStream(resp.Header.Get("Content-Type")) {
+		return parseSSEChatStream(io.LimitReader(resp.Body, 10<<20))
+	}
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
 	if err != nil {
-		return domain.GenerationResult{}, err
-	}
-	if resp.StatusCode != http.StatusOK {
-		return domain.GenerationResult{}, fmt.Errorf("AI API %d: %s", resp.StatusCode, truncate(string(respBody), 300))
+		return "", err
 	}
 	var cr chatResponse
 	if err := json.Unmarshal(respBody, &cr); err != nil {
-		return domain.GenerationResult{}, fmt.Errorf("AI response parse: %w", err)
+		return "", fmt.Errorf("AI response parse: %w", err)
 	}
 	if cr.Error != nil {
-		return domain.GenerationResult{}, fmt.Errorf("AI API error: %s", cr.Error.Message)
+		return "", fmt.Errorf("AI API error: %s", cr.Error.Message)
 	}
 	if len(cr.Choices) == 0 {
-		return domain.GenerationResult{}, fmt.Errorf("AI API returned no choices")
+		return "", fmt.Errorf("AI API returned no choices")
 	}
-	sum := sha256.Sum256([]byte(req.System + "\x00" + user))
-	return domain.GenerationResult{
-		Text:      cr.Choices[0].Message.Content,
-		Model:     cfg.Model,
-		InputHash: hex.EncodeToString(sum[:]),
-	}, nil
+	return cr.Choices[0].Message.Content, nil
+}
+
+func isEventStream(contentType string) bool {
+	return strings.Contains(strings.ToLower(contentType), "text/event-stream")
+}
+
+// parseSSEChatStream reads an OpenAI-compatible streaming chat-completions
+// response and concatenates the delta content across chunks. It stops at the
+// "[DONE]" sentinel or EOF and surfaces an in-band error frame.
+func parseSSEChatStream(r io.Reader) (string, error) {
+	br := bufio.NewReader(r)
+	var sb strings.Builder
+	for {
+		line, err := br.ReadString('\n')
+		if s := strings.TrimRight(line, "\r\n"); strings.HasPrefix(s, "data:") {
+			payload := strings.TrimSpace(strings.TrimPrefix(s, "data:"))
+			switch {
+			case payload == "":
+				// keep-alive / blank frame
+			case payload == "[DONE]":
+				return sb.String(), nil
+			default:
+				var chunk chatStreamChunk
+				if uerr := json.Unmarshal([]byte(payload), &chunk); uerr == nil {
+					if chunk.Error != nil {
+						return "", fmt.Errorf("AI API error: %s", chunk.Error.Message)
+					}
+					for _, c := range chunk.Choices {
+						sb.WriteString(c.Delta.Content)
+					}
+				}
+			}
+		}
+		if err != nil {
+			if err == io.EOF {
+				return sb.String(), nil
+			}
+			return "", err
+		}
+	}
 }
 
 type embedRequest struct {

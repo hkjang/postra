@@ -64,4 +64,3 @@ type MCPKey struct {
 	CreatedAt  int64  `json:"created_at"`
 	LastUsedAt int64  `json:"last_used_at,omitempty"`
 }
-

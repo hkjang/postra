@@ -24,7 +24,6 @@ import (
 	"postra/internal/domain"
 )
 
-
 type AttachmentPart struct {
 	Name     string
 	MIMEType string
@@ -253,7 +252,6 @@ func decodeCharset(b []byte, label string) string {
 	}
 	return string(dec)
 }
-
 
 func decodeWord(s string) string {
 	d, err := wordDecoder.DecodeHeader(s)

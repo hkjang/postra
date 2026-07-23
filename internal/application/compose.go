@@ -145,7 +145,7 @@ func (a *App) generateDraftBody(ctx context.Context, instructions string, origin
 			original.Subject, original.From.Name, original.From.Email, originalBody)
 		targetID = original.ID
 	}
-	an, err := a.runAnalysis(ctx, "draft_reply", "message", targetID, instructions, untrusted)
+	an, err := a.runAnalysis(ctx, "draft_reply", "message", targetID, a.withWritingGuide(instructions), untrusted)
 	if err != nil {
 		return nil, err
 	}
@@ -222,7 +222,7 @@ func (a *App) RewriteDraft(ctx context.Context, draftID, style string) (*DraftVi
 		return nil, userErrf("draft %s is %s and cannot be edited", d.ID, d.Status)
 	}
 	untrusted := "Subject: " + cur.Subject + "\n\n" + cur.BodyText
-	an, err := a.runAnalysis(ctx, "rewrite", "draft", draftID, "Rewrite style: "+style, untrusted)
+	an, err := a.runAnalysis(ctx, "rewrite", "draft", draftID, a.withWritingGuide("Rewrite style: "+style), untrusted)
 	if err != nil {
 		return nil, err
 	}
@@ -268,6 +268,33 @@ func (a *App) DiscardDraft(ctx context.Context, draftID string) error {
 	}
 	a.audit(ctx, "draft_discard", "draft:"+draftID, "ok", "")
 	return nil
+}
+
+// withWritingGuide appends the organization's writing guide to a draft
+// instruction so generated/rewritten mail follows company tone and policy
+// (§AI 조직 작성 가이드).
+func (a *App) withWritingGuide(instruction string) string {
+	guide := strings.TrimSpace(a.Cfg.Compose.WritingGuide)
+	if guide == "" {
+		return instruction
+	}
+	if instruction == "" {
+		return "Follow this organization writing guide:\n" + guide
+	}
+	return instruction + "\n\nAlso follow this organization writing guide:\n" + guide
+}
+
+// checkWritingPolicy flags configured banned phrases present in outbound text.
+func (a *App) checkWritingPolicy(subject, body string) []string {
+	text := strings.ToLower(subject + "\n" + body)
+	var hits []string
+	for _, p := range a.Cfg.Compose.BannedPhrases {
+		p = strings.TrimSpace(p)
+		if p != "" && strings.Contains(text, strings.ToLower(p)) {
+			hits = append(hits, p)
+		}
+	}
+	return hits
 }
 
 func quote(body string) string {

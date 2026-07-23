@@ -37,9 +37,10 @@ func (a *App) RunScheduler(ctx context.Context) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	// Run RecoverStaleJobs and initial sync if we are the leader
+	// Job recovery is handled on the leader-transition edge (onBecameLeader),
+	// so it runs even when auto-sync is disabled. Here we only kick an initial
+	// sync if this node is already the leader.
 	if a.IsLeader() {
-		a.RecoverStaleJobs(ctx)
 		a.syncAllActive(ctx)
 	}
 

@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -13,48 +14,55 @@ import (
 )
 
 const (
-	SettingAuthSessionHours      = "auth.session_hours"
-	SettingOIDCIssuer            = "auth.oidc.issuer"
-	SettingOIDCClientID          = "auth.oidc.client_id"
-	SettingOIDCSecretRef         = "auth.oidc.secret_ref"   // #nosec G101 -- setting key, never a credential value
-	SettingOIDCRedirectURL       = "auth.oidc.redirect_url" // #nosec G101 -- setting key, not a credential
-	SettingOIDCAutoProvision     = "auth.oidc.auto_provision"
-	SettingOIDCAdminGroup        = "auth.oidc.admin_group"
-	SettingSyncAutoMinutes       = "sync.auto_sync_minutes"
-	SettingSyncInitialWindowDays = "sync.initial_window_days"
-	SettingSyncMaxMessageBytes   = "sync.max_message_bytes"
-	SettingSyncMaxPerSync        = "sync.max_per_sync"
-	SettingSyncConnectTimeout    = "sync.connect_timeout_sec"
-	SettingSyncCommandTimeout    = "sync.command_timeout_sec"
-	SettingAIBaseURL             = "ai.base_url"
-	SettingAIModel               = "ai.model"
-	SettingAIEmbedModel          = "ai.embed_model"
-	SettingAIAPIKeyRef           = "ai.api_key_ref" // #nosec G101 -- encrypted-secret reference setting key
-	SettingAITimeout             = "ai.timeout_sec"
-	SettingAIMaxTokens           = "ai.max_tokens"
-	SettingAIAllowExternal       = "ai.allow_external"
-	SettingAIMaskExternalPII     = "ai.mask_external_pii"
-	SettingAIStream              = "ai.stream"
-	SettingAIExtraHeaders        = "ai.extra_headers"
-	SettingAIEmbedBaseURL        = "ai.embed_base_url"
-	SettingSendMaxMinute         = "send.max_per_minute"
-	SettingSendMaxHour           = "send.max_per_hour"
-	SettingSendWarnRecipients    = "send.warn_recipients"
-	SettingSendMaxRetries        = "send.max_retries"
-	SettingSendRetryBase         = "send.retry_base_seconds"
-	SettingSendRetryMax          = "send.retry_max_seconds"
-	SettingAttachmentBlock       = "attachments.block_extensions"
-	SettingAttachmentQuarantine  = "attachments.quarantine_extensions"
-	SettingArchiveMaxEntries     = "attachments.archive_max_entries"
-	SettingArchiveMaxTotalBytes  = "attachments.archive_max_total_bytes"
-	SettingArchiveMaxRatio       = "attachments.archive_max_ratio"
-	SettingAllowInsecureMail     = "security.allow_insecure_mail"
-	SettingAllowPrivateHosts     = "security.allow_private_hosts"
-	SettingEncryptAtRest         = "security.encrypt_at_rest"
-	SettingVectorProvider        = "vector.provider"
-	SettingVectorMilvusURL       = "vector.milvus_url"
-	SettingVectorMilvusToken     = "vector.milvus_token"
+	SettingAuthSessionHours       = "auth.session_hours"
+	SettingOIDCIssuer             = "auth.oidc.issuer"
+	SettingOIDCClientID           = "auth.oidc.client_id"
+	SettingOIDCSecretRef          = "auth.oidc.secret_ref"   // #nosec G101 -- setting key, never a credential value
+	SettingOIDCRedirectURL        = "auth.oidc.redirect_url" // #nosec G101 -- setting key, not a credential
+	SettingOIDCAutoProvision      = "auth.oidc.auto_provision"
+	SettingOIDCAdminGroup         = "auth.oidc.admin_group"
+	SettingSyncAutoMinutes        = "sync.auto_sync_minutes"
+	SettingSyncInitialWindowDays  = "sync.initial_window_days"
+	SettingSyncMaxMessageBytes    = "sync.max_message_bytes"
+	SettingSyncMaxPerSync         = "sync.max_per_sync"
+	SettingSyncConnectTimeout     = "sync.connect_timeout_sec"
+	SettingSyncCommandTimeout     = "sync.command_timeout_sec"
+	SettingAIBaseURL              = "ai.base_url"
+	SettingAIModel                = "ai.model"
+	SettingAIEmbedModel           = "ai.embed_model"
+	SettingAIAPIKeyRef            = "ai.api_key_ref" // #nosec G101 -- encrypted-secret reference setting key
+	SettingAITimeout              = "ai.timeout_sec"
+	SettingAIMaxTokens            = "ai.max_tokens"
+	SettingAIAllowExternal        = "ai.allow_external"
+	SettingAIMaskExternalPII      = "ai.mask_external_pii"
+	SettingAIStream               = "ai.stream"
+	SettingAIExtraHeaders         = "ai.extra_headers"
+	SettingAIEmbedBaseURL         = "ai.embed_base_url"
+	SettingAITaskModels           = "ai.task_models" // JSON: {"summarize":{"model":..,"base_url":..,"api_key_ref":..,"max_tokens":..}}
+	SettingSendMaxMinute          = "send.max_per_minute"
+	SettingSendMaxHour            = "send.max_per_hour"
+	SettingSendWarnRecipients     = "send.warn_recipients"
+	SettingSendMaxRetries         = "send.max_retries"
+	SettingSendRetryBase          = "send.retry_base_seconds"
+	SettingSendRetryMax           = "send.retry_max_seconds"
+	SettingSendDLPPolicy          = "send.dlp_policy"
+	SettingSendDLPKeywords        = "send.dlp_keywords"
+	SettingComposeWritingGuide    = "compose.writing_guide"
+	SettingComposeBannedPhrases   = "compose.banned_phrases"
+	SettingAttachmentBlock        = "attachments.block_extensions"
+	SettingAttachmentQuarantine   = "attachments.quarantine_extensions"
+	SettingArchiveMaxEntries      = "attachments.archive_max_entries"
+	SettingArchiveMaxTotalBytes   = "attachments.archive_max_total_bytes"
+	SettingArchiveMaxRatio        = "attachments.archive_max_ratio"
+	SettingAllowInsecureMail      = "security.allow_insecure_mail"
+	SettingAllowPrivateHosts      = "security.allow_private_hosts"
+	SettingEncryptAtRest          = "security.encrypt_at_rest"
+	SettingVectorProvider         = "vector.provider"
+	SettingVectorMilvusURL        = "vector.milvus_url"
+	SettingVectorMilvusToken      = "vector.milvus_token"     // #nosec G101 -- legacy write-only input field, never persisted
+	SettingVectorMilvusTokenRef   = "vector.milvus_token_ref" // #nosec G101 -- encrypted-secret reference setting key
 	SettingVectorMilvusCollection = "vector.milvus_collection"
+	SettingMCPPolicy              = "mcp.policy" // JSON gateway policy for MCP tools
 )
 
 var allowedSettings = map[string]bool{
@@ -66,13 +74,17 @@ var allowedSettings = map[string]bool{
 	SettingAIEmbedModel: true, SettingAIAPIKeyRef: true, SettingAITimeout: true,
 	SettingAIMaxTokens: true, SettingAIAllowExternal: true, SettingAIMaskExternalPII: true,
 	SettingAIStream: true, SettingAIExtraHeaders: true, SettingAIEmbedBaseURL: true,
+	SettingAITaskModels:  true,
 	SettingSendMaxMinute: true, SettingSendMaxHour: true, SettingSendWarnRecipients: true,
 	SettingSendMaxRetries: true, SettingSendRetryBase: true, SettingSendRetryMax: true,
+	SettingSendDLPPolicy: true, SettingSendDLPKeywords: true,
+	SettingComposeWritingGuide: true, SettingComposeBannedPhrases: true,
 	SettingAttachmentBlock: true, SettingAttachmentQuarantine: true, SettingArchiveMaxEntries: true,
 	SettingArchiveMaxTotalBytes: true, SettingArchiveMaxRatio: true,
 	SettingAllowInsecureMail: true, SettingAllowPrivateHosts: true, SettingEncryptAtRest: true,
 	SettingVectorProvider: true, SettingVectorMilvusURL: true, SettingVectorMilvusToken: true,
-	SettingVectorMilvusCollection: true,
+	SettingVectorMilvusTokenRef: true, SettingVectorMilvusCollection: true,
+	SettingMCPPolicy: true,
 }
 
 func (a *App) SystemSettings(ctx context.Context) (map[string]string, error) {
@@ -85,6 +97,10 @@ func (a *App) SystemSettings(ctx context.Context) (map[string]string, error) {
 			delete(stored, key)
 		}
 	}
+	// The Milvus token is a write-only field: never echo the plaintext (legacy
+	// deployments may still have one persisted). Only the secret reference is
+	// exposed, like ai.api_key_ref / auth.oidc.secret_ref.
+	delete(stored, SettingVectorMilvusToken)
 	aiCfg := a.currentAIConfig()
 	defaults := map[string]string{
 		SettingAuthSessionHours: strconv.Itoa(a.Cfg.Auth.SessionHours),
@@ -99,33 +115,39 @@ func (a *App) SystemSettings(ctx context.Context) (map[string]string, error) {
 		SettingSyncConnectTimeout:    strconv.Itoa(a.Cfg.Sync.ConnectTimeoutSec),
 		SettingSyncCommandTimeout:    strconv.Itoa(a.Cfg.Sync.CommandTimeoutSec),
 		SettingAIBaseURL:             aiCfg.BaseURL, SettingAIModel: aiCfg.Model,
-		SettingAIEmbedModel:         aiCfg.EmbedModel,
-		SettingAIAPIKeyRef:          aiCfg.APIKeyRef,
-		SettingAITimeout:            strconv.Itoa(aiCfg.TimeoutSec),
-		SettingAIMaxTokens:          strconv.Itoa(aiCfg.MaxTokens),
-		SettingAIAllowExternal:      strconv.FormatBool(aiCfg.AllowExternal),
-		SettingAIMaskExternalPII:    strconv.FormatBool(aiCfg.MaskExternalPII),
-		SettingAIStream:             strconv.FormatBool(aiCfg.Stream),
-		SettingAIExtraHeaders:       aiCfg.ExtraHeaders,
-		SettingAIEmbedBaseURL:       aiCfg.EmbedBaseURL,
-		SettingSendMaxMinute:        strconv.Itoa(a.Cfg.Send.MaxPerMinute),
-		SettingSendMaxHour:          strconv.Itoa(a.Cfg.Send.MaxPerHour),
-		SettingSendWarnRecipients:   strconv.Itoa(a.Cfg.Send.WarnRecipients),
-		SettingSendMaxRetries:       strconv.Itoa(a.Cfg.Send.MaxRetries),
-		SettingSendRetryBase:        strconv.Itoa(a.Cfg.Send.RetryBaseSeconds),
-		SettingSendRetryMax:         strconv.Itoa(a.Cfg.Send.RetryMaxSeconds),
-		SettingAttachmentBlock:      strings.Join(a.Cfg.Attachments.BlockExtensions, ","),
-		SettingAttachmentQuarantine: strings.Join(a.Cfg.Attachments.QuarantineExtensions, ","),
-		SettingArchiveMaxEntries:    strconv.Itoa(a.Cfg.Attachments.ArchiveMaxEntries),
-		SettingArchiveMaxTotalBytes: strconv.FormatInt(a.Cfg.Attachments.ArchiveMaxTotalBytes, 10),
-		SettingArchiveMaxRatio:      strconv.FormatFloat(a.Cfg.Attachments.ArchiveMaxRatio, 'f', -1, 64),
-		SettingAllowInsecureMail:    strconv.FormatBool(a.Cfg.AllowInsecureMail),
-		SettingAllowPrivateHosts:    strconv.FormatBool(a.Cfg.AllowPrivateHosts),
-		SettingEncryptAtRest:        strconv.FormatBool(a.Cfg.EncryptAtRest),
+		SettingAIEmbedModel:           aiCfg.EmbedModel,
+		SettingAIAPIKeyRef:            aiCfg.APIKeyRef,
+		SettingAITimeout:              strconv.Itoa(aiCfg.TimeoutSec),
+		SettingAIMaxTokens:            strconv.Itoa(aiCfg.MaxTokens),
+		SettingAIAllowExternal:        strconv.FormatBool(aiCfg.AllowExternal),
+		SettingAIMaskExternalPII:      strconv.FormatBool(aiCfg.MaskExternalPII),
+		SettingAIStream:               strconv.FormatBool(aiCfg.Stream),
+		SettingAIExtraHeaders:         aiCfg.ExtraHeaders,
+		SettingAIEmbedBaseURL:         aiCfg.EmbedBaseURL,
+		SettingAITaskModels:           taskModelsJSON(aiCfg.TaskModels),
+		SettingSendMaxMinute:          strconv.Itoa(a.Cfg.Send.MaxPerMinute),
+		SettingSendMaxHour:            strconv.Itoa(a.Cfg.Send.MaxPerHour),
+		SettingSendWarnRecipients:     strconv.Itoa(a.Cfg.Send.WarnRecipients),
+		SettingSendMaxRetries:         strconv.Itoa(a.Cfg.Send.MaxRetries),
+		SettingSendRetryBase:          strconv.Itoa(a.Cfg.Send.RetryBaseSeconds),
+		SettingSendRetryMax:           strconv.Itoa(a.Cfg.Send.RetryMaxSeconds),
+		SettingSendDLPPolicy:          a.Cfg.Send.DLPPolicy,
+		SettingSendDLPKeywords:        strings.Join(a.Cfg.Send.DLPKeywords, ","),
+		SettingComposeWritingGuide:    a.Cfg.Compose.WritingGuide,
+		SettingComposeBannedPhrases:   strings.Join(a.Cfg.Compose.BannedPhrases, ","),
+		SettingAttachmentBlock:        strings.Join(a.Cfg.Attachments.BlockExtensions, ","),
+		SettingAttachmentQuarantine:   strings.Join(a.Cfg.Attachments.QuarantineExtensions, ","),
+		SettingArchiveMaxEntries:      strconv.Itoa(a.Cfg.Attachments.ArchiveMaxEntries),
+		SettingArchiveMaxTotalBytes:   strconv.FormatInt(a.Cfg.Attachments.ArchiveMaxTotalBytes, 10),
+		SettingArchiveMaxRatio:        strconv.FormatFloat(a.Cfg.Attachments.ArchiveMaxRatio, 'f', -1, 64),
+		SettingAllowInsecureMail:      strconv.FormatBool(a.Cfg.AllowInsecureMail),
+		SettingAllowPrivateHosts:      strconv.FormatBool(a.Cfg.AllowPrivateHosts),
+		SettingEncryptAtRest:          strconv.FormatBool(a.Cfg.EncryptAtRest),
 		SettingVectorProvider:         "",
 		SettingVectorMilvusURL:        "",
-		SettingVectorMilvusToken:       "",
+		SettingVectorMilvusTokenRef:   "",
 		SettingVectorMilvusCollection: "postra_emails",
+		SettingMCPPolicy:              "",
 	}
 	for key, value := range defaults {
 		if _, ok := stored[key]; !ok {
@@ -157,12 +179,26 @@ func applyStoredSettings(cfg *config.Config, values map[string]string) {
 	cfg.AI.Stream = boolSetting(values, SettingAIStream, cfg.AI.Stream)
 	cfg.AI.ExtraHeaders = stringSetting(values, SettingAIExtraHeaders, cfg.AI.ExtraHeaders)
 	cfg.AI.EmbedBaseURL = stringSetting(values, SettingAIEmbedBaseURL, cfg.AI.EmbedBaseURL)
+	if raw, ok := values[SettingAITaskModels]; ok {
+		if strings.TrimSpace(raw) == "" {
+			cfg.AI.TaskModels = nil
+		} else {
+			var routes map[string]config.AITaskRoute
+			if err := json.Unmarshal([]byte(raw), &routes); err == nil {
+				cfg.AI.TaskModels = routes
+			}
+		}
+	}
 	cfg.Send.MaxPerMinute = intSetting(values, SettingSendMaxMinute, cfg.Send.MaxPerMinute)
 	cfg.Send.MaxPerHour = intSetting(values, SettingSendMaxHour, cfg.Send.MaxPerHour)
 	cfg.Send.WarnRecipients = intSetting(values, SettingSendWarnRecipients, cfg.Send.WarnRecipients)
 	cfg.Send.MaxRetries = intSetting(values, SettingSendMaxRetries, cfg.Send.MaxRetries)
 	cfg.Send.RetryBaseSeconds = intSetting(values, SettingSendRetryBase, cfg.Send.RetryBaseSeconds)
 	cfg.Send.RetryMaxSeconds = intSetting(values, SettingSendRetryMax, cfg.Send.RetryMaxSeconds)
+	cfg.Send.DLPPolicy = stringSetting(values, SettingSendDLPPolicy, cfg.Send.DLPPolicy)
+	cfg.Send.DLPKeywords = csvSetting(values, SettingSendDLPKeywords, cfg.Send.DLPKeywords)
+	cfg.Compose.WritingGuide = stringSetting(values, SettingComposeWritingGuide, cfg.Compose.WritingGuide)
+	cfg.Compose.BannedPhrases = csvSettingRaw(values, SettingComposeBannedPhrases, cfg.Compose.BannedPhrases)
 	cfg.Attachments.BlockExtensions = csvSetting(values, SettingAttachmentBlock, cfg.Attachments.BlockExtensions)
 	cfg.Attachments.QuarantineExtensions = csvSetting(values, SettingAttachmentQuarantine, cfg.Attachments.QuarantineExtensions)
 	cfg.Attachments.ArchiveMaxEntries = intSetting(values, SettingArchiveMaxEntries, cfg.Attachments.ArchiveMaxEntries)
@@ -208,6 +244,22 @@ func (a *App) AdminSaveSettings(ctx context.Context, values map[string]string, o
 		}
 		clean[SettingOIDCSecretRef] = string(ref)
 	}
+	// The Milvus token arrives as a write-only plaintext field. Register it in
+	// the SecretStore and persist only the reference; never store the token in
+	// system_settings (P1 Milvus 토큰 보안).
+	if token := strings.TrimSpace(values[SettingVectorMilvusToken]); token != "" {
+		oldRef := storedBefore[SettingVectorMilvusTokenRef]
+		ref, err := a.RegisterSecret(ctx, domain.SecretAPIKey, "Milvus access token",
+			domain.NewSecretHandle([]byte(token)))
+		if err != nil {
+			return err
+		}
+		clean[SettingVectorMilvusTokenRef] = string(ref)
+		if oldRef != "" && oldRef != string(ref) {
+			_ = a.RevokeSecret(ctx, domain.SecretRef(oldRef))
+		}
+	}
+	delete(clean, SettingVectorMilvusToken) // never persist the plaintext token
 	if err := a.Store.UpsertSettings(ctx, clean); err != nil {
 		return err
 	}
@@ -225,6 +277,9 @@ func (a *App) AdminSaveSettings(ctx context.Context, values map[string]string, o
 	}
 	if hasVectorSetting {
 		a.initVectorStore(ctx)
+	}
+	if _, ok := clean[SettingMCPPolicy]; ok {
+		a.loadMCPPolicy(ctx)
 	}
 
 	if notifier, ok := a.Store.(interface{ NotifySettingsChange(ctx context.Context) }); ok {
@@ -342,14 +397,14 @@ func (a *App) AdminTestAI(ctx context.Context) (AIConnectionResult, error) {
 }
 
 type EmbeddingStoreTestResult struct {
-	OK                    bool   `json:"ok"`
-	AIEmbedOK             bool   `json:"ai_embed_ok"`
-	AIEmbedLatencyMS      int64  `json:"ai_embed_latency_ms"`
-	AIEmbedModel          string `json:"ai_embed_model"`
-	VectorStoreOK         bool   `json:"vector_store_ok"`
-	VectorStoreLatencyMS  int64  `json:"vector_store_latency_ms"`
-	VectorStoreProvider   string `json:"vector_store_provider"`
-	Message               string `json:"message"`
+	OK                   bool   `json:"ok"`
+	AIEmbedOK            bool   `json:"ai_embed_ok"`
+	AIEmbedLatencyMS     int64  `json:"ai_embed_latency_ms"`
+	AIEmbedModel         string `json:"ai_embed_model"`
+	VectorStoreOK        bool   `json:"vector_store_ok"`
+	VectorStoreLatencyMS int64  `json:"vector_store_latency_ms"`
+	VectorStoreProvider  string `json:"vector_store_provider"`
+	Message              string `json:"message"`
 }
 
 func (a *App) AdminTestEmbeddingStore(ctx context.Context) (EmbeddingStoreTestResult, error) {
@@ -402,6 +457,17 @@ func (a *App) AdminTestEmbeddingStore(ctx context.Context) (EmbeddingStoreTestRe
 	return result, nil
 }
 
+func taskModelsJSON(routes map[string]config.AITaskRoute) string {
+	if len(routes) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(routes)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
 func boolSetting(values map[string]string, key string, fallback bool) bool {
 	if value, ok := values[key]; ok {
 		if parsed, err := strconv.ParseBool(value); err == nil {
@@ -439,6 +505,22 @@ func stringSetting(values map[string]string, key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// csvSettingRaw splits a comma-separated setting preserving case and internal
+// spaces (used for banned phrases / keywords that are human phrases).
+func csvSettingRaw(values map[string]string, key string, fallback []string) []string {
+	value, ok := values[key]
+	if !ok {
+		return fallback
+	}
+	var out []string
+	for _, item := range strings.Split(value, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
 }
 
 func csvSetting(values map[string]string, key string, fallback []string) []string {

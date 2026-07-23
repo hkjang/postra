@@ -23,13 +23,11 @@ import (
 	"strings"
 	"time"
 
-
 	"postra/internal/application"
 	"postra/internal/domain"
 	"postra/internal/platform/build"
 	"postra/internal/platform/metrics"
 )
-
 
 //go:embed templates/*.html
 var files embed.FS
@@ -201,7 +199,6 @@ func validRequestOrigin(r *http.Request) bool {
 	return strings.EqualFold(originHostname, requestHostname) || strings.EqualFold(u.Host, requestHost)
 }
 
-
 func (s *Server) authed(r *http.Request) bool {
 	c, err := r.Cookie(cookieName)
 	if err != nil {
@@ -349,7 +346,6 @@ func secureRequest(r *http.Request) bool {
 		strings.EqualFold(r.Header.Get("Front-End-Https"), "on") ||
 		strings.EqualFold(r.Header.Get("X-Url-Scheme"), "https")
 }
-
 
 func firstForwarded(value string) string {
 	if value, _, ok := strings.Cut(value, ","); ok {
@@ -512,12 +508,11 @@ func (s *Server) adminSettings(w http.ResponseWriter, r *http.Request) {
 		driver = "postgres"
 	}
 	s.render(w, "admin_settings", http.StatusOK, map[string]any{
-		"Settings":               settings,
-		"StorageDriver":          driver,
+		"Settings":              settings,
+		"StorageDriver":         driver,
 		"PostgresDSNConfigured": pgConfigured,
 	})
 }
-
 
 func (s *Server) adminSettingsSave(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
@@ -603,8 +598,8 @@ func (s *Server) adminAISave(w http.ResponseWriter, r *http.Request) {
 	vectorValues := map[string]string{
 		application.SettingVectorProvider:         r.FormValue(application.SettingVectorProvider),
 		application.SettingVectorMilvusURL:        r.FormValue(application.SettingVectorMilvusURL),
-		application.SettingVectorMilvusToken:       r.FormValue(application.SettingVectorMilvusToken),
-		application.SettingVectorMilvusCollection:  r.FormValue(application.SettingVectorMilvusCollection),
+		application.SettingVectorMilvusToken:      r.FormValue(application.SettingVectorMilvusToken),
+		application.SettingVectorMilvusCollection: r.FormValue(application.SettingVectorMilvusCollection),
 	}
 	if err := s.app.AdminSaveSettings(r.Context(), vectorValues, ""); err != nil {
 		settings, _ := s.app.SystemSettings(r.Context())
@@ -907,7 +902,6 @@ func (s *Server) jobsStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-
 func (s *Server) message(w http.ResponseWriter, r *http.Request) {
 	view, err := s.app.GetMessage(r.Context(), r.PathValue("id"), true)
 	if err != nil {
@@ -1105,7 +1099,6 @@ func (s *Server) render(w http.ResponseWriter, page string, code int, data map[s
 	}
 }
 
-
 // fail renders user errors as 400 and everything else as 500, mirroring the
 // REST error mapping so the UI never leaks raw internals as a 200.
 func (s *Server) fail(w http.ResponseWriter, err error) {
@@ -1211,4 +1204,3 @@ func (s *Server) adminMCPKeyRevoke(w http.ResponseWriter, r *http.Request) {
 	}
 	http.Redirect(w, r, "/ui/mcp-keys", http.StatusSeeOther)
 }
-

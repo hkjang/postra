@@ -6,6 +6,7 @@ import (
 
 	"postra/internal/domain"
 	"postra/internal/platform/metrics"
+	"postra/internal/platform/telemetry"
 )
 
 // meteredAI wraps an AIProvider to record call count, result, and latency
@@ -14,16 +15,23 @@ import (
 type meteredAI struct{ inner domain.AIProvider }
 
 func (m meteredAI) Generate(ctx context.Context, req domain.GenerationRequest) (domain.GenerationResult, error) {
+	ctx, span := telemetry.Start(ctx, "ai.generate")
+	if req.Task != "" {
+		span.SetAttributes(telemetry.Attr("ai.task", req.Task))
+	}
 	start := time.Now()
 	res, err := m.inner.Generate(ctx, req)
 	observeAI("generate", start, err)
+	telemetry.End(span, err)
 	return res, err
 }
 
 func (m meteredAI) Embed(ctx context.Context, req domain.EmbeddingRequest) (domain.EmbeddingResult, error) {
+	ctx, span := telemetry.Start(ctx, "ai.embed")
 	start := time.Now()
 	res, err := m.inner.Embed(ctx, req)
 	observeAI("embed", start, err)
+	telemetry.End(span, err)
 	return res, err
 }
 

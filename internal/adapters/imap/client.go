@@ -265,7 +265,6 @@ func (s *session) firstLiteral() (io.ReadCloser, error) {
 	return io.NopCloser(strings.NewReader(lit)), nil
 }
 
-
 func (s *session) Delete(ctx context.Context, number int) error {
 	if _, err := s.exec(`STORE %d +FLAGS (\Deleted)`, number); err != nil {
 		return err
@@ -339,60 +338,86 @@ func (s *session) FetchFlags(ctx context.Context, number int) ([]string, error) 
 	return flags, nil
 }
 
-// Idle issues RFC 2177 IMAP IDLE command and waits for new events or context cancellation (§P1 IMAP IDLE).
+// readLineNoReset reads one CRLF-terminated line WITHOUT resetting the
+// connection deadline (readLine resets it to commandTO on every call, which
+// would defeat the long IDLE window). The caller manages the deadline.
+func (s *session) readLineNoReset() (string, error) {
+	line, err := s.r.ReadString('\n')
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimRight(line, "\r\n"), nil
+}
+
+// Idle issues the RFC 2177 IDLE command and blocks until the server reports
+// mailbox activity (EXISTS/RECENT/EXPUNGE), the ~28-minute re-idle window
+// elapses (returns nil so the caller re-idles), or ctx is cancelled. It is
+// self-contained: a single watcher goroutine pokes the read deadline on
+// cancellation and is always joined, so no reader goroutine is leaked across
+// successive Idle calls (§P1 IMAP IDLE).
 func (s *session) Idle(ctx context.Context) error {
 	s.tagN++
 	tag := fmt.Sprintf("a%d", s.tagN)
-	
-	s.conn.SetDeadline(time.Now().Add(28 * time.Minute))
+
+	_ = s.conn.SetDeadline(time.Now().Add(30 * time.Second))
 	if _, err := fmt.Fprintf(s.conn, "%s IDLE\r\n", tag); err != nil {
 		return err
 	}
-
-	line, err := s.readLine()
+	line, err := s.readLineNoReset()
 	if err != nil {
 		return err
 	}
-
 	if !strings.HasPrefix(line, "+") {
 		return fmt.Errorf("IDLE rejected: %s", line)
 	}
 
-	lineChan := make(chan string, 1)
-	errChan := make(chan error, 1)
-
+	stop := make(chan struct{})
+	defer close(stop)
 	go func() {
-		for {
-			l, err := s.readLine()
-			if err != nil {
-				errChan <- err
-				return
-			}
-			lineChan <- l
+		select {
+		case <-ctx.Done():
+			_ = s.conn.SetDeadline(time.Now()) // unblock the pending read
+		case <-stop:
 		}
 	}()
 
+	// Terminate the IDLE cleanly and drain to the tagged completion so the
+	// session is reusable for the next command / re-idle.
 	defer func() {
-		s.conn.SetDeadline(time.Now().Add(10 * time.Second))
+		_ = s.conn.SetDeadline(time.Now().Add(10 * time.Second))
 		_, _ = fmt.Fprintf(s.conn, "DONE\r\n")
+		for {
+			l, derr := s.readLineNoReset()
+			if derr != nil || strings.HasPrefix(l, tag+" ") {
+				break
+			}
+		}
 	}()
 
+	// Re-IDLE before servers' 30-minute limit; return nil on the timeout so the
+	// caller starts a fresh IDLE.
+	_ = s.conn.SetDeadline(time.Now().Add(28 * time.Minute))
 	for {
-		select {
-		case <-ctx.Done():
+		if ctx.Err() != nil {
 			return ctx.Err()
-		case err := <-errChan:
+		}
+		l, err := s.readLineNoReset()
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				return nil // periodic re-idle
+			}
 			return err
-		case l := <-lineChan:
-			if strings.HasPrefix(l, tag+" ") {
-				return nil
-			}
-			if strings.Contains(l, "EXISTS") || strings.Contains(l, "RECENT") || strings.Contains(l, "FETCH") {
-				return nil
-			}
+		}
+		if strings.Contains(l, "EXISTS") || strings.Contains(l, "RECENT") || strings.Contains(l, "EXPUNGE") {
+			return nil
 		}
 	}
 }
+
+var _ domain.IdleCapable = (*session)(nil)
 
 // quote wraps an IMAP astring in double quotes, escaping backslash and quote.
 func quote(s string) string {

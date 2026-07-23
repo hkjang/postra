@@ -289,4 +289,3 @@ func TestMCPKeyLifecycleAndAdminControl(t *testing.T) {
 		t.Fatal("revoked MCP key was successfully authenticated")
 	}
 }
-

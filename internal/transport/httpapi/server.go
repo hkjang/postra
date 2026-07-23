@@ -21,7 +21,6 @@ import (
 	"postra/internal/platform/metrics"
 )
 
-
 type Server struct {
 	app      *application.App
 	apiToken string
@@ -52,7 +51,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/mcp-keys", s.createMCPKey)
 	mux.HandleFunc("DELETE /api/mcp-keys/{id}", s.revokeMyMCPKey)
 
-
 	mux.HandleFunc("POST /api/secrets", s.postSecret)
 	mux.HandleFunc("POST /api/secrets/{ref}/rotate", s.rotateSecret)
 	mux.HandleFunc("DELETE /api/secrets/{ref}", s.revokeSecret)
@@ -70,12 +68,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/jobs/{id}", s.getJob)
 	mux.HandleFunc("POST /api/jobs/{id}/cancel", s.cancelJob)
 
-
 	mux.HandleFunc("GET /api/messages", s.search)
 	mux.HandleFunc("GET /api/messages/{id}", s.getMessage)
 	mux.HandleFunc("GET /api/messages/{id}/raw", s.getRaw)
 	mux.HandleFunc("GET /api/messages/{id}/attachments", s.listAttachments)
 	mux.HandleFunc("GET /api/messages/{id}/attachments/{att}", s.getAttachment)
+	mux.HandleFunc("GET /api/messages/{id}/attachments/{att}/text", s.attachmentText)
+	mux.HandleFunc("POST /api/messages/{id}/attachments/{att}/summarize", s.summarizeAttachment)
+	mux.HandleFunc("GET /api/messages/{id}/auth", s.inspectAuth)
 	mux.HandleFunc("GET /api/threads/{id}", s.getThread)
 	mux.HandleFunc("DELETE /api/messages/{id}", s.localDelete)
 	mux.HandleFunc("POST /api/accounts/{id}/server-delete/preview", s.serverDeletePreview)
@@ -85,11 +85,31 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/messages/{id}/analyze", s.analyzeMessage)
 	mux.HandleFunc("POST /api/threads/{id}/summarize", s.summarizeThread)
 	mux.HandleFunc("POST /api/qa", s.questionAnswer)
+	mux.HandleFunc("POST /api/eval", s.evalPrompt)
 	mux.HandleFunc("POST /api/embeddings/build", s.buildEmbeddings)
 	mux.HandleFunc("POST /api/semantic-search", s.semanticSearch)
 	mux.HandleFunc("POST /api/hybrid-search", s.hybridSearch)
 	mux.HandleFunc("POST /api/messages/batch", s.batchUpdateMessages)
 	mux.HandleFunc("GET /api/threads/{id}/timeline", s.getThreadTimeline)
+	mux.HandleFunc("POST /api/messages/{id}/apply-rules", s.applyRules)
+	mux.HandleFunc("GET /api/work-inbox", s.workInbox)
+	mux.HandleFunc("GET /api/team-inbox", s.teamInbox)
+	mux.HandleFunc("GET /api/messages/{id}/collab", s.getCollab)
+	mux.HandleFunc("POST /api/messages/{id}/assign", s.assignMessage)
+	mux.HandleFunc("POST /api/messages/{id}/work-status", s.setWorkStatus)
+	mux.HandleFunc("POST /api/messages/{id}/sla", s.setSLA)
+	mux.HandleFunc("POST /api/messages/{id}/notes", s.addNote)
+	mux.HandleFunc("POST /api/messages/{id}/action-cards", s.extractActionCards)
+	mux.HandleFunc("GET /api/action-cards", s.listActionCards)
+	mux.HandleFunc("GET /api/action-cards/{id}", s.getActionCard)
+	mux.HandleFunc("POST /api/action-cards/{id}/status", s.setActionCardStatus)
+	mux.HandleFunc("POST /api/action-cards/{id}/export", s.exportActionCard)
+
+	mux.HandleFunc("GET /api/rules", s.listRules)
+	mux.HandleFunc("POST /api/rules", s.createRule)
+	mux.HandleFunc("GET /api/rules/{id}", s.getRule)
+	mux.HandleFunc("PUT /api/rules/{id}", s.updateRule)
+	mux.HandleFunc("DELETE /api/rules/{id}", s.deleteRule)
 
 	mux.HandleFunc("POST /api/drafts", s.createDraft)
 	mux.HandleFunc("GET /api/drafts/{id}", s.getDraft)
@@ -111,7 +131,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/readyz", s.readyz)
 	mux.HandleFunc("GET /api/healthz", s.readyz)
 	mux.HandleFunc("GET /api/system/info", s.systemInfo)
-
 
 	// Prometheus scrape endpoint (§18.1): unauthenticated so scrapers need no
 	// token; gated by config and by whatever the operator binds HTTPAddr to.
@@ -362,7 +381,6 @@ func (s *Server) authenticate(r *http.Request) (domain.Principal, bool) {
 	return domain.Principal{}, false
 }
 
-
 // ---------- helpers ----------
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -556,10 +574,6 @@ func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, jobs)
 }
-
-
-
-
 
 func (s *Server) systemInfo(w http.ResponseWriter, r *http.Request) {
 	pgConfigured := strings.TrimSpace(s.app.Cfg.PostgresDSN) != ""
@@ -966,12 +980,12 @@ func (s *Server) batchUpdateMessages(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	count, err := s.app.BatchUpdateMessages(r.Context(), opts)
+	res, err := s.app.BatchUpdateMessages(r.Context(), opts)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"updated": count})
+	writeJSON(w, http.StatusOK, res)
 }
 
 func (s *Server) hybridSearch(w http.ResponseWriter, r *http.Request) {
@@ -988,6 +1002,268 @@ func (s *Server) hybridSearch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"results": views, "count": len(views)})
 }
 
+func (s *Server) listRules(w http.ResponseWriter, r *http.Request) {
+	rules, err := s.app.ListRules(r.Context())
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"rules": rules})
+}
+
+func (s *Server) getRule(w http.ResponseWriter, r *http.Request) {
+	rule, err := s.app.GetRule(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, rule)
+}
+
+func (s *Server) createRule(w http.ResponseWriter, r *http.Request) {
+	var in domain.MailRule
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&in); err != nil {
+		writeErr(w, err)
+		return
+	}
+	rule, err := s.app.CreateRule(r.Context(), in)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, rule)
+}
+
+func (s *Server) updateRule(w http.ResponseWriter, r *http.Request) {
+	var in domain.MailRule
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&in); err != nil {
+		writeErr(w, err)
+		return
+	}
+	in.ID = r.PathValue("id")
+	rule, err := s.app.UpdateRule(r.Context(), in)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, rule)
+}
+
+func (s *Server) deleteRule(w http.ResponseWriter, r *http.Request) {
+	if err := s.app.DeleteRule(r.Context(), r.PathValue("id")); err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (s *Server) applyRules(w http.ResponseWriter, r *http.Request) {
+	res, err := s.app.ApplyRulesToMessage(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) workInbox(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	res, err := s.app.WorkInbox(r.Context(), r.URL.Query().Get("account"), limit)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) extractActionCards(w http.ResponseWriter, r *http.Request) {
+	cards, err := s.app.ExtractActionCards(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"cards": cards, "count": len(cards)})
+}
+
+func (s *Server) listActionCards(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	cards, err := s.app.ListActionCards(r.Context(), r.URL.Query().Get("status"), limit)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"cards": cards})
+}
+
+func (s *Server) getActionCard(w http.ResponseWriter, r *http.Request) {
+	card, err := s.app.GetActionCard(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, card)
+}
+
+func (s *Server) setActionCardStatus(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil {
+		writeErr(w, err)
+		return
+	}
+	card, err := s.app.SetActionCardStatus(r.Context(), r.PathValue("id"), body.Status)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, card)
+}
+
+func (s *Server) exportActionCard(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Target      string `json:"target"`
+		ExternalRef string `json:"external_ref"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil {
+		writeErr(w, err)
+		return
+	}
+	exp, err := s.app.ExportActionCard(r.Context(), r.PathValue("id"), body.Target, body.ExternalRef)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, exp)
+}
+
+func (s *Server) attachmentText(w http.ResponseWriter, r *http.Request) {
+	res, err := s.app.ExtractAttachmentText(r.Context(), r.PathValue("id"), r.PathValue("att"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) summarizeAttachment(w http.ResponseWriter, r *http.Request) {
+	an, err := s.app.SummarizeAttachment(r.Context(), r.PathValue("id"), r.PathValue("att"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, an)
+}
+
+func (s *Server) evalPrompt(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		AnalysisType string                 `json:"analysis_type"`
+		Cases        []application.EvalCase `json:"cases"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
+		writeErr(w, err)
+		return
+	}
+	res, err := s.app.EvaluatePrompt(r.Context(), body.AnalysisType, body.Cases)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) teamInbox(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	items, err := s.app.TeamInbox(r.Context(), r.URL.Query().Get("status"), r.URL.Query().Get("assignee"), limit)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+func (s *Server) getCollab(w http.ResponseWriter, r *http.Request) {
+	v, err := s.app.GetMessageCollab(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, v)
+}
+
+func (s *Server) assignMessage(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Assignee string `json:"assignee"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil {
+		writeErr(w, err)
+		return
+	}
+	mc, err := s.app.AssignMessage(r.Context(), r.PathValue("id"), body.Assignee)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, mc)
+}
+
+func (s *Server) setWorkStatus(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil {
+		writeErr(w, err)
+		return
+	}
+	mc, err := s.app.SetMessageWorkStatus(r.Context(), r.PathValue("id"), body.Status)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, mc)
+}
+
+func (s *Server) setSLA(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		SLADue int64 `json:"sla_due"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil {
+		writeErr(w, err)
+		return
+	}
+	mc, err := s.app.SetMessageSLA(r.Context(), r.PathValue("id"), body.SLADue)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, mc)
+}
+
+func (s *Server) addNote(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Body string `json:"body"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
+		writeErr(w, err)
+		return
+	}
+	n, err := s.app.AddMessageNote(r.Context(), r.PathValue("id"), body.Body)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, n)
+}
+
+func (s *Server) inspectAuth(w http.ResponseWriter, r *http.Request) {
+	res, err := s.app.InspectAuthentication(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
 func (s *Server) getThreadTimeline(w http.ResponseWriter, r *http.Request) {
 	threadID := r.PathValue("id")
 	timeline, err := s.app.GetThreadTimeline(r.Context(), threadID)
@@ -997,4 +1273,3 @@ func (s *Server) getThreadTimeline(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"timeline": timeline, "count": len(timeline)})
 }
-

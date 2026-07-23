@@ -22,4 +22,3 @@ func TestPostgresDSNAutoDriver(t *testing.T) {
 		t.Fatalf("StorageDriver = %q, want postgres when POSTRA_POSTGRES_DSN is set", cfg.StorageDriver)
 	}
 }
-

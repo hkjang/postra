@@ -30,8 +30,8 @@ func (Dialer) Dial(ctx context.Context, opts domain.POP3DialOptions) (domain.POP
 	var conn net.Conn
 	var err error
 	tlsCfg := &tls.Config{
-		ServerName:         opts.Host,
-		MinVersion:         tls.VersionTLS12,
+		ServerName: opts.Host,
+		MinVersion: tls.VersionTLS12,
 		// #nosec G402 -- offline/self-hosted POP3 servers may use self-signed
 		// certs; skipping verification is an explicit per-account opt-in
 		// (default false), required by offline-network mail support.

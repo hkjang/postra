@@ -208,7 +208,10 @@ CREATE TABLE IF NOT EXISTS messages (
   date INTEGER, size INTEGER, raw_hash TEXT NOT NULL, raw_uri TEXT NOT NULL,
   thread_id TEXT, has_attachments INTEGER NOT NULL DEFAULT 0,
   in_reply_to TEXT, refs TEXT, auth_results TEXT, parse_error TEXT,
-  created_at INTEGER NOT NULL);
+  created_at INTEGER NOT NULL,
+  is_archived INTEGER NOT NULL DEFAULT 0, is_important INTEGER NOT NULL DEFAULT 0,
+  snoozed_until INTEGER NOT NULL DEFAULT 0, labels_json TEXT NOT NULL DEFAULT '',
+  legal_hold INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS idx_messages_account_date ON messages(account_id, date DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_msgid ON messages(message_id_hdr);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_hash ON messages(account_id, raw_hash);
@@ -277,6 +280,32 @@ CREATE TABLE IF NOT EXISTS audit_events (
   user_id TEXT, actor TEXT, action TEXT NOT NULL, resource TEXT,
   result TEXT NOT NULL, detail TEXT);
 CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_events(at DESC);
+
+CREATE TABLE IF NOT EXISTS mail_rules (
+  id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1, priority INTEGER NOT NULL DEFAULT 100,
+  match_mode TEXT NOT NULL DEFAULT 'all', conditions_json TEXT NOT NULL DEFAULT '[]',
+  actions_json TEXT NOT NULL DEFAULT '[]', stop_on_match INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_mail_rules_user ON mail_rules(user_id, priority);
+
+CREATE TABLE IF NOT EXISTS action_cards (
+  id TEXT PRIMARY KEY, user_id TEXT NOT NULL, message_id TEXT NOT NULL,
+  type TEXT NOT NULL, title TEXT NOT NULL, detail TEXT, due TEXT, assignee TEXT,
+  status TEXT NOT NULL DEFAULT 'pending', export_target TEXT, external_ref TEXT,
+  confidence REAL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_action_cards_user ON action_cards(user_id, status);
+
+CREATE TABLE IF NOT EXISTS message_collab (
+  message_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, assignee TEXT,
+  status TEXT NOT NULL DEFAULT 'open', sla_due INTEGER NOT NULL DEFAULT 0,
+  updated_by TEXT, updated_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_message_collab_user ON message_collab(user_id, status);
+
+CREATE TABLE IF NOT EXISTS message_notes (
+  id TEXT PRIMARY KEY, message_id TEXT NOT NULL, user_id TEXT NOT NULL,
+  author TEXT NOT NULL, body TEXT NOT NULL, created_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_message_notes_msg ON message_notes(message_id);
 `
 	if _, err := s.db.Exec(schema); err != nil {
 		return fmt.Errorf("migrate: %w", err)
@@ -298,6 +327,11 @@ CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_events(at DESC);
 		`ALTER TABLE users ADD COLUMN oidc_subject TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE users ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE users ADD COLUMN last_login_at INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE messages ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE messages ADD COLUMN is_important INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE messages ADD COLUMN snoozed_until INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE messages ADD COLUMN labels_json TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE messages ADD COLUMN legal_hold INTEGER NOT NULL DEFAULT 0`,
 	} {
 		if _, err := s.db.Exec(alt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return fmt.Errorf("migrate attachments: %w", err)
@@ -382,14 +416,28 @@ func (s *Store) GetUserByOIDC(ctx context.Context, issuer, subject string) (*dom
 	return scanUser(s.db.QueryRowContext(ctx, `SELECT `+userCols+` FROM users WHERE oidc_issuer=? AND oidc_subject=?`, issuer, subject))
 }
 
+// UpdateMessage persists the mutable UX-state columns (archive/important/
+// snooze/labels). It never silently falls back to a no-op update: a failure
+// here (e.g. an un-migrated column) is surfaced so callers cannot report a
+// success that did not happen.
 func (s *Store) UpdateMessage(ctx context.Context, m *domain.Message) error {
-	labelsJSON, _ := json.Marshal(m.Labels)
-	_, err := s.db.ExecContext(ctx, `UPDATE messages SET is_archived=?, is_important=?, snoozed_until=?, labels_json=? WHERE id=? AND user_id=?`,
-		m.IsArchived, m.IsImportant, m.SnoozedUntil, string(labelsJSON), m.ID, m.UserID)
-	if err != nil {
-		_, err = s.db.ExecContext(ctx, `UPDATE messages SET subject=? WHERE id=? AND user_id=?`, m.Subject, m.ID, m.UserID)
+	labels := m.Labels
+	if labels == nil {
+		labels = []string{}
 	}
-	return err
+	labelsJSON, err := json.Marshal(labels)
+	if err != nil {
+		return err
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE messages SET is_archived=?, is_important=?, snoozed_until=?, labels_json=?, legal_hold=? WHERE id=? AND user_id=?`,
+		boolInt(m.IsArchived), boolInt(m.IsImportant), m.SnoozedUntil, string(labelsJSON), boolInt(m.LegalHold), m.ID, m.UserID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (s *Store) ListUsers(ctx context.Context) ([]domain.User, error) {
@@ -834,15 +882,32 @@ func (s *Store) IsDuplicateHash(ctx context.Context, accountID, rawHash string) 
 const msgCols = `id,user_id,account_id,uidl,message_id_hdr,subject,from_name,from_email,to_json,cc_json,reply_to_json,
  date,size,raw_hash,raw_uri,thread_id,has_attachments,in_reply_to,refs,auth_results,parse_error,created_at`
 
+// msgSelectCols extends the insert column set with the mutable UX-state columns
+// (archive/important/snooze/labels). It is used for every SELECT + scanMessage;
+// msgCols stays the immutable ingest set used by InsertMessage.
+const msgSelectCols = msgCols + `,is_archived,is_important,snoozed_until,labels_json,legal_hold`
+
+func labelsFromJSON(s string) []string {
+	if s == "" {
+		return nil
+	}
+	var out []string
+	_ = json.Unmarshal([]byte(s), &out)
+	return out
+}
+
 func scanMessage(row interface{ Scan(...any) error }) (*domain.Message, error) {
 	var m domain.Message
 	var toJ, ccJ, rtJ string
 	var hasAtt int
+	var isArch, isImp, legalHold int
+	var labelsJSON string
 	var threadID, parseErr, authRes sql.NullString
 	err := row.Scan(&m.ID, &m.UserID, &m.AccountID, &m.UIDL, &m.MessageID, &m.Subject,
 		&m.From.Name, &m.From.Email, &toJ, &ccJ, &rtJ,
 		&m.Date, &m.Size, &m.RawHash, &m.RawURI, &threadID, &hasAtt,
-		&m.InReplyTo, &m.References, &authRes, &parseErr, &m.CreatedAt)
+		&m.InReplyTo, &m.References, &authRes, &parseErr, &m.CreatedAt,
+		&isArch, &isImp, &m.SnoozedUntil, &labelsJSON, &legalHold)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -851,19 +916,21 @@ func scanMessage(row interface{ Scan(...any) error }) (*domain.Message, error) {
 	}
 	m.To, m.Cc, m.ReplyTo = addrFromJSON(toJ), addrFromJSON(ccJ), addrFromJSON(rtJ)
 	m.HasAttachments = hasAtt != 0
+	m.IsArchived, m.IsImportant, m.LegalHold = isArch != 0, isImp != 0, legalHold != 0
+	m.Labels = labelsFromJSON(labelsJSON)
 	m.ThreadID, m.ParseError, m.AuthResults = threadID.String, parseErr.String, authRes.String
 	return &m, nil
 }
 
 func (s *Store) GetMessage(ctx context.Context, userID, id string) (*domain.Message, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT `+msgCols+` FROM messages WHERE id=? AND user_id=?`, id, userID)
+		`SELECT `+msgSelectCols+` FROM messages WHERE id=? AND user_id=?`, id, userID)
 	return scanMessage(row)
 }
 
 func (s *Store) GetMessageByHeader(ctx context.Context, userID, accountID, messageIDHdr string) (*domain.Message, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT `+msgCols+` FROM messages WHERE user_id=? AND account_id=? AND message_id_hdr=? LIMIT 1`,
+		`SELECT `+msgSelectCols+` FROM messages WHERE user_id=? AND account_id=? AND message_id_hdr=? LIMIT 1`,
 		userID, accountID, messageIDHdr)
 	return scanMessage(row)
 }
@@ -946,6 +1013,25 @@ func (s *Store) Search(ctx context.Context, q domain.SearchQuery) (*domain.Searc
 	if q.HasAttachment != nil {
 		conds, args = append(conds, "m.has_attachments = ?"), append(args, boolInt(*q.HasAttachment))
 	}
+	if q.IsImportant != nil {
+		conds, args = append(conds, "m.is_important = ?"), append(args, boolInt(*q.IsImportant))
+	}
+	if q.IsArchived != nil {
+		conds, args = append(conds, "m.is_archived = ?"), append(args, boolInt(*q.IsArchived))
+	}
+	if q.Label != "" {
+		conds, args = append(conds, "m.labels_json LIKE ?"), append(args, `%"`+q.Label+`"%`)
+	}
+	switch q.Folder {
+	case "inbox":
+		conds, args = append(conds, "m.is_archived = 0 AND (m.snoozed_until = 0 OR m.snoozed_until <= ?)"), append(args, now())
+	case "archive":
+		conds = append(conds, "m.is_archived = 1")
+	case "important":
+		conds = append(conds, "m.is_important = 1")
+	case "snoozed":
+		conds, args = append(conds, "m.snoozed_until > ?"), append(args, now())
+	}
 	if q.Cursor != "" {
 		var cDate int64
 		var cID string
@@ -967,7 +1053,7 @@ func (s *Store) Search(ctx context.Context, q domain.SearchQuery) (*domain.Searc
 		}
 	}
 	// #nosec G202 -- concatenated fragments are all static (column list, join, hardcoded conditions); every user value is bound via ? placeholders in args.
-	query := `SELECT ` + prefixCols(msgCols, "m.") + ` FROM messages m` + join +
+	query := `SELECT ` + prefixCols(msgSelectCols, "m.") + ` FROM messages m` + join +
 		` WHERE ` + strings.Join(conds, " AND ") +
 		` ORDER BY m.date DESC, m.id DESC LIMIT ?`
 	args = append(args, limit+1)
@@ -1043,7 +1129,7 @@ func (s *Store) ResolveThread(ctx context.Context, userID, accountID string, ref
 
 func (s *Store) GetThreadMessages(ctx context.Context, userID, threadID string) ([]domain.Message, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+msgCols+` FROM messages WHERE user_id=? AND thread_id=? ORDER BY date ASC`, userID, threadID)
+		`SELECT `+msgSelectCols+` FROM messages WHERE user_id=? AND thread_id=? ORDER BY date ASC`, userID, threadID)
 	if err != nil {
 		return nil, err
 	}
@@ -1055,6 +1141,250 @@ func (s *Store) GetThreadMessages(ctx context.Context, userID, threadID string) 
 			return nil, err
 		}
 		out = append(out, *m)
+	}
+	return out, rows.Err()
+}
+
+// ---------- mail rules ----------
+
+func (s *Store) CreateRule(ctx context.Context, r *domain.MailRule) error {
+	r.CreatedAt, r.UpdatedAt = now(), now()
+	conds, _ := json.Marshal(r.Conditions)
+	acts, _ := json.Marshal(r.Actions)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO mail_rules
+	 (id,user_id,name,enabled,priority,match_mode,conditions_json,actions_json,stop_on_match,created_at,updated_at)
+	 VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		r.ID, r.UserID, r.Name, boolInt(r.Enabled), r.Priority, r.Match,
+		string(conds), string(acts), boolInt(r.StopOnMatch), r.CreatedAt, r.UpdatedAt)
+	return err
+}
+
+func (s *Store) UpdateRule(ctx context.Context, r *domain.MailRule) error {
+	r.UpdatedAt = now()
+	conds, _ := json.Marshal(r.Conditions)
+	acts, _ := json.Marshal(r.Actions)
+	res, err := s.db.ExecContext(ctx, `UPDATE mail_rules SET name=?,enabled=?,priority=?,match_mode=?,
+	 conditions_json=?,actions_json=?,stop_on_match=?,updated_at=? WHERE id=? AND user_id=?`,
+		r.Name, boolInt(r.Enabled), r.Priority, r.Match, string(conds), string(acts),
+		boolInt(r.StopOnMatch), r.UpdatedAt, r.ID, r.UserID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) DeleteRule(ctx context.Context, userID, id string) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM mail_rules WHERE id=? AND user_id=?`, id, userID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func scanRule(row interface{ Scan(...any) error }) (*domain.MailRule, error) {
+	var r domain.MailRule
+	var enabled, stop int
+	var conds, acts string
+	if err := row.Scan(&r.ID, &r.UserID, &r.Name, &enabled, &r.Priority, &r.Match,
+		&conds, &acts, &stop, &r.CreatedAt, &r.UpdatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	r.Enabled, r.StopOnMatch = enabled != 0, stop != 0
+	_ = json.Unmarshal([]byte(conds), &r.Conditions)
+	_ = json.Unmarshal([]byte(acts), &r.Actions)
+	return &r, nil
+}
+
+const ruleCols = `id,user_id,name,enabled,priority,match_mode,conditions_json,actions_json,stop_on_match,created_at,updated_at`
+
+func (s *Store) GetRule(ctx context.Context, userID, id string) (*domain.MailRule, error) {
+	return scanRule(s.db.QueryRowContext(ctx, `SELECT `+ruleCols+` FROM mail_rules WHERE id=? AND user_id=?`, id, userID))
+}
+
+func (s *Store) ListRules(ctx context.Context, userID string) ([]domain.MailRule, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+ruleCols+` FROM mail_rules WHERE user_id=? ORDER BY priority, created_at`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.MailRule
+	for rows.Next() {
+		r, err := scanRule(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *r)
+	}
+	return out, rows.Err()
+}
+
+// ---------- action cards ----------
+
+const actionCardCols = `id,user_id,message_id,type,title,COALESCE(detail,''),COALESCE(due,''),COALESCE(assignee,''),status,COALESCE(export_target,''),COALESCE(external_ref,''),COALESCE(confidence,0),created_at,updated_at`
+
+func (s *Store) CreateActionCard(ctx context.Context, c *domain.ActionCard) error {
+	c.CreatedAt, c.UpdatedAt = now(), now()
+	if c.Status == "" {
+		c.Status = domain.ActionCardPending
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO action_cards
+	 (id,user_id,message_id,type,title,detail,due,assignee,status,export_target,external_ref,confidence,created_at,updated_at)
+	 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		c.ID, c.UserID, c.MessageID, c.Type, c.Title, c.Detail, c.Due, c.Assignee,
+		c.Status, c.ExportTarget, c.ExternalRef, c.Confidence, c.CreatedAt, c.UpdatedAt)
+	return err
+}
+
+func (s *Store) UpdateActionCard(ctx context.Context, c *domain.ActionCard) error {
+	c.UpdatedAt = now()
+	res, err := s.db.ExecContext(ctx, `UPDATE action_cards SET type=?,title=?,detail=?,due=?,assignee=?,
+	 status=?,export_target=?,external_ref=?,confidence=?,updated_at=? WHERE id=? AND user_id=?`,
+		c.Type, c.Title, c.Detail, c.Due, c.Assignee, c.Status, c.ExportTarget, c.ExternalRef,
+		c.Confidence, c.UpdatedAt, c.ID, c.UserID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func scanActionCard(row interface{ Scan(...any) error }) (*domain.ActionCard, error) {
+	var c domain.ActionCard
+	if err := row.Scan(&c.ID, &c.UserID, &c.MessageID, &c.Type, &c.Title, &c.Detail, &c.Due,
+		&c.Assignee, &c.Status, &c.ExportTarget, &c.ExternalRef, &c.Confidence, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &c, nil
+}
+
+func (s *Store) GetActionCard(ctx context.Context, userID, id string) (*domain.ActionCard, error) {
+	return scanActionCard(s.db.QueryRowContext(ctx, `SELECT `+actionCardCols+` FROM action_cards WHERE id=? AND user_id=?`, id, userID))
+}
+
+func (s *Store) ListActionCards(ctx context.Context, userID, status string, limit int) ([]domain.ActionCard, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	query := `SELECT ` + actionCardCols + ` FROM action_cards WHERE user_id=?`
+	args := []any{userID}
+	if status != "" {
+		query += ` AND status=?`
+		args = append(args, status)
+	}
+	query += ` ORDER BY created_at DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.ActionCard
+	for rows.Next() {
+		c, err := scanActionCard(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *c)
+	}
+	return out, rows.Err()
+}
+
+// ---------- collaboration (shared mailbox) ----------
+
+func (s *Store) UpsertMessageCollab(ctx context.Context, mc *domain.MessageCollab) error {
+	mc.UpdatedAt = now()
+	_, err := s.db.ExecContext(ctx, `INSERT INTO message_collab
+	 (message_id,user_id,assignee,status,sla_due,updated_by,updated_at) VALUES (?,?,?,?,?,?,?)
+	 ON CONFLICT(message_id) DO UPDATE SET assignee=excluded.assignee, status=excluded.status,
+	   sla_due=excluded.sla_due, updated_by=excluded.updated_by, updated_at=excluded.updated_at`,
+		mc.MessageID, mc.UserID, mc.Assignee, mc.Status, mc.SLADue, mc.UpdatedBy, mc.UpdatedAt)
+	return err
+}
+
+func (s *Store) GetMessageCollab(ctx context.Context, userID, messageID string) (*domain.MessageCollab, error) {
+	var mc domain.MessageCollab
+	var assignee, updatedBy sql.NullString
+	err := s.db.QueryRowContext(ctx, `SELECT message_id,user_id,COALESCE(assignee,''),status,sla_due,COALESCE(updated_by,''),updated_at
+	 FROM message_collab WHERE message_id=? AND user_id=?`, messageID, userID).
+		Scan(&mc.MessageID, &mc.UserID, &assignee, &mc.Status, &mc.SLADue, &updatedBy, &mc.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	mc.Assignee, mc.UpdatedBy = assignee.String, updatedBy.String
+	return &mc, nil
+}
+
+func (s *Store) ListMessageCollab(ctx context.Context, userID, status, assignee string, limit int) ([]domain.MessageCollab, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	q := `SELECT message_id,user_id,COALESCE(assignee,''),status,sla_due,COALESCE(updated_by,''),updated_at
+	 FROM message_collab WHERE user_id=?`
+	args := []any{userID}
+	if status != "" {
+		q += ` AND status=?`
+		args = append(args, status)
+	}
+	if assignee != "" {
+		q += ` AND assignee=?`
+		args = append(args, assignee)
+	}
+	q += ` ORDER BY updated_at DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.MessageCollab
+	for rows.Next() {
+		var mc domain.MessageCollab
+		if err := rows.Scan(&mc.MessageID, &mc.UserID, &mc.Assignee, &mc.Status, &mc.SLADue, &mc.UpdatedBy, &mc.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, mc)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) AddMessageNote(ctx context.Context, n *domain.MessageNote) error {
+	n.CreatedAt = now()
+	_, err := s.db.ExecContext(ctx, `INSERT INTO message_notes (id,message_id,user_id,author,body,created_at)
+	 VALUES (?,?,?,?,?,?)`, n.ID, n.MessageID, n.UserID, n.Author, n.Body, n.CreatedAt)
+	return err
+}
+
+func (s *Store) ListMessageNotes(ctx context.Context, userID, messageID string) ([]domain.MessageNote, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id,message_id,user_id,author,body,created_at
+	 FROM message_notes WHERE message_id=? AND user_id=? ORDER BY created_at`, messageID, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.MessageNote
+	for rows.Next() {
+		var n domain.MessageNote
+		if err := rows.Scan(&n.ID, &n.MessageID, &n.UserID, &n.Author, &n.Body, &n.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, n)
 	}
 	return out, rows.Err()
 }
@@ -1410,7 +1740,6 @@ func (s *Store) ListJobs(ctx context.Context, userID string, limit int) ([]domai
 	return out, rows.Err()
 }
 
-
 // ---------- audit ----------
 
 func (s *Store) AppendAudit(ctx context.Context, ev domain.AuditEvent) error {
@@ -1546,22 +1875,22 @@ func (s *Store) TouchMCPKey(ctx context.Context, keyID string, lastUsedAt int64)
 func (s *Store) TryAcquireLease(ctx context.Context, key, nodeID string, durationSec int) (bool, error) {
 	nowTS := time.Now().Unix()
 	expiresTS := nowTS + int64(durationSec)
-	
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
 	}
 	defer tx.Rollback()
-	
+
 	var value string
 	var updatedAt int64
 	err = tx.QueryRowContext(ctx, `SELECT value, updated_at FROM system_settings WHERE key = ?`, key).Scan(&value, &updatedAt)
-	
+
 	type Lease struct {
 		NodeID    string `json:"node_id"`
 		ExpiresAt int64  `json:"expires_at"`
 	}
-	
+
 	var current Lease
 	isFree := false
 	hasRow := true
@@ -1576,14 +1905,14 @@ func (s *Store) TryAcquireLease(ctx context.Context, key, nodeID string, duratio
 			isFree = true
 		}
 	}
-	
+
 	if !isFree {
 		return false, nil
 	}
-	
+
 	newLease := Lease{NodeID: nodeID, ExpiresAt: expiresTS}
 	newVal, _ := json.Marshal(newLease)
-	
+
 	if hasRow {
 		_, err = tx.ExecContext(ctx, `UPDATE system_settings SET value = ?, updated_at = ?, updated_by = ? WHERE key = ?`,
 			string(newVal), nowTS, nodeID, key)
@@ -1594,11 +1923,10 @@ func (s *Store) TryAcquireLease(ctx context.Context, key, nodeID string, duratio
 	if err != nil {
 		return false, err
 	}
-	
+
 	err = tx.Commit()
 	if err != nil {
 		return false, err
 	}
 	return true, nil
 }
-

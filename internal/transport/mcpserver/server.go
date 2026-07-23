@@ -16,6 +16,7 @@ import (
 	"postra/internal/domain"
 	"postra/internal/platform/build"
 	"postra/internal/platform/metrics"
+	"postra/internal/platform/telemetry"
 )
 
 func boolPtr(b bool) *bool { return &b }
@@ -41,6 +42,8 @@ func metricsMiddleware(next mcp.MethodHandler) mcp.MethodHandler {
 		if p, ok := req.GetParams().(*mcp.CallToolParamsRaw); ok && p.Name != "" {
 			tool = p.Name
 		}
+		ctx, span := telemetry.Start(ctx, "mcp.tool", telemetry.Attr("mcp.tool", tool))
+		defer span.End()
 		res, err := next(ctx, method, req)
 		result := "ok"
 		if err != nil {
@@ -53,16 +56,42 @@ func metricsMiddleware(next mcp.MethodHandler) mcp.MethodHandler {
 	}
 }
 
+// policyMiddleware enforces the central MCP gateway policy before a tool runs
+// (§MCP 정책 게이트웨이). Local stdio callers have no principal and are allowed;
+// remote callers are checked against the configured policy for their role.
+func policyMiddleware(app *application.App) mcp.Middleware {
+	return func(next mcp.MethodHandler) mcp.MethodHandler {
+		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+			if method != "tools/call" {
+				return next(ctx, method, req)
+			}
+			if p, ok := req.GetParams().(*mcp.CallToolParamsRaw); ok && p.Name != "" {
+				if err := app.CheckMCPToolPolicy(ctx, p.Name); err != nil {
+					return &mcp.CallToolResult{
+						IsError: true,
+						Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}},
+					}, nil
+				}
+			}
+			return next(ctx, method, req)
+		}
+	}
+}
+
 // NewServer builds the MCP server with the full tool catalog.
 func NewServer(app *application.App) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: "postra-mail", Version: build.Version}, nil)
 	s.AddReceivingMiddleware(metricsMiddleware)
+	s.AddReceivingMiddleware(policyMiddleware(app))
 	registerAccountTools(s, app)
 	registerSyncTools(s, app)
 	registerQueryTools(s, app)
 	registerAITools(s, app)
 	registerComposeTools(s, app)
 	registerDeleteTools(s, app)
+	registerRuleTools(s, app)
+	registerActionCardTools(s, app)
+	registerCollabTools(s, app)
 	registerAuditTools(s, app)
 	registerResources(s, app)
 	registerPrompts(s, app)
@@ -144,13 +173,20 @@ func toolCatalogSummary() map[string]any {
 			"account_secret": {"mail_account_list", "mail_account_get", "mail_account_create",
 				"mail_account_update", "mail_account_test", "mail_account_disable",
 				"secret_registration_begin", "secret_rotation_begin", "secret_revoke"},
-			"sync":  {"mail_sync_start", "job_status", "job_cancel"},
-			"query": {"mail_search", "mail_message_get", "mail_thread_get", "mail_attachment_list"},
+			"sync": {"mail_sync_start", "job_status", "job_cancel"},
+			"query": {"mail_search", "mail_message_get", "mail_thread_get", "mail_thread_timeline",
+				"mail_attachment_list", "mail_hybrid_search", "mail_batch_update", "mail_work_inbox"},
 			"ai": {"mail_summarize", "mail_classify", "mail_action_items_extract",
-				"mail_entities_extract", "mail_phishing_inspect", "mail_thread_summarize", "mail_question_answer"},
+				"mail_entities_extract", "mail_phishing_inspect", "mail_auth_inspect", "mail_thread_summarize",
+				"mail_question_answer", "mail_embeddings_build", "mail_semantic_search",
+				"mail_attachment_summarize", "mail_eval_prompt"},
 			"compose_send": {"mail_draft_create", "mail_draft_update", "mail_draft_rewrite",
 				"mail_send_preview", "mail_send_request_approval", "mail_send", "mail_outbound_status"},
-			"audit": {"mail_audit_search"},
+			"automation":    {"mail_rules_list", "mail_rule_create", "mail_rule_update", "mail_rule_delete", "mail_apply_rules"},
+			"action_cards":  {"mail_action_cards_extract", "mail_action_cards_list", "mail_action_card_set_status", "mail_action_card_export"},
+			"collaboration": {"mail_team_inbox", "mail_collab_get", "mail_assign", "mail_set_work_status", "mail_add_note"},
+			"attachments":   {"mail_attachment_list", "mail_attachment_extract_text", "mail_attachment_summarize"},
+			"audit":         {"mail_audit_search"},
 		},
 		"note": "Secret values are never accepted as tool arguments; use secret_registration_begin.",
 	}
@@ -346,7 +382,6 @@ func registerSyncTools(s *mcp.Server, app *application.App) {
 		return nil, job, nil
 	})
 
-
 	type jobIDInput struct {
 		JobID string `json:"job_id" jsonschema:"the job ID"`
 	}
@@ -437,6 +472,84 @@ func registerQueryTools(s *mcp.Server, app *application.App) {
 		}
 		return nil, map[string]any{"attachments": atts}, nil
 	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "mail_hybrid_search",
+		Description: "Hybrid search combining full-text keyword search and semantic vector search via Reciprocal Rank Fusion (RRF). Returns messages ranked by fused score, optionally collapsed to one hit per thread.",
+		Annotations: readExtern,
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct {
+		Query         string  `json:"query" jsonschema:"natural-language or keyword query"`
+		AccountID     string  `json:"account_id,omitempty" jsonschema:"optional account scope"`
+		Limit         int     `json:"limit,omitempty" jsonschema:"max results, default 20"`
+		RRFKConstant  float64 `json:"rrf_k,omitempty" jsonschema:"RRF k constant, default 60"`
+		FTSWeight     float64 `json:"fts_weight,omitempty" jsonschema:"weight for keyword ranking, default 1"`
+		VectorWeight  float64 `json:"vector_weight,omitempty" jsonschema:"weight for semantic ranking, default 1"`
+		GroupByThread bool    `json:"group_by_thread,omitempty" jsonschema:"aggregate to one hit per thread"`
+		Rerank        bool    `json:"rerank,omitempty" jsonschema:"apply an LLM cross-encoder reranking pass"`
+	}) (*mcp.CallToolResult, any, error) {
+		views, err := app.HybridSearch(ctx, application.HybridSearchOptions{
+			Query: in.Query, AccountID: in.AccountID, Limit: in.Limit,
+			RRFKConstant: in.RRFKConstant, FTSWeight: in.FTSWeight,
+			VectorWeight: in.VectorWeight, GroupByThread: in.GroupByThread, Rerank: in.Rerank,
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, map[string]any{"results": views, "count": len(views)}, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "mail_thread_timeline",
+		Description: "Get a conversation thread as an ordered timeline (oldest first) with bodies and attachments for an interactive view.",
+		Annotations: readOnly,
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct {
+		ThreadID string `json:"thread_id" jsonschema:"the thread ID (thr_...)"`
+	}) (*mcp.CallToolResult, any, error) {
+		tl, err := app.GetThreadTimeline(ctx, in.ThreadID)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, map[string]any{"timeline": tl, "count": len(tl)}, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "mail_work_inbox",
+		Description: "Task-oriented triage of the active inbox, grouped into important / snoozed_due / attention / reference buckets with counts.",
+		Annotations: readOnly,
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct {
+		AccountID string `json:"account_id,omitempty" jsonschema:"optional account scope"`
+		Limit     int    `json:"limit,omitempty" jsonschema:"inbox window size, default 100"`
+	}) (*mcp.CallToolResult, any, error) {
+		inbox, err := app.WorkInbox(ctx, in.AccountID, in.Limit)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, inbox, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "mail_batch_update",
+		Description: "Bulk-update messages. action ∈ {archive, unarchive, mark_important, unmark_important, snooze, unsnooze, add_label, remove_label, delete}. Returns per-message success/failure. Deleting in bulk requires confirm=true.",
+		Annotations: writeLocal,
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct {
+		MessageIDs   []string `json:"message_ids" jsonschema:"internal message IDs to update"`
+		Action       string   `json:"action" jsonschema:"batch action to apply"`
+		SnoozedUntil int64    `json:"snoozed_until,omitempty" jsonschema:"unix seconds; required for snooze"`
+		Label        string   `json:"label,omitempty" jsonschema:"label; required for add_label/remove_label"`
+		Confirm      bool     `json:"confirm,omitempty" jsonschema:"must be true to delete in bulk"`
+	}) (*mcp.CallToolResult, any, error) {
+		if application.BatchAction(in.Action) == application.BatchActionDelete && !in.Confirm {
+			return nil, nil, &application.UserError{Msg: "set confirm=true after the user approved bulk-deleting these messages"}
+		}
+		res, err := app.BatchUpdateMessages(ctx, application.BatchUpdateOptions{
+			MessageIDs: in.MessageIDs, Action: application.BatchAction(in.Action),
+			SnoozedUntil: in.SnoozedUntil, Label: in.Label,
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, res, nil
+	})
 }
 
 // ---------- AI tools ----------
@@ -482,6 +595,50 @@ func registerAITools(s *mcp.Server, app *application.App) {
 	})
 
 	mcp.AddTool(s, &mcp.Tool{
+		Name:        "mail_attachment_extract_text",
+		Description: "Extract plain text from a text-based attachment (text/*, JSON, CSV, HTML). Binary/OCR formats return unsupported.",
+		Annotations: readOnly,
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct {
+		MessageID    string `json:"message_id" jsonschema:"the internal message ID"`
+		AttachmentID string `json:"attachment_id" jsonschema:"the attachment ID (att_...)"`
+	}) (*mcp.CallToolResult, any, error) {
+		res, err := app.ExtractAttachmentText(ctx, in.MessageID, in.AttachmentID)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, res, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "mail_attachment_summarize",
+		Description: "Extract a text-based attachment and AI-summarize it (key points, tables/figures, risks).",
+		Annotations: aiAnn,
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct {
+		MessageID    string `json:"message_id" jsonschema:"the internal message ID"`
+		AttachmentID string `json:"attachment_id" jsonschema:"the attachment ID (att_...)"`
+	}) (*mcp.CallToolResult, any, error) {
+		an, err := app.SummarizeAttachment(ctx, in.MessageID, in.AttachmentID)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, an, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "mail_auth_inspect",
+		Description: "Structured SPF/DKIM/DMARC/ARC verdicts, From-domain alignment, and a 0-100 sender-domain risk score for a message. Deterministic and offline (reads the receiving MTA's recorded Authentication-Results).",
+		Annotations: readOnly,
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct {
+		MessageID string `json:"message_id" jsonschema:"the internal message ID"`
+	}) (*mcp.CallToolResult, any, error) {
+		res, err := app.InspectAuthentication(ctx, in.MessageID)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, res, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
 		Name:        "mail_embeddings_build",
 		Description: "Build embeddings for stored messages lacking them, enabling semantic search. Returns a job_id.",
 		Annotations: aiAnn,
@@ -510,6 +667,21 @@ func registerAITools(s *mcp.Server, app *application.App) {
 			return nil, nil, err
 		}
 		return nil, map[string]any{"results": hits}, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "mail_eval_prompt",
+		Description: "Evaluate an analysis type over labeled cases (message_id + expected [+ field]) and report accuracy and latency for the active prompt version.",
+		Annotations: aiAnn,
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct {
+		AnalysisType string                 `json:"analysis_type" jsonschema:"e.g. classify, summarize, phishing"`
+		Cases        []application.EvalCase `json:"cases" jsonschema:"labeled cases"`
+	}) (*mcp.CallToolResult, any, error) {
+		res, err := app.EvaluatePrompt(ctx, in.AnalysisType, in.Cases)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, res, nil
 	})
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -629,6 +801,219 @@ func registerComposeTools(s *mcp.Server, app *application.App) {
 			return nil, nil, err
 		}
 		return nil, out, nil
+	})
+}
+
+// ---------- rule (automation) tools ----------
+
+func registerRuleTools(s *mcp.Server, app *application.App) {
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "mail_rules_list",
+		Description: "List the caller's mail automation rules (conditions → actions), ordered by priority.",
+		Annotations: readOnly,
+	}, func(ctx context.Context, req *mcp.CallToolRequest, _ emptyInput) (*mcp.CallToolResult, any, error) {
+		rules, err := app.ListRules(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, map[string]any{"rules": rules}, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "mail_rule_create",
+		Description: "Create a mail automation rule. Fields: name, match(all|any), priority, conditions[{field,operator,value}], " +
+			"actions[{type,value}], stop_on_match. Condition fields: from,to,subject,body,account,has_attachment,is_important. " +
+			"Operators: contains,equals,starts_with,ends_with,regex,is_true,is_false. Actions: add_label,remove_label,archive,mark_important,snooze,delete.",
+		Annotations: writeLocal,
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in domain.MailRule) (*mcp.CallToolResult, any, error) {
+		rule, err := app.CreateRule(ctx, in)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, rule, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "mail_rule_update",
+		Description: "Update an existing mail automation rule (must include id).",
+		Annotations: writeLocal,
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in domain.MailRule) (*mcp.CallToolResult, any, error) {
+		rule, err := app.UpdateRule(ctx, in)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, rule, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "mail_rule_delete",
+		Description: "Delete a mail automation rule.",
+		Annotations: writeLocal,
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct {
+		RuleID string `json:"rule_id" jsonschema:"the rule ID (rule_...)"`
+	}) (*mcp.CallToolResult, any, error) {
+		if err := app.DeleteRule(ctx, in.RuleID); err != nil {
+			return nil, nil, err
+		}
+		return nil, map[string]string{"status": "deleted"}, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "mail_apply_rules",
+		Description: "Evaluate the caller's rules against one stored message and apply matching actions. Returns which rules matched.",
+		Annotations: writeLocal,
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct {
+		MessageID string `json:"message_id" jsonschema:"the internal message ID"`
+	}) (*mcp.CallToolResult, any, error) {
+		res, err := app.ApplyRulesToMessage(ctx, in.MessageID)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, res, nil
+	})
+}
+
+// ---------- action card tools ----------
+
+func registerActionCardTools(s *mcp.Server, app *application.App) {
+	aiAnn := &mcp.ToolAnnotations{ReadOnlyHint: false, OpenWorldHint: boolPtr(true)}
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "mail_action_cards_extract",
+		Description: "AI-extract actionable cards (meeting/todo/approval/inquiry) from a message and store them as pending for review.",
+		Annotations: aiAnn,
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct {
+		MessageID string `json:"message_id" jsonschema:"the internal message ID"`
+	}) (*mcp.CallToolResult, any, error) {
+		cards, err := app.ExtractActionCards(ctx, in.MessageID)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, map[string]any{"cards": cards, "count": len(cards)}, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "mail_action_cards_list",
+		Description: "List extracted action cards, optionally filtered by status (pending|approved|rejected|done|exported).",
+		Annotations: readOnly,
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct {
+		Status string `json:"status,omitempty"`
+		Limit  int    `json:"limit,omitempty"`
+	}) (*mcp.CallToolResult, any, error) {
+		cards, err := app.ListActionCards(ctx, in.Status, in.Limit)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, map[string]any{"cards": cards}, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "mail_action_card_set_status",
+		Description: "Set an action card's status (approved|rejected|done|pending).",
+		Annotations: writeLocal,
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct {
+		CardID string `json:"card_id" jsonschema:"the action card ID (act_...)"`
+		Status string `json:"status" jsonschema:"approved|rejected|done|pending"`
+	}) (*mcp.CallToolResult, any, error) {
+		card, err := app.SetActionCardStatus(ctx, in.CardID, in.Status)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, card, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "mail_action_card_export",
+		Description: "Export an APPROVED action card to a target system (calendar/jira/itsm). Returns a structured payload for the integration to apply; Postra performs no external write itself.",
+		Annotations: writeLocal,
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct {
+		CardID      string `json:"card_id" jsonschema:"the action card ID"`
+		Target      string `json:"target" jsonschema:"calendar|jira|itsm|..."`
+		ExternalRef string `json:"external_ref,omitempty" jsonschema:"optional external record id"`
+	}) (*mcp.CallToolResult, any, error) {
+		exp, err := app.ExportActionCard(ctx, in.CardID, in.Target, in.ExternalRef)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, exp, nil
+	})
+}
+
+// ---------- collaboration (shared mailbox) tools ----------
+
+func registerCollabTools(s *mcp.Server, app *application.App) {
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "mail_team_inbox",
+		Description: "List messages with shared-mailbox collaboration state, optionally filtered by status (open|pending|resolved) and assignee.",
+		Annotations: readOnly,
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct {
+		Status   string `json:"status,omitempty"`
+		Assignee string `json:"assignee,omitempty"`
+		Limit    int    `json:"limit,omitempty"`
+	}) (*mcp.CallToolResult, any, error) {
+		items, err := app.TeamInbox(ctx, in.Status, in.Assignee, in.Limit)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, map[string]any{"items": items, "count": len(items)}, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "mail_collab_get",
+		Description: "Get a message's collaboration state (assignee, status, SLA) and internal team notes.",
+		Annotations: readOnly,
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct {
+		MessageID string `json:"message_id" jsonschema:"the internal message ID"`
+	}) (*mcp.CallToolResult, any, error) {
+		v, err := app.GetMessageCollab(ctx, in.MessageID)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, v, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "mail_assign",
+		Description: "Assign a message to a team member (or clear with an empty assignee).",
+		Annotations: writeLocal,
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct {
+		MessageID string `json:"message_id" jsonschema:"the internal message ID"`
+		Assignee  string `json:"assignee" jsonschema:"assignee identifier (login/email); empty clears"`
+	}) (*mcp.CallToolResult, any, error) {
+		mc, err := app.AssignMessage(ctx, in.MessageID, in.Assignee)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, mc, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "mail_set_work_status",
+		Description: "Set a message's collaboration work status (open|pending|resolved).",
+		Annotations: writeLocal,
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct {
+		MessageID string `json:"message_id" jsonschema:"the internal message ID"`
+		Status    string `json:"status" jsonschema:"open|pending|resolved"`
+	}) (*mcp.CallToolResult, any, error) {
+		mc, err := app.SetMessageWorkStatus(ctx, in.MessageID, in.Status)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, mc, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "mail_add_note",
+		Description: "Add an internal team note to a message (never sent to anyone).",
+		Annotations: writeLocal,
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct {
+		MessageID string `json:"message_id" jsonschema:"the internal message ID"`
+		Body      string `json:"body" jsonschema:"the note text"`
+	}) (*mcp.CallToolResult, any, error) {
+		n, err := app.AddMessageNote(ctx, in.MessageID, in.Body)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, n, nil
 	})
 }
 

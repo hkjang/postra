@@ -123,6 +123,15 @@ const (
 	InboundIMAP = "imap"
 )
 
+// IdleCapable is implemented by inbound sessions that support RFC 2177 IMAP
+// IDLE. Idle blocks until the server signals mailbox activity (new mail /
+// expunge), the connection's periodic re-idle window elapses, or ctx is
+// cancelled — returning nil on a wake-worthy event and an error on a
+// connection fault. The IMAP adapter implements it; POP3 does not.
+type IdleCapable interface {
+	Idle(ctx context.Context) error
+}
+
 // AuthError distinguishes credential failures from transient faults so the
 // sync layer can move an account to credential_error instead of retrying
 // forever (POP-011). Both the POP3 and IMAP adapters return it on login

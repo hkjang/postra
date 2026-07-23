@@ -29,13 +29,34 @@ type Message struct {
 	InReplyTo      string `json:"in_reply_to,omitempty"`
 	References     string `json:"references,omitempty"`
 	// AuthResults summarizes SPF/DKIM/DMARC from Authentication-Results (MIME-016).
-	AuthResults string `json:"auth_results,omitempty"`
+	AuthResults  string   `json:"auth_results,omitempty"`
 	ParseError   string   `json:"parse_error,omitempty"` // partial-parse marker (MIME-004)
 	CreatedAt    int64    `json:"created_at"`
 	IsArchived   bool     `json:"is_archived,omitempty"`
 	IsImportant  bool     `json:"is_important,omitempty"`
 	SnoozedUntil int64    `json:"snoozed_until,omitempty"`
 	Labels       []string `json:"labels,omitempty"`
+	// LegalHold, when set, blocks local deletion of the message for compliance
+	// / e-discovery retention (§규정 준수 보존·법적 보류).
+	LegalHold bool `json:"legal_hold,omitempty"`
+}
+
+// EmailAuthResult is the structured interpretation of a message's
+// Authentication-Results header (SPF/DKIM/DMARC/ARC) plus an alignment check
+// and an overall sender-domain risk score (§보안 이메일 인증 검증).
+type EmailAuthResult struct {
+	SPF        string   `json:"spf"`   // pass|fail|softfail|neutral|none|temperror|permerror|unknown
+	DKIM       string   `json:"dkim"`  // pass|fail|none|...
+	DMARC      string   `json:"dmarc"` // pass|fail|none|...
+	ARC        string   `json:"arc,omitempty"`
+	SPFDomain  string   `json:"spf_domain,omitempty"`
+	DKIMDomain string   `json:"dkim_domain,omitempty"`
+	FromDomain string   `json:"from_domain,omitempty"`
+	Aligned    bool     `json:"aligned"`
+	RiskScore  int      `json:"risk_score"` // 0-100
+	RiskLevel  string   `json:"risk_level"` // low|medium|high
+	Reasons    []string `json:"reasons,omitempty"`
+	Raw        string   `json:"raw,omitempty"`
 }
 
 type MessageBody struct {

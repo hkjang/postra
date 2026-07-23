@@ -63,6 +63,9 @@ type GenerationRequest struct {
 	Untrusted string
 	JSONMode  bool
 	MaxTokens int
+	// Task, when set, selects a per-task model/endpoint route configured in
+	// AIConfig.TaskModels. Unknown/empty tasks use the default endpoint.
+	Task string
 }
 
 type GenerationResult struct {

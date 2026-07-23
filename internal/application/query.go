@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"sort"
+	"strings"
 
 	"postra/internal/domain"
 	"postra/internal/platform/mask"
@@ -160,96 +160,179 @@ func (a *App) PolicySnapshot() map[string]any {
 type BatchAction string
 
 const (
-	BatchActionDelete    BatchAction = "delete"
-	BatchActionArchive   BatchAction = "archive"
-	BatchActionUnarchive BatchAction = "unarchive"
+	BatchActionDelete          BatchAction = "delete"
+	BatchActionArchive         BatchAction = "archive"
+	BatchActionUnarchive       BatchAction = "unarchive"
+	BatchActionMarkImportant   BatchAction = "mark_important"
+	BatchActionUnmarkImportant BatchAction = "unmark_important"
+	BatchActionSnooze          BatchAction = "snooze"
+	BatchActionUnsnooze        BatchAction = "unsnooze"
+	BatchActionAddLabel        BatchAction = "add_label"
+	BatchActionRemoveLabel     BatchAction = "remove_label"
+	BatchActionLegalHold       BatchAction = "legal_hold"
+	BatchActionLegalUnhold     BatchAction = "legal_unhold"
+	// BatchActionImportant is a deprecated toggle kept for backward
+	// compatibility. Prefer the explicit mark_important/unmark_important so a
+	// retry is idempotent instead of flipping state.
 	BatchActionImportant BatchAction = "important"
-	BatchActionSnooze    BatchAction = "snooze"
 )
 
 type BatchUpdateOptions struct {
 	MessageIDs   []string    `json:"message_ids"`
 	Action       BatchAction `json:"action"`
 	SnoozedUntil int64       `json:"snoozed_until,omitempty"`
+	Label        string      `json:"label,omitempty"`
 }
 
-// BatchUpdateMessages performs bulk operations (delete, archive, mark important, snooze) on messages (§P2 메일 UX 확장).
-func (a *App) BatchUpdateMessages(ctx context.Context, opts BatchUpdateOptions) (int, error) {
-	userID := userIDFrom(ctx)
+// BatchItemResult is the outcome for a single message in a batch operation.
+type BatchItemResult struct {
+	MessageID string `json:"message_id"`
+	OK        bool   `json:"ok"`
+	Error     string `json:"error,omitempty"`
+}
+
+// BatchResult reports exactly which messages succeeded or failed and why, so a
+// caller can retry the failures rather than trusting an aggregate count.
+type BatchResult struct {
+	Action       BatchAction       `json:"action"`
+	Requested    int               `json:"requested"`
+	Succeeded    int               `json:"succeeded"`
+	Failed       int               `json:"failed"`
+	SucceededIDs []string          `json:"succeeded_ids,omitempty"`
+	Results      []BatchItemResult `json:"results"`
+}
+
+// BatchUpdateMessages performs bulk operations on messages and returns a
+// per-message result set (§P2 메일 UX 확장). Actions are explicit and
+// idempotent (mark_important vs unmark_important) so retries converge.
+func (a *App) BatchUpdateMessages(ctx context.Context, opts BatchUpdateOptions) (*BatchResult, error) {
 	if len(opts.MessageIDs) == 0 {
-		return 0, userErrf("no message IDs provided")
+		return nil, userErrf("no message IDs provided")
+	}
+	switch opts.Action {
+	case BatchActionDelete, BatchActionArchive, BatchActionUnarchive,
+		BatchActionMarkImportant, BatchActionUnmarkImportant, BatchActionImportant,
+		BatchActionSnooze, BatchActionUnsnooze, BatchActionAddLabel, BatchActionRemoveLabel,
+		BatchActionLegalHold, BatchActionLegalUnhold:
+	default:
+		return nil, userErrf("unsupported batch action %q", opts.Action)
+	}
+	if opts.Action == BatchActionSnooze && opts.SnoozedUntil <= 0 {
+		return nil, userErrf("snooze requires snoozed_until (unix seconds)")
+	}
+	if (opts.Action == BatchActionAddLabel || opts.Action == BatchActionRemoveLabel) && strings.TrimSpace(opts.Label) == "" {
+		return nil, userErrf("%s requires a non-empty label", opts.Action)
 	}
 
-	count := 0
+	res := &BatchResult{Action: opts.Action, Requested: len(opts.MessageIDs)}
 	for _, id := range opts.MessageIDs {
-		switch opts.Action {
-		case BatchActionDelete:
-			if err := a.LocalDelete(ctx, id); err == nil {
-				count++
-			}
-		case BatchActionArchive, BatchActionUnarchive:
-			if m, err := a.Store.GetMessage(ctx, userID, id); err == nil {
-				m.IsArchived = (opts.Action == BatchActionArchive)
-				if err := a.Store.UpdateMessage(ctx, m); err == nil {
-					count++
-				}
-			}
-		case BatchActionImportant:
-			if m, err := a.Store.GetMessage(ctx, userID, id); err == nil {
-				m.IsImportant = !m.IsImportant
-				if err := a.Store.UpdateMessage(ctx, m); err == nil {
-					count++
-				}
-			}
-		case BatchActionSnooze:
-			if m, err := a.Store.GetMessage(ctx, userID, id); err == nil {
-				m.SnoozedUntil = opts.SnoozedUntil
-				if err := a.Store.UpdateMessage(ctx, m); err == nil {
-					count++
-				}
-			}
-		default:
-			return 0, userErrf("unsupported batch action %q", opts.Action)
+		err := a.applyBatchAction(ctx, id, opts)
+		item := BatchItemResult{MessageID: id, OK: err == nil}
+		if err != nil {
+			item.Error = err.Error()
+			res.Failed++
+		} else {
+			res.Succeeded++
+			res.SucceededIDs = append(res.SucceededIDs, id)
+		}
+		res.Results = append(res.Results, item)
+	}
+
+	result := "ok"
+	if res.Failed > 0 {
+		result = "partial"
+		if res.Succeeded == 0 {
+			result = "error"
 		}
 	}
-
-	a.audit(ctx, "batch_update_messages", "action:"+string(opts.Action), "ok", fmt.Sprintf("count=%d", count))
-	return count, nil
+	a.audit(ctx, "batch_update_messages", "action:"+string(opts.Action), result,
+		fmt.Sprintf("requested=%d ok=%d failed=%d", res.Requested, res.Succeeded, res.Failed))
+	return res, nil
 }
 
-// GetThreadTimeline returns all messages in a conversation thread formatted for a interactive timeline view (§P2 대화형 타임라인).
+func (a *App) applyBatchAction(ctx context.Context, id string, opts BatchUpdateOptions) error {
+	userID := userIDFrom(ctx)
+	if opts.Action == BatchActionDelete {
+		return a.LocalDelete(ctx, id)
+	}
+	m, err := a.Store.GetMessage(ctx, userID, id)
+	if err != nil {
+		return err
+	}
+	switch opts.Action {
+	case BatchActionArchive:
+		m.IsArchived = true
+	case BatchActionUnarchive:
+		m.IsArchived = false
+	case BatchActionMarkImportant:
+		m.IsImportant = true
+	case BatchActionUnmarkImportant:
+		m.IsImportant = false
+	case BatchActionImportant:
+		m.IsImportant = !m.IsImportant // deprecated toggle
+	case BatchActionSnooze:
+		m.SnoozedUntil = opts.SnoozedUntil
+	case BatchActionUnsnooze:
+		m.SnoozedUntil = 0
+	case BatchActionAddLabel:
+		m.Labels = addLabel(m.Labels, opts.Label)
+	case BatchActionRemoveLabel:
+		m.Labels = removeLabel(m.Labels, opts.Label)
+	case BatchActionLegalHold:
+		m.LegalHold = true
+	case BatchActionLegalUnhold:
+		m.LegalHold = false
+	}
+	return a.Store.UpdateMessage(ctx, m)
+}
+
+func addLabel(labels []string, label string) []string {
+	label = strings.TrimSpace(label)
+	for _, l := range labels {
+		if l == label {
+			return labels
+		}
+	}
+	return append(labels, label)
+}
+
+func removeLabel(labels []string, label string) []string {
+	label = strings.TrimSpace(label)
+	out := labels[:0:0]
+	for _, l := range labels {
+		if l != label {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// GetThreadTimeline returns every message in a conversation thread ordered
+// oldest-first for an interactive timeline view (§P2 대화형 타임라인). It reads
+// the thread directly from the store so no message is dropped by a paging
+// window.
 func (a *App) GetThreadTimeline(ctx context.Context, threadID string) ([]MessageView, error) {
 	if threadID == "" {
 		return nil, userErrf("threadID is required")
 	}
 	userID := userIDFrom(ctx)
 
-	res, err := a.Store.Search(ctx, domain.SearchQuery{
-		UserID: userID,
-		Limit:  100,
-	})
+	msgs, err := a.Store.GetThreadMessages(ctx, userID, threadID)
 	if err != nil {
 		return nil, err
 	}
-
-	var threadMsgs []domain.Message
-	for _, m := range res.Messages {
-		if m.ThreadID == threadID || m.ID == threadID {
-			threadMsgs = append(threadMsgs, m)
+	// GetThreadMessages already orders by date ASC.
+	timeline := make([]MessageView, 0, len(msgs))
+	for i := range msgs {
+		m := msgs[i]
+		mv := MessageView{Message: m}
+		if b, err := a.Store.GetBody(ctx, userID, m.ID); err == nil {
+			mv.Body = b
 		}
-	}
-
-	sort.Slice(threadMsgs, func(i, j int) bool {
-		return threadMsgs[i].Date < threadMsgs[j].Date
-	})
-
-	var timeline []MessageView
-	for _, m := range threadMsgs {
-		v, err := a.GetMessage(ctx, m.ID, true)
-		if err == nil && v != nil {
-			timeline = append(timeline, *v)
+		if atts, err := a.Store.ListAttachments(ctx, userID, m.ID); err == nil {
+			mv.Attachments = atts
 		}
+		timeline = append(timeline, mv)
 	}
-
 	return timeline, nil
 }

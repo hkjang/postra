@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -52,7 +53,7 @@ func (a *App) runBuildEmbeddings(ctx context.Context, job *domain.Job, accountID
 		_ = a.Store.UpdateJob(context.Background(), job)
 		return
 	}
-	
+
 	const batchSize = 20
 	var done, failed int64
 
@@ -62,13 +63,13 @@ func (a *App) runBuildEmbeddings(ctx context.Context, job *domain.Job, accountID
 			_ = a.Store.UpdateJob(context.Background(), job)
 			return
 		}
-		
+
 		end := i + batchSize
 		if end > len(ids) {
 			end = len(ids)
 		}
 		batchIds := ids[i:end]
-		
+
 		err := a.embedMessagesBatch(ctx, accountID, batchIds)
 		if err != nil {
 			failed += int64(len(batchIds))
@@ -95,7 +96,7 @@ func (a *App) runBuildEmbeddings(ctx context.Context, job *domain.Job, accountID
 
 func (a *App) embedMessagesBatch(ctx context.Context, accountID string, messageIDs []string) error {
 	userID := userIDFrom(ctx)
-	
+
 	var texts []string
 	var validIDs []string
 	var accs []string
@@ -203,6 +204,10 @@ type HybridSearchOptions struct {
 	FTSWeight     float64 // default 1.0
 	VectorWeight  float64 // default 1.0
 	GroupByThread bool
+	// Rerank, when true, applies an LLM cross-encoder-style reranking pass over
+	// the fused candidates (§검색 파이프라인화). Falls back to RRF order on any
+	// AI error or when the AI policy forbids sending content out.
+	Rerank bool
 }
 
 // HybridSearch combines Full-Text Search (FTS) and Vector Semantic Search using
@@ -275,7 +280,31 @@ func (a *App) HybridSearch(ctx context.Context, opts HybridSearchOptions) ([]Mes
 		}
 	}
 
-	// 4. Sort by combined RRF score
+	// 4. Optional thread aggregation: collapse each thread to its best-scoring
+	// message while summing member scores, so a strongly-matching conversation
+	// ranks as a unit (§검색 스레드 단위 검색).
+	if opts.GroupByThread {
+		threadBest := map[string]string{} // threadKey -> representative message ID
+		threadScore := map[string]float64{}
+		for mID, sc := range scores {
+			key := messages[mID].ThreadID
+			if key == "" {
+				key = mID
+			}
+			threadScore[key] += sc
+			if cur, ok := threadBest[key]; !ok || sc > scores[cur] {
+				threadBest[key] = mID
+			}
+		}
+		agg := map[string]float64{}
+		for key, mID := range threadBest {
+			agg[mID] = threadScore[key]
+			reasons[mID] += fmt.Sprintf(" [thread total rrf %.4f]", threadScore[key])
+		}
+		scores = agg
+	}
+
+	// 5. Sort by combined score.
 	type rrfHit struct {
 		mID   string
 		score float64
@@ -288,30 +317,91 @@ func (a *App) HybridSearch(ctx context.Context, opts HybridSearchOptions) ([]Mes
 		return hitList[i].score > hitList[j].score
 	})
 
-	// 5. Build output, optionally grouping by ThreadID
 	var out []MessageView
-	seenThreads := make(map[string]bool)
-
 	for _, hit := range hitList {
-		msg := messages[hit.mID]
-		if opts.GroupByThread && msg.ThreadID != "" {
-			if seenThreads[msg.ThreadID] {
-				continue
-			}
-			seenThreads[msg.ThreadID] = true
-		}
-
 		out = append(out, MessageView{
-			Message: msg,
+			Message: messages[hit.mID],
 			Score:   hit.score,
 			Reason:  reasons[hit.mID],
 		})
+	}
 
-		if len(out) >= opts.Limit {
-			break
+	// 6. Optional LLM cross-encoder reranking of the fused candidates.
+	reranked := false
+	if opts.Rerank && len(out) > 1 && a.checkAIPolicy(ctx) == nil {
+		if r := a.rerankViews(ctx, opts.Query, out); r != nil {
+			out, reranked = r, true
 		}
 	}
 
-	a.audit(ctx, "hybrid_search", "query:"+opts.Query, "ok", fmt.Sprintf("hits=%d", len(out)))
+	// 7. Truncate to the requested page size.
+	if len(out) > opts.Limit {
+		out = out[:opts.Limit]
+	}
+
+	a.audit(ctx, "hybrid_search", "query:"+opts.Query, "ok",
+		fmt.Sprintf("hits=%d reranked=%v", len(out), reranked))
 	return out, nil
+}
+
+// rerankViews reorders candidates by asking the model to score each one's
+// relevance to the query (an LLM stand-in for a cross-encoder). It returns nil
+// on any failure so the caller keeps the RRF order. Only the top candidates are
+// sent to bound cost.
+func (a *App) rerankViews(ctx context.Context, query string, views []MessageView) []MessageView {
+	const maxCandidates = 30
+	n := len(views)
+	if n > maxCandidates {
+		n = maxCandidates
+	}
+	var sb strings.Builder
+	for i := 0; i < n; i++ {
+		m := views[i].Message
+		fmt.Fprintf(&sb, "[%d] subject=%q from=%s\n", i, m.Subject, m.From.Email)
+	}
+	res, err := a.AI.Generate(ctx, domain.GenerationRequest{
+		System: "You are a search reranker. Score how well each candidate answers the query from 0.0 to 1.0. Respond with JSON only.",
+		User: "Query: " + query + "\nCandidates:\n" + sb.String() +
+			"\nJSON schema: {\"ranking\":[{\"index\":number,\"score\":number}]}",
+		JSONMode: true,
+		Task:     "rerank",
+	})
+	if err != nil {
+		return nil
+	}
+	clean, err := extractJSON(res.Text)
+	if err != nil {
+		return nil
+	}
+	var parsed struct {
+		Ranking []struct {
+			Index int     `json:"index"`
+			Score float64 `json:"score"`
+		} `json:"ranking"`
+	}
+	if json.Unmarshal([]byte(clean), &parsed) != nil || len(parsed.Ranking) == 0 {
+		return nil
+	}
+	scoreByIdx := map[int]float64{}
+	for _, r := range parsed.Ranking {
+		if r.Index >= 0 && r.Index < n {
+			scoreByIdx[r.Index] = r.Score
+		}
+	}
+	// Reorder the top-n by model score (stable for unscored), keep the tail.
+	head := make([]MessageView, n)
+	copy(head, views[:n])
+	sort.SliceStable(head, func(i, j int) bool {
+		return scoreByIdx[indexOfView(views, head[i])] > scoreByIdx[indexOfView(views, head[j])]
+	})
+	return append(head, views[n:]...)
+}
+
+func indexOfView(views []MessageView, v MessageView) int {
+	for i := range views {
+		if views[i].Message.ID == v.Message.ID {
+			return i
+		}
+	}
+	return -1
 }

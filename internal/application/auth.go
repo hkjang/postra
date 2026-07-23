@@ -451,4 +451,3 @@ func (a *App) AuthenticateMCPKey(ctx context.Context, raw string) (*domain.MCPKe
 	p := principalFor(u, "mcp_key")
 	return key, p, nil
 }
-

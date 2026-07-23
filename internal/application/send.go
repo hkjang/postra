@@ -116,6 +116,11 @@ type SendPreview struct {
 	// the user should review before approving.
 	Warnings    []string `json:"warnings,omitempty"`
 	PayloadHash string   `json:"payload_hash"`
+	// DLPFindings lists sensitive content categories detected when the message
+	// targets an external domain (§보안 DLP). DLPBlocked is true when policy is
+	// "block" and findings exist — the send will be refused.
+	DLPFindings []DLPFinding `json:"dlp_findings,omitempty"`
+	DLPBlocked  bool         `json:"dlp_blocked,omitempty"`
 }
 
 func (a *App) PreviewSend(ctx context.Context, draftID string) (*SendPreview, error) {
@@ -150,13 +155,69 @@ func (a *App) PreviewSend(ctx context.Context, draftID string) (*SendPreview, er
 	if len(ext) > 0 {
 		warnings = append(warnings, "recipients on external domains: "+strings.Join(ext, ", "))
 	}
+	// Organization writing policy: flag banned phrases regardless of recipient.
+	if banned := a.checkWritingPolicy(v.Subject, v.BodyText); len(banned) > 0 {
+		warnings = append(warnings, "writing policy: banned phrase(s) present: "+strings.Join(banned, ", "))
+	}
+	// DLP applies only when the message leaves the organization (external
+	// recipients present) and the policy is not "off".
+	var dlpFindings []DLPFinding
+	dlpBlocked := false
+	if len(ext) > 0 && a.dlpPolicy() != "off" {
+		dlpFindings = a.scanDLP(v.Subject, v.BodyText)
+		if len(dlpFindings) > 0 {
+			warnings = append(warnings, "DLP: sensitive content detected in a message to external domains "+dlpSummary(dlpFindings))
+			if a.dlpPolicy() == "block" {
+				dlpBlocked = true
+				warnings = append(warnings, "DLP policy is 'block' — this send will be refused until the flagged content is removed")
+			}
+		}
+	}
 	return &SendPreview{
 		DraftID: d.ID, DraftVersion: v.Version,
 		From: acc.Email, To: emails(v.To), Cc: emails(v.Cc), Bcc: emails(v.Bcc),
 		Subject: v.Subject, Body: v.BodyText,
 		ExternalDomains: ext, RecipientCount: recipientCount,
 		Warnings: warnings, PayloadHash: sendPayloadHash(acc, v),
+		DLPFindings: dlpFindings, DLPBlocked: dlpBlocked,
 	}, nil
+}
+
+// dlpSummary renders finding categories for a human-facing warning without
+// echoing any sensitive value.
+func dlpSummary(findings []DLPFinding) string {
+	parts := make([]string, 0, len(findings))
+	for _, f := range findings {
+		if f.Term != "" {
+			parts = append(parts, fmt.Sprintf("%q×%d", f.Term, f.Count))
+		} else {
+			parts = append(parts, fmt.Sprintf("%s×%d", f.Type, f.Count))
+		}
+	}
+	return "(" + strings.Join(parts, ", ") + ")"
+}
+
+// enforceDLP re-checks DLP at send time so a "block" policy cannot be bypassed
+// by requesting an approval and editing around the preview.
+func (a *App) enforceDLP(acc *domain.MailAccount, v *domain.DraftVersion) error {
+	if a.dlpPolicy() != "block" {
+		return nil
+	}
+	senderDomain := domainOf(acc.Email)
+	external := false
+	for _, addr := range append(append([]domain.Address{}, v.To...), v.Cc...) {
+		if dom := domainOf(addr.Email); dom != "" && dom != senderDomain {
+			external = true
+			break
+		}
+	}
+	if !external {
+		return nil
+	}
+	if findings := a.scanDLP(v.Subject, v.BodyText); len(findings) > 0 {
+		return userErrf("send blocked by DLP policy: sensitive content in a message to external recipients %s", dlpSummary(findings))
+	}
+	return nil
 }
 
 // RequestSendApproval issues a one-time approval token for the draft's
@@ -202,6 +263,11 @@ func (a *App) Send(ctx context.Context, in SendInput) (*domain.OutboundMessage, 
 		return nil, userErrf("account %s is %s; sending blocked", acc.ID, acc.Status)
 	}
 	if err := validateDraftForSend(acc, v); err != nil {
+		return nil, err
+	}
+	// DLP block enforced at the actual send boundary (§보안 DLP).
+	if err := a.enforceDLP(acc, v); err != nil {
+		a.audit(ctx, "mail_send", "draft:"+d.ID, "denied", err.Error())
 		return nil, err
 	}
 

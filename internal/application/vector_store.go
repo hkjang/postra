@@ -120,6 +120,43 @@ type milvusInsertReq struct {
 	Data           []map[string]any `json:"data"`
 }
 
+// milvusStatusResp captures the logical status the Milvus v2 REST API returns
+// in the body. code==0 is success; a non-zero code is a failure even when the
+// HTTP status is 200, so it must be checked explicitly.
+type milvusStatusResp struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+// milvusOKCode reports whether a Milvus REST status code means success. The v2
+// RESTful API returns 0 on success; some versions/proxies use 200.
+func milvusOKCode(code int) bool { return code == 0 || code == 200 }
+
+// checkMilvusStatus reads the response body and returns an error when Milvus
+// reports a logical failure (non-success code) despite HTTP 200.
+func checkMilvusStatus(op string, body []byte) error {
+	var st milvusStatusResp
+	if err := json.Unmarshal(body, &st); err != nil {
+		// A body we cannot parse as a status envelope is itself suspicious.
+		return fmt.Errorf("milvus %s: unparseable response: %s", op, truncateStr(string(body), 200))
+	}
+	if !milvusOKCode(st.Code) {
+		msg := st.Message
+		if msg == "" {
+			msg = "no message"
+		}
+		return fmt.Errorf("milvus %s failed (code %d): %s", op, st.Code, msg)
+	}
+	return nil
+}
+
+func truncateStr(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
+}
+
 func (m *MilvusVectorStore) SaveEmbedding(ctx context.Context, userID, accountID, messageID string, chunkID int, vec []float32, model string) error {
 	return m.SaveEmbeddingsBatch(ctx, userID, accountID, []EmbeddingItem{
 		{MessageID: messageID, ChunkID: chunkID, Vector: vec, Model: model},
@@ -131,7 +168,7 @@ func (m *MilvusVectorStore) SaveEmbeddingsBatch(ctx context.Context, userID, acc
 		return nil
 	}
 	endpoint := fmt.Sprintf("%s/v2/vectordb/entities/insert", m.url)
-	
+
 	var data []map[string]any
 	for _, item := range items {
 		data = append(data, map[string]any{
@@ -168,9 +205,14 @@ func (m *MilvusVectorStore) SaveEmbeddingsBatch(ctx context.Context, userID, acc
 	}
 	defer resp.Body.Close()
 
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("milvus insert returned HTTP %d: %s", resp.StatusCode, string(body))
+		return fmt.Errorf("milvus insert returned HTTP %d: %s", resp.StatusCode, truncateStr(string(body), 300))
+	}
+	// HTTP 200 is not proof of success — Milvus reports logical failures in the
+	// body's code field (P1 Milvus 응답 검증).
+	if err := checkMilvusStatus("insert", body); err != nil {
+		return err
 	}
 
 	// Save embedding meta to primary DB to mark as embedded using batch transaction.
@@ -195,8 +237,9 @@ type milvusSearchReq struct {
 }
 
 type milvusSearchResp struct {
-	Code int `json:"code"`
-	Data []struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	Data    []struct {
 		ID       string         `json:"id"`
 		Distance float64        `json:"distance"`
 		Fields   map[string]any `json:"fields"`
@@ -238,14 +281,22 @@ func (m *MilvusVectorStore) SemanticSearch(ctx context.Context, userID, accountI
 	}
 	defer resp.Body.Close()
 
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("milvus search returned HTTP %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("milvus search returned HTTP %d: %s", resp.StatusCode, truncateStr(string(body), 300))
 	}
 
 	var searchResp milvusSearchResp
-	if err := json.NewDecoder(resp.Body).Decode(&searchResp); err != nil {
+	if err := json.Unmarshal(body, &searchResp); err != nil {
 		return nil, err
+	}
+	// Guard against HTTP 200 with a logical failure code.
+	if !milvusOKCode(searchResp.Code) {
+		msg := searchResp.Message
+		if msg == "" {
+			msg = "no message"
+		}
+		return nil, fmt.Errorf("milvus search failed (code %d): %s", searchResp.Code, msg)
 	}
 
 	var hits []domain.SemanticHit

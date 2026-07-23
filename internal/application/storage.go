@@ -65,6 +65,23 @@ type Storage interface {
 	ResolveThread(ctx context.Context, userID, accountID string, refs []string, subjectKey string, date int64) (string, error)
 	GetThreadMessages(ctx context.Context, userID, threadID string) ([]domain.Message, error)
 
+	CreateRule(ctx context.Context, r *domain.MailRule) error
+	UpdateRule(ctx context.Context, r *domain.MailRule) error
+	DeleteRule(ctx context.Context, userID, id string) error
+	GetRule(ctx context.Context, userID, id string) (*domain.MailRule, error)
+	ListRules(ctx context.Context, userID string) ([]domain.MailRule, error)
+
+	CreateActionCard(ctx context.Context, c *domain.ActionCard) error
+	UpdateActionCard(ctx context.Context, c *domain.ActionCard) error
+	GetActionCard(ctx context.Context, userID, id string) (*domain.ActionCard, error)
+	ListActionCards(ctx context.Context, userID, status string, limit int) ([]domain.ActionCard, error)
+
+	UpsertMessageCollab(ctx context.Context, mc *domain.MessageCollab) error
+	GetMessageCollab(ctx context.Context, userID, messageID string) (*domain.MessageCollab, error)
+	ListMessageCollab(ctx context.Context, userID, status, assignee string, limit int) ([]domain.MessageCollab, error)
+	AddMessageNote(ctx context.Context, n *domain.MessageNote) error
+	ListMessageNotes(ctx context.Context, userID, messageID string) ([]domain.MessageNote, error)
+
 	SaveAnalysis(ctx context.Context, a *domain.Analysis) error
 	FindCachedAnalysis(ctx context.Context, userID, analysisType, inputHash, model string) (*domain.Analysis, error)
 
@@ -90,7 +107,6 @@ type Storage interface {
 	RecoverStaleJobs(ctx context.Context) (int64, error)
 	GetJob(ctx context.Context, userID, id string) (*domain.Job, error)
 	ListJobs(ctx context.Context, userID string, limit int) ([]domain.Job, error)
-
 
 	AppendAudit(ctx context.Context, ev domain.AuditEvent) error
 	SearchAudit(ctx context.Context, userID string, limit int) ([]domain.AuditEvent, error)

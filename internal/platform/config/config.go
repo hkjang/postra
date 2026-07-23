@@ -62,11 +62,29 @@ type Config struct {
 	// WorkerEnabled controls whether this node runs background tasks (sync, retry outbox, embed build).
 	WorkerEnabled bool `json:"worker_enabled"`
 
+	// TelemetryEnabled installs an OpenTelemetry OTLP/HTTP tracer in `serve`.
+	// The collector endpoint and headers come from the standard
+	// OTEL_EXPORTER_OTLP_* environment variables.
+	TelemetryEnabled bool `json:"telemetry_enabled"`
+
 	AI          AIConfig         `json:"ai"`
 	Auth        AuthConfig       `json:"auth"`
 	Sync        SyncConfig       `json:"sync"`
 	Send        SendConfig       `json:"send"`
 	Attachments AttachmentConfig `json:"attachments"`
+	Compose     ComposeConfig    `json:"compose"`
+}
+
+// ComposeConfig carries the organization's writing guidance applied when the
+// AI drafts or rewrites mail, plus banned phrases flagged before send
+// (§AI 조직 작성 가이드).
+type ComposeConfig struct {
+	// WritingGuide is injected as an extra instruction into draft generation
+	// and rewriting (company tone, honorifics, external-send rules, ...).
+	WritingGuide string `json:"writing_guide"`
+	// BannedPhrases are surfaced as send-preview warnings when present in the
+	// subject or body.
+	BannedPhrases []string `json:"banned_phrases"`
 }
 
 type AuthConfig struct {
@@ -109,23 +127,71 @@ type SendConfig struct {
 	MaxRetries       int `json:"max_retries"`
 	RetryBaseSeconds int `json:"retry_base_seconds"`
 	RetryMaxSeconds  int `json:"retry_max_seconds"`
+	// DLPPolicy governs outbound data-loss prevention when a message targets an
+	// external domain: "off" disables it, "warn" (default) surfaces findings in
+	// the send preview, "block" refuses the send until the content is cleaned
+	// (§보안 DLP와 외부 발송 통제).
+	DLPPolicy string `json:"dlp_policy"`
+	// DLPKeywords are additional case-insensitive terms (e.g. "대외비",
+	// "confidential") treated as sensitive in addition to the built-in
+	// PII/secret shape detectors.
+	DLPKeywords []string `json:"dlp_keywords"`
 }
 
 type AIConfig struct {
 	// BaseURL of an OpenAI-compatible API, e.g. "http://localhost:8000/v1"
 	// (vLLM, Ollama, or a hosted provider).
-	BaseURL      string            `json:"base_url"`
-	Model        string            `json:"model"`
-	EmbedModel   string            `json:"embed_model"`
-	EmbedBaseURL string            `json:"embed_base_url"`
-	APIKeyRef    string            `json:"api_key_ref"`
-	TimeoutSec   int               `json:"timeout_sec"`
-	MaxTokens    int               `json:"max_tokens"`
-	AllowExternal bool              `json:"allow_external"`
-	MaskExternalPII bool            `json:"mask_external_pii"`
-	PromptVersions map[string]string `json:"prompt_versions,omitempty"`
-	Stream       bool              `json:"stream"`
-	ExtraHeaders string            `json:"extra_headers"`
+	BaseURL         string            `json:"base_url"`
+	Model           string            `json:"model"`
+	EmbedModel      string            `json:"embed_model"`
+	EmbedBaseURL    string            `json:"embed_base_url"`
+	APIKeyRef       string            `json:"api_key_ref"`
+	TimeoutSec      int               `json:"timeout_sec"`
+	MaxTokens       int               `json:"max_tokens"`
+	AllowExternal   bool              `json:"allow_external"`
+	MaskExternalPII bool              `json:"mask_external_pii"`
+	PromptVersions  map[string]string `json:"prompt_versions,omitempty"`
+	Stream          bool              `json:"stream"`
+	ExtraHeaders    string            `json:"extra_headers"`
+	// TaskModels routes specific AI tasks to dedicated models/endpoints. Keys
+	// are task names (summarize, classify, phishing, action_items, entities,
+	// thread_summary, question_answer, draft_reply, rewrite). A task with no
+	// entry uses the default model/endpoint above, and any failed task call
+	// automatically falls back to the default (§AI 작업별 모델 라우팅).
+	TaskModels map[string]AITaskRoute `json:"task_models,omitempty"`
+}
+
+// AITaskRoute overrides the AI endpoint for one task. Empty fields inherit the
+// default AIConfig values.
+type AITaskRoute struct {
+	Model     string `json:"model,omitempty"`
+	BaseURL   string `json:"base_url,omitempty"`
+	APIKeyRef string `json:"api_key_ref,omitempty"`
+	MaxTokens int    `json:"max_tokens,omitempty"`
+}
+
+// RouteForTask resolves the effective endpoint for a task, layering any
+// per-task override on top of the defaults. task == "" returns the defaults.
+func (c AIConfig) RouteForTask(task string) AITaskRoute {
+	r := AITaskRoute{Model: c.Model, BaseURL: c.BaseURL, APIKeyRef: c.APIKeyRef, MaxTokens: c.MaxTokens}
+	if task == "" {
+		return r
+	}
+	if o, ok := c.TaskModels[task]; ok {
+		if o.Model != "" {
+			r.Model = o.Model
+		}
+		if o.BaseURL != "" {
+			r.BaseURL = o.BaseURL
+		}
+		if o.APIKeyRef != "" {
+			r.APIKeyRef = o.APIKeyRef
+		}
+		if o.MaxTokens != 0 {
+			r.MaxTokens = o.MaxTokens
+		}
+	}
+	return r
 }
 
 type SyncConfig struct {
@@ -182,6 +248,7 @@ func Default() Config {
 			MaxRetries:       4,
 			RetryBaseSeconds: 30,
 			RetryMaxSeconds:  1800,
+			DLPPolicy:        "warn",
 		},
 		Attachments: AttachmentConfig{
 			BlockExtensions: []string{
@@ -217,7 +284,6 @@ func Load(path string) (Config, error) {
 	return cfg, nil
 }
 
-
 func applyEnv(cfg *Config) {
 	set := func(key string, dst *string) {
 		if v := os.Getenv(key); v != "" {
@@ -239,6 +305,7 @@ func applyEnv(cfg *Config) {
 	set("POSTRA_MCP_HTTP_ADDR", &cfg.MCPHTTPAddr)
 	set("POSTRA_API_TOKEN", &cfg.APIToken)
 	setBool("POSTRA_WORKER_ENABLED", &cfg.WorkerEnabled)
+	setBool("POSTRA_TELEMETRY_ENABLED", &cfg.TelemetryEnabled)
 	setBool("POSTRA_ALLOW_INSECURE_MAIL", &cfg.AllowInsecureMail)
 	setBool("POSTRA_ALLOW_PRIVATE_HOSTS", &cfg.AllowPrivateHosts)
 	set("POSTRA_AI_BASE_URL", &cfg.AI.BaseURL)

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -20,7 +21,6 @@ import (
 	"strings"
 	"syscall"
 	"time"
-
 
 	"golang.org/x/term"
 
@@ -37,6 +37,7 @@ import (
 	"postra/internal/platform/build"
 	"postra/internal/platform/config"
 	"postra/internal/platform/crypto"
+	"postra/internal/platform/telemetry"
 	"postra/internal/transport/httpapi"
 	"postra/internal/transport/mcpserver"
 	"postra/internal/transport/webui"
@@ -72,7 +73,14 @@ Usage:
   postra account test  --id <account_id>
 
   postra sync          --account <account_id> [--max N] [--wait]
-  postra search        --q <text> [--limit N]
+  postra search        --q <text> [--limit N] [--account ID] [--folder inbox|important|archive|snoozed] [--label L] [--hybrid] [--group-thread]
+  postra thread        --id <thread_id>                 timeline (ordered, with bodies)
+  postra batch         --action <a> --ids id1,id2 [--snooze-until N] [--label L]
+  postra auth          --id <message_id>                SPF/DKIM/DMARC + sender risk
+  postra inbox         [--account ID] [--limit N]       task-oriented triage view
+  postra rules         list | apply --message <id> | delete --id <rule> | add --file <json>
+  postra cards         extract --message <id> | list [--status] | status --id --status | export --id --target
+  postra team          inbox [--status --assignee] | get --message <id> | assign --message --assignee | status --message --status | note --message --body
   postra job           --id <job_id>
 
 Global flags: --config <path> (default ~/.postra/config.json), or POSTRA_* env vars.
@@ -176,6 +184,9 @@ func openStorage(cfg config.Config, kek *crypto.KEK) (application.Storage, error
 			)
 			return nil, fmt.Errorf("postgres storage open failed: %w", err)
 		}
+		if cfg.EncryptAtRest {
+			st.EnableEncryption(kek) // body-column encryption (parity with sqlite)
+		}
 		slog.Info("successfully connected and migrated postgres storage", "postgres_dsn_configured", true)
 		return st, nil
 
@@ -185,8 +196,6 @@ func openStorage(cfg config.Config, kek *crypto.KEK) (application.Storage, error
 		return nil, err
 	}
 }
-
-
 
 func run(cmd string, args []string) error {
 	fs := flag.NewFlagSet(cmd, flag.ExitOnError)
@@ -277,19 +286,128 @@ func run(cmd string, args []string) error {
 	case "search":
 		q := fs.String("q", "", "search text")
 		limit := fs.Int("limit", 20, "max results")
+		account := fs.String("account", "", "restrict to an account ID")
+		folder := fs.String("folder", "", "folder view: inbox|important|archive|snoozed")
+		label := fs.String("label", "", "restrict to a label")
+		hybrid := fs.Bool("hybrid", false, "use hybrid (FTS + semantic RRF) search")
+		groupThread := fs.Bool("group-thread", false, "aggregate hybrid results to one per thread")
+		rerank := fs.Bool("rerank", false, "apply LLM cross-encoder reranking (hybrid only)")
 		fs.Parse(args)
 		app, _, err := loadApp(*configPath)
 		if err != nil {
 			return err
 		}
 		defer app.Shutdown()
-		res, err := app.Search(application.WithActor(context.Background(), "cli"),
-			domain.SearchQuery{Text: *q, Limit: *limit})
+		ctx := application.WithActor(context.Background(), "cli")
+		if *hybrid {
+			views, err := app.HybridSearch(ctx, application.HybridSearchOptions{
+				Query: *q, AccountID: *account, Limit: *limit, GroupByThread: *groupThread, Rerank: *rerank,
+			})
+			if err != nil {
+				return err
+			}
+			printJSON(map[string]any{"results": views, "count": len(views)})
+			return nil
+		}
+		res, err := app.Search(ctx,
+			domain.SearchQuery{Text: *q, Limit: *limit, AccountID: *account, Folder: *folder, Label: *label})
 		if err != nil {
 			return err
 		}
 		printJSON(res)
 		return nil
+
+	case "thread":
+		id := fs.String("id", "", "thread ID")
+		fs.Parse(args)
+		if *id == "" {
+			return errors.New("--id is required")
+		}
+		app, _, err := loadApp(*configPath)
+		if err != nil {
+			return err
+		}
+		defer app.Shutdown()
+		tl, err := app.GetThreadTimeline(application.WithActor(context.Background(), "cli"), *id)
+		if err != nil {
+			return err
+		}
+		printJSON(map[string]any{"timeline": tl, "count": len(tl)})
+		return nil
+
+	case "auth":
+		id := fs.String("id", "", "message ID")
+		fs.Parse(args)
+		if *id == "" {
+			return errors.New("--id is required")
+		}
+		app, _, err := loadApp(*configPath)
+		if err != nil {
+			return err
+		}
+		defer app.Shutdown()
+		res, err := app.InspectAuthentication(application.WithActor(context.Background(), "cli"), *id)
+		if err != nil {
+			return err
+		}
+		printJSON(res)
+		return nil
+
+	case "batch":
+		action := fs.String("action", "", "archive|unarchive|mark_important|unmark_important|snooze|unsnooze|add_label|remove_label|delete")
+		ids := fs.String("ids", "", "comma-separated message IDs")
+		snoozeUntil := fs.Int64("snooze-until", 0, "unix seconds (for snooze)")
+		label := fs.String("label", "", "label (for add_label/remove_label)")
+		fs.Parse(args)
+		if *action == "" || *ids == "" {
+			return errors.New("--action and --ids are required")
+		}
+		var msgIDs []string
+		for _, s := range strings.Split(*ids, ",") {
+			if s = strings.TrimSpace(s); s != "" {
+				msgIDs = append(msgIDs, s)
+			}
+		}
+		app, _, err := loadApp(*configPath)
+		if err != nil {
+			return err
+		}
+		defer app.Shutdown()
+		res, err := app.BatchUpdateMessages(application.WithActor(context.Background(), "cli"),
+			application.BatchUpdateOptions{
+				MessageIDs: msgIDs, Action: application.BatchAction(*action),
+				SnoozedUntil: *snoozeUntil, Label: *label,
+			})
+		if err != nil {
+			return err
+		}
+		printJSON(res)
+		return nil
+
+	case "inbox":
+		account := fs.String("account", "", "account ID scope")
+		limit := fs.Int("limit", 100, "inbox window size")
+		fs.Parse(args)
+		app, _, err := loadApp(*configPath)
+		if err != nil {
+			return err
+		}
+		defer app.Shutdown()
+		inbox, err := app.WorkInbox(application.WithActor(context.Background(), "cli"), *account, *limit)
+		if err != nil {
+			return err
+		}
+		printJSON(inbox)
+		return nil
+
+	case "rules":
+		return rulesCmd(args)
+
+	case "cards":
+		return cardsCmd(args)
+
+	case "team":
+		return teamCmd(args)
 
 	case "job":
 		id := fs.String("id", "", "job ID")
@@ -323,11 +441,31 @@ func serve(configPath string) error {
 
 	warnIfNonLoopback(cfg)
 
-	// Background scheduler: recover interrupted jobs, then periodic sync.
+	// OpenTelemetry tracing (OTLP/HTTP). No-op unless enabled + endpoint set.
+	if cfg.TelemetryEnabled {
+		shutdown, terr := telemetry.Init(context.Background(), "postra", build.Version)
+		if terr != nil {
+			slog.Warn("telemetry init failed; continuing without tracing", "err", terr)
+		} else {
+			slog.Info("OpenTelemetry tracing enabled (OTLP/HTTP)")
+			defer func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_ = shutdown(ctx)
+			}()
+		}
+	}
+
+	// Only the serve worker process contends for leadership; the elected leader
+	// recovers interrupted jobs and runs the schedulers.
+	app.StartLeaderElection()
+
+	// Background scheduler: periodic sync, outbox retries, and real-time IMAP IDLE.
 	schedCtx, schedCancel := context.WithCancel(context.Background())
 	defer schedCancel()
 	go app.RunScheduler(schedCtx)
 	go app.RunRetryWorker(schedCtx)
+	go app.RunIdleWorker(schedCtx)
 
 	// REST, Web UI, and Streamable HTTP MCP share the primary listener. A
 	// separate MCPHTTPAddr remains optional for existing deployments.
@@ -340,7 +478,7 @@ func serve(configPath string) error {
 	}
 	restSrv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           root,
+		Handler:           telemetry.HTTPMiddleware(root),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	errCh := make(chan error, 2)
@@ -420,8 +558,9 @@ func keyCmd(args []string) error {
 
 	switch sub {
 	case "rotate":
-		if cfg.StorageDriver == "postgres" {
-			return errors.New("key rotate currently supports the sqlite backend (body-column encryption)")
+		driver := cfg.StorageDriver
+		if strings.TrimSpace(cfg.PostgresDSN) != "" && (driver == "" || driver == "sqlite") && os.Getenv("POSTRA_STORAGE_DRIVER") != "sqlite" {
+			driver = "postgres"
 		}
 		prev := kek.CurrentVersion()
 		nv, err := kek.Rotate()
@@ -448,15 +587,27 @@ func keyCmd(args []string) error {
 			}
 			fmt.Printf("rewrapped objects: %d\n", no)
 
-			store, err := persistence.Open(filepath.Join(cfg.DataDir, "postra.db"))
-			if err != nil {
-				return err
-			}
-			defer store.Close()
-			store.EnableEncryption(kek)
-			nb, err := store.RewrapBodies(context.Background())
-			if err != nil {
-				return fmt.Errorf("rewrap bodies: %w", err)
+			var nb int
+			if driver == "postgres" {
+				store, err := pgstore.Open(context.Background(), cfg.PostgresDSN)
+				if err != nil {
+					return err
+				}
+				defer store.Close()
+				store.EnableEncryption(kek)
+				if nb, err = store.RewrapBodies(context.Background()); err != nil {
+					return fmt.Errorf("rewrap bodies: %w", err)
+				}
+			} else {
+				store, err := persistence.Open(filepath.Join(cfg.DataDir, "postra.db"))
+				if err != nil {
+					return err
+				}
+				defer store.Close()
+				store.EnableEncryption(kek)
+				if nb, err = store.RewrapBodies(context.Background()); err != nil {
+					return fmt.Errorf("rewrap bodies: %w", err)
+				}
 			}
 			fmt.Printf("rewrapped bodies: %d\n", nb)
 		}
@@ -634,6 +785,220 @@ func accountCmd(args []string) error {
 		return nil
 	}
 	return fmt.Errorf("unknown account subcommand %q", sub)
+}
+
+// rulesCmd manages mail automation rules from the CLI. Rule creation takes a
+// JSON definition (file or stdin) since conditions/actions are structured.
+func rulesCmd(args []string) error {
+	if len(args) < 1 {
+		return errors.New("usage: postra rules list|apply|delete|add ...")
+	}
+	sub, rest := args[0], args[1:]
+	fs := flag.NewFlagSet("rules "+sub, flag.ExitOnError)
+	configPath := fs.String("config", "", "config file path")
+	message := fs.String("message", "", "message ID (for apply)")
+	id := fs.String("id", "", "rule ID (for delete)")
+	file := fs.String("file", "", "rule JSON file (for add; '-' reads stdin)")
+	fs.Parse(rest)
+
+	app, _, err := loadApp(*configPath)
+	if err != nil {
+		return err
+	}
+	defer app.Shutdown()
+	ctx := application.WithActor(context.Background(), "cli")
+
+	switch sub {
+	case "list":
+		rules, err := app.ListRules(ctx)
+		if err != nil {
+			return err
+		}
+		printJSON(map[string]any{"rules": rules})
+		return nil
+	case "apply":
+		if *message == "" {
+			return errors.New("--message is required")
+		}
+		res, err := app.ApplyRulesToMessage(ctx, *message)
+		if err != nil {
+			return err
+		}
+		printJSON(res)
+		return nil
+	case "delete":
+		if *id == "" {
+			return errors.New("--id is required")
+		}
+		if err := app.DeleteRule(ctx, *id); err != nil {
+			return err
+		}
+		fmt.Println("deleted:", *id)
+		return nil
+	case "add":
+		if *file == "" {
+			return errors.New("--file is required (a rule JSON, or '-' for stdin)")
+		}
+		var data []byte
+		if *file == "-" {
+			data, err = io.ReadAll(os.Stdin)
+		} else {
+			data, err = os.ReadFile(*file) // #nosec G304 -- operator-supplied path
+		}
+		if err != nil {
+			return err
+		}
+		var rule domain.MailRule
+		if err := json.Unmarshal(data, &rule); err != nil {
+			return fmt.Errorf("parse rule JSON: %w", err)
+		}
+		created, err := app.CreateRule(ctx, rule)
+		if err != nil {
+			return err
+		}
+		printJSON(created)
+		return nil
+	}
+	return fmt.Errorf("unknown rules subcommand %q", sub)
+}
+
+// cardsCmd manages action cards from the CLI.
+func cardsCmd(args []string) error {
+	if len(args) < 1 {
+		return errors.New("usage: postra cards extract|list|status|export ...")
+	}
+	sub, rest := args[0], args[1:]
+	fs := flag.NewFlagSet("cards "+sub, flag.ExitOnError)
+	configPath := fs.String("config", "", "config file path")
+	message := fs.String("message", "", "message ID (for extract)")
+	id := fs.String("id", "", "card ID (for status/export)")
+	status := fs.String("status", "", "status filter (list) or new status")
+	target := fs.String("target", "", "export target (calendar|jira|itsm)")
+	externalRef := fs.String("external-ref", "", "external record id (for export)")
+	limit := fs.Int("limit", 100, "max cards (list)")
+	fs.Parse(rest)
+
+	app, _, err := loadApp(*configPath)
+	if err != nil {
+		return err
+	}
+	defer app.Shutdown()
+	ctx := application.WithActor(context.Background(), "cli")
+
+	switch sub {
+	case "extract":
+		if *message == "" {
+			return errors.New("--message is required")
+		}
+		cards, err := app.ExtractActionCards(ctx, *message)
+		if err != nil {
+			return err
+		}
+		printJSON(map[string]any{"cards": cards, "count": len(cards)})
+		return nil
+	case "list":
+		cards, err := app.ListActionCards(ctx, *status, *limit)
+		if err != nil {
+			return err
+		}
+		printJSON(map[string]any{"cards": cards})
+		return nil
+	case "status":
+		if *id == "" || *status == "" {
+			return errors.New("--id and --status are required")
+		}
+		card, err := app.SetActionCardStatus(ctx, *id, *status)
+		if err != nil {
+			return err
+		}
+		printJSON(card)
+		return nil
+	case "export":
+		if *id == "" || *target == "" {
+			return errors.New("--id and --target are required")
+		}
+		exp, err := app.ExportActionCard(ctx, *id, *target, *externalRef)
+		if err != nil {
+			return err
+		}
+		printJSON(exp)
+		return nil
+	}
+	return fmt.Errorf("unknown cards subcommand %q", sub)
+}
+
+// teamCmd manages shared-mailbox collaboration from the CLI.
+func teamCmd(args []string) error {
+	if len(args) < 1 {
+		return errors.New("usage: postra team inbox|get|assign|status|note ...")
+	}
+	sub, rest := args[0], args[1:]
+	fs := flag.NewFlagSet("team "+sub, flag.ExitOnError)
+	configPath := fs.String("config", "", "config file path")
+	message := fs.String("message", "", "message ID")
+	assignee := fs.String("assignee", "", "assignee (assign) or filter (inbox)")
+	status := fs.String("status", "", "status (status set / inbox filter)")
+	body := fs.String("body", "", "note body")
+	limit := fs.Int("limit", 100, "max items (inbox)")
+	fs.Parse(rest)
+
+	app, _, err := loadApp(*configPath)
+	if err != nil {
+		return err
+	}
+	defer app.Shutdown()
+	ctx := application.WithActor(context.Background(), "cli")
+
+	switch sub {
+	case "inbox":
+		items, err := app.TeamInbox(ctx, *status, *assignee, *limit)
+		if err != nil {
+			return err
+		}
+		printJSON(map[string]any{"items": items, "count": len(items)})
+		return nil
+	case "get":
+		if *message == "" {
+			return errors.New("--message is required")
+		}
+		v, err := app.GetMessageCollab(ctx, *message)
+		if err != nil {
+			return err
+		}
+		printJSON(v)
+		return nil
+	case "assign":
+		if *message == "" {
+			return errors.New("--message is required")
+		}
+		mc, err := app.AssignMessage(ctx, *message, *assignee)
+		if err != nil {
+			return err
+		}
+		printJSON(mc)
+		return nil
+	case "status":
+		if *message == "" || *status == "" {
+			return errors.New("--message and --status are required")
+		}
+		mc, err := app.SetMessageWorkStatus(ctx, *message, *status)
+		if err != nil {
+			return err
+		}
+		printJSON(mc)
+		return nil
+	case "note":
+		if *message == "" || *body == "" {
+			return errors.New("--message and --body are required")
+		}
+		n, err := app.AddMessageNote(ctx, *message, *body)
+		if err != nil {
+			return err
+		}
+		printJSON(n)
+		return nil
+	}
+	return fmt.Errorf("unknown team subcommand %q", sub)
 }
 
 func printJSON(v any) {

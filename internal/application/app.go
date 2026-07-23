@@ -50,6 +50,7 @@ type App struct {
 	nodeID       string
 	leaderMu     sync.RWMutex
 	isLeader     bool
+	mcpPolicy    mcpPolicyState
 }
 
 func New(cfg config.Config, store Storage, objects objectstore.Store,
@@ -88,6 +89,7 @@ func New(cfg config.Config, store Storage, objects objectstore.Store,
 		return nil, err
 	}
 	a.initVectorStore(context.Background())
+	a.loadMCPPolicy(context.Background())
 
 	// Start listening for settings changes if supported by the store (multi-node sync)
 	if notifier, ok := store.(interface {
@@ -99,11 +101,15 @@ func New(cfg config.Config, store Storage, objects objectstore.Store,
 				a.applyAISettings(stored)
 			}
 			a.initVectorStore(context.Background())
+			a.loadMCPPolicy(context.Background())
 		})
 	}
 
 	a.nodeID = "node_" + randomToken(10)
-	a.startLeaderElectionLoop()
+	// Leader election is NOT started here. Only the `serve` worker process
+	// should contend for the lease (via StartLeaderElection); short-lived CLI
+	// commands and the long-lived `postra mcp` stdio process must never grab
+	// leadership, or they would starve the real worker (P0 리더 선출 시작 위치).
 
 	return a, nil
 }
@@ -320,17 +326,38 @@ func (a *App) initVectorStore(ctx context.Context) {
 		a.vectorStore = &StorageVectorStore{store: a.Store}
 	case "milvus":
 		url := settings[SettingVectorMilvusURL]
-		token := settings[SettingVectorMilvusToken]
 		collection := settings[SettingVectorMilvusCollection]
 		if url == "" {
 			slog.Error("app: milvus provider configured but vector.milvus_url is empty. Falling back to disabled vector store.")
 			a.vectorStore = &DisabledVectorStore{}
 			return
 		}
+		token := a.resolveMilvusToken(ctx, settings)
 		a.vectorStore = NewMilvusVectorStore(url, token, collection, a.Store)
 	default:
 		a.vectorStore = &DisabledVectorStore{}
 	}
+}
+
+// resolveMilvusToken fetches the Milvus token from the encrypted SecretStore
+// via its reference, falling back to a legacy plaintext setting for
+// deployments that predate the secret-ref migration.
+func (a *App) resolveMilvusToken(ctx context.Context, settings map[string]string) string {
+	if ref := settings[SettingVectorMilvusTokenRef]; ref != "" {
+		h, err := a.Secrets.Acquire(ctx, domain.SecretRef(ref), domain.PurposeVectorToken)
+		if err != nil {
+			slog.Error("app: failed to acquire milvus token secret", "error", err)
+			return ""
+		}
+		token := string(h.Reveal())
+		h.Zero()
+		return token
+	}
+	if legacy := settings[SettingVectorMilvusToken]; legacy != "" {
+		slog.Warn("app: using legacy plaintext vector.milvus_token; re-save Milvus settings to migrate it into the encrypted secret store")
+		return legacy
+	}
+	return ""
 }
 
 func (a *App) VectorStore() VectorStore {
@@ -347,7 +374,7 @@ func (a *App) IsLeader() bool {
 
 func (a *App) setLeaderState(state bool) {
 	a.leaderMu.Lock()
-	defer a.leaderMu.Unlock()
+	rising := state && !a.isLeader
 	if a.isLeader != state {
 		a.isLeader = state
 		if state {
@@ -356,18 +383,42 @@ func (a *App) setLeaderState(state bool) {
 			slog.Info("app: this node is now STANDBY. Pausing background tasks.", "node_id", a.nodeID)
 		}
 	}
+	a.leaderMu.Unlock()
+	// On the standby→leader rising edge, recover jobs a crashed/demoted leader
+	// left mid-flight. Doing it here (not only at scheduler start) covers a node
+	// that started as standby and was later promoted, and it runs even when
+	// auto-sync is disabled (P1 장애 복구 시점).
+	if rising {
+		a.onBecameLeader()
+	}
+}
+
+// onBecameLeader runs one-shot recovery when this node acquires leadership.
+func (a *App) onBecameLeader() {
+	a.workerGroup.Add(1)
+	go func() {
+		defer a.workerGroup.Done()
+		ctx := WithActor(a.background, "scheduler")
+		a.RecoverStaleJobs(ctx)
+	}()
+}
+
+// StartLeaderElection begins the background leader-election loop. Call this
+// exactly once, and only from the `serve` worker process.
+func (a *App) StartLeaderElection() {
+	a.startLeaderElectionLoop()
 }
 
 func (a *App) startLeaderElectionLoop() {
 	a.workerGroup.Add(1)
 	go func() {
 		defer a.workerGroup.Done()
-		
+
 		a.electLeader(context.Background())
-		
+
 		ticker := time.NewTicker(8 * time.Second)
 		defer ticker.Stop()
-		
+
 		for {
 			select {
 			case <-a.background.Done():
@@ -407,14 +458,14 @@ func (a *App) releaseLease(ctx context.Context) {
 	}
 
 	const leaseKey = "internal.leader_lease"
-	
+
 	type Lease struct {
 		NodeID    string `json:"node_id"`
 		ExpiresAt int64  `json:"expires_at"`
 	}
 	newLease := Lease{NodeID: a.nodeID, ExpiresAt: time.Now().Unix() - 1}
 	newVal, _ := json.Marshal(newLease)
-	
+
 	slog.Info("app: releasing leader lease on shutdown", "node_id", a.nodeID)
 	_ = a.Store.UpsertSettings(ctx, map[string]string{
 		leaseKey: string(newVal),

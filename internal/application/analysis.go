@@ -67,6 +67,12 @@ JSON schema: {"category": "work"|"advertisement"|"notification"|"personal"|"secu
 JSON schema: {"items": [{"task": string, "assignee": string|null, "due": string|null, "evidence": string, "confidence": number}]}
 Low-confidence dates/assignees must have confidence < 0.5 so the user reviews them.`,
 	},
+	"action_cards": {
+		system: "You are an assistant that turns emails into actionable cards. Respond with JSON only and never invent facts absent from the email.",
+		task: `Extract actionable cards from the email in the untrusted block. Each card is one concrete action a person could take.
+JSON schema: {"cards": [{"type": "meeting"|"todo"|"approval"|"inquiry"|"other", "title": string, "detail": string, "due": string|null, "assignee": string|null, "confidence": number}]}
+Copy any due date verbatim from the email or use null. Return an empty cards array when there is nothing actionable.`,
+	},
 	"entities": {
 		system: "You are an email entity extraction assistant. Respond with JSON only.",
 		task: `Extract entities from the email in the untrusted block.
@@ -76,6 +82,11 @@ JSON schema: {"people": [string], "companies": [string], "projects": [string], "
 		system: "You are an email security analyst. Respond with JSON only.",
 		task: `Assess phishing risk of the email in the untrusted block (headers included).
 JSON schema: {"risk_score": number (0-100), "indicators": [string], "recommendation": string}`,
+	},
+	"document_summary": {
+		system: "You are a document analysis assistant. Respond with JSON only and never invent facts absent from the document.",
+		task: `Summarize the document text in the untrusted block.
+JSON schema: {"summary": string, "key_points": [string], "tables_or_figures": [string], "risks": [string], "confidence": number (0-1)}`,
 	},
 	"thread_summary": {
 		system: "You are an email thread analysis assistant. Respond with JSON only.",
@@ -184,9 +195,12 @@ func (a *App) runAnalysis(ctx context.Context, analysisType, targetType, targetI
 		return nil, err
 	}
 	aiCfg := a.currentAIConfig()
-	sum := sha256.Sum256([]byte(analysisType + "|" + pv + "|" + aiCfg.Model + "|" + userTask + "|" + untrusted))
+	// Resolve the effective model for this task so the cache key and stored
+	// record reflect the actually-used model (§AI 작업별 모델 라우팅).
+	routedModel := aiCfg.RouteForTask(analysisType).Model
+	sum := sha256.Sum256([]byte(analysisType + "|" + pv + "|" + routedModel + "|" + userTask + "|" + untrusted))
 	inputHash := hex.EncodeToString(sum[:])
-	if cached, err := a.Store.FindCachedAnalysis(ctx, userID, analysisType, inputHash, aiCfg.Model); err == nil {
+	if cached, err := a.Store.FindCachedAnalysis(ctx, userID, analysisType, inputHash, routedModel); err == nil {
 		return cached, nil // AI-008 cache
 	}
 
@@ -209,6 +223,7 @@ func (a *App) runAnalysis(ctx context.Context, analysisType, targetType, targetI
 		User:      task,
 		Untrusted: content,
 		JSONMode:  true,
+		Task:      analysisType,
 	})
 	if err != nil {
 		a.audit(ctx, "ai_analysis", targetType+":"+targetID, "error", analysisType+": "+err.Error())

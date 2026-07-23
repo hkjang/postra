@@ -2,10 +2,13 @@
 // (pgx, pure Go) for server / multi-user deployments. Full-text search uses
 // tsvector + GIN; semantic search uses the pgvector extension.
 //
-// This adapter mirrors the SQLite adapter's semantics. Body-column
-// encryption (the SQLite personal-mode feature) is not applied here; server
-// deployments are expected to use database/volume encryption. Integration
-// tests run only when POSTRA_TEST_PG is set to a DSN.
+// This adapter mirrors the SQLite adapter's semantics, including at-rest
+// body-column encryption when a KEK is configured (EnableEncryption): the
+// parsed body columns (text + sanitized HTML) are sealed with the same
+// envelope format the SQLite adapter uses. Search/sort metadata (subject,
+// addresses, dates) stays plaintext by design; the FTS tsvector still holds
+// body plaintext (search over ciphertext is out of scope). Integration tests
+// run only when POSTRA_TEST_PG is set to a DSN.
 package pgstore
 
 import (
@@ -26,11 +29,115 @@ import (
 
 	"postra/internal/application"
 	"postra/internal/domain"
+	"postra/internal/platform/crypto"
 )
 
 type Store struct {
 	pool        *pgxpool.Pool
 	hasPgVector bool
+	// kek, when set, encrypts message body columns at rest (same envelope
+	// format as the SQLite adapter). Nil = plaintext bodies.
+	kek *crypto.KEK
+}
+
+// EnableEncryption turns on at-rest encryption of the message body columns.
+// Metadata columns used for search/sort stay queryable in plaintext, and the
+// FTS tsvector holds body plaintext (see package doc).
+func (s *Store) EnableEncryption(kek *crypto.KEK) { s.kek = kek }
+
+const bodyEncPrefix = "enc:v1:"
+
+// sealBody encrypts a body field when a KEK is configured, tagging the output
+// so openBody can detect and reverse it. AAD binds the ciphertext to its
+// message and field.
+func (s *Store) sealBody(messageID, field, plain string) (string, error) {
+	if s.kek == nil || plain == "" {
+		return plain, nil
+	}
+	env, err := s.kek.Encrypt([]byte(plain), []byte("body:"+messageID+":"+field))
+	if err != nil {
+		return "", err
+	}
+	b, err := json.Marshal(env)
+	if err != nil {
+		return "", err
+	}
+	return bodyEncPrefix + string(b), nil
+}
+
+func (s *Store) openBody(messageID, field, stored string) (string, error) {
+	rest, ok := strings.CutPrefix(stored, bodyEncPrefix)
+	if !ok {
+		return stored, nil // plaintext (encryption off, or pre-encryption row)
+	}
+	if s.kek == nil {
+		return "", errors.New("body is encrypted but no key is configured")
+	}
+	var env crypto.Envelope
+	if err := json.Unmarshal([]byte(rest), &env); err != nil {
+		return "", err
+	}
+	pt, err := s.kek.Decrypt(&env, []byte("body:"+messageID+":"+field))
+	if err != nil {
+		return "", err
+	}
+	return string(pt), nil
+}
+
+// RewrapBodies re-encrypts sealed body columns under the KEK's current version
+// (§11.3 회전). No-op when encryption is disabled. Returns rows rewrapped.
+func (s *Store) RewrapBodies(ctx context.Context) (int, error) {
+	if s.kek == nil {
+		return 0, nil
+	}
+	rows, err := s.pool.Query(ctx, `SELECT message_id, text_body, html_sanitized FROM message_bodies`)
+	if err != nil {
+		return 0, err
+	}
+	type row struct{ id, text, html string }
+	var todo []row
+	for rows.Next() {
+		var r row
+		var text, html *string
+		if err := rows.Scan(&r.id, &text, &html); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		r.text, r.html = deref(text), deref(html)
+		if strings.HasPrefix(r.text, bodyEncPrefix) || strings.HasPrefix(r.html, bodyEncPrefix) {
+			todo = append(todo, r)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, r := range todo {
+		text, err := s.openBody(r.id, "text", r.text)
+		if err != nil {
+			return n, err
+		}
+		html, err := s.openBody(r.id, "html", r.html)
+		if err != nil {
+			return n, err
+		}
+		sealedText, err := s.sealBody(r.id, "text", text)
+		if err != nil {
+			return n, err
+		}
+		sealedHTML, err := s.sealBody(r.id, "html", html)
+		if err != nil {
+			return n, err
+		}
+		if _, err := s.pool.Exec(ctx,
+			`UPDATE message_bodies SET text_body=$1, html_sanitized=$2 WHERE message_id=$3`,
+			sealedText, sealedHTML, r.id); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
 }
 
 func (s *Store) HasPgVector() bool {
@@ -73,7 +180,6 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 	slog.Info("pgstore: postgres connection and migration successful")
 	return s, nil
 }
-
 
 func (s *Store) Close() error { s.pool.Close(); return nil }
 
@@ -149,7 +255,15 @@ func (s *Store) migrate(ctx context.Context) error {
 			to_json TEXT, cc_json TEXT, reply_to_json TEXT,
 			date BIGINT, size BIGINT, raw_hash TEXT NOT NULL, raw_uri TEXT NOT NULL, thread_id TEXT,
 			has_attachments BOOL NOT NULL DEFAULT false, in_reply_to TEXT, refs TEXT, auth_results TEXT, parse_error TEXT,
-			created_at BIGINT NOT NULL, search_tsv tsvector)`,
+			created_at BIGINT NOT NULL, search_tsv tsvector,
+			is_archived BOOL NOT NULL DEFAULT false, is_important BOOL NOT NULL DEFAULT false,
+			snoozed_until BIGINT NOT NULL DEFAULT 0, labels_json TEXT NOT NULL DEFAULT '',
+			legal_hold BOOL NOT NULL DEFAULT false)`,
+		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_archived BOOL NOT NULL DEFAULT false`,
+		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_important BOOL NOT NULL DEFAULT false`,
+		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS snoozed_until BIGINT NOT NULL DEFAULT 0`,
+		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS labels_json TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS legal_hold BOOL NOT NULL DEFAULT false`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_hash ON messages(account_id, raw_hash)`,
 		`CREATE INDEX IF NOT EXISTS idx_messages_account_date ON messages(account_id, date DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_messages_tsv ON messages USING GIN(search_tsv)`,
@@ -197,6 +311,28 @@ func (s *Store) migrate(ctx context.Context) error {
 			id BIGSERIAL PRIMARY KEY, at BIGINT NOT NULL, user_id TEXT, actor TEXT, action TEXT NOT NULL,
 			resource TEXT, result TEXT NOT NULL, detail TEXT)`,
 		`CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_events(at DESC)`,
+		`CREATE TABLE IF NOT EXISTS mail_rules (
+			id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL,
+			enabled BOOL NOT NULL DEFAULT true, priority INT NOT NULL DEFAULT 100,
+			match_mode TEXT NOT NULL DEFAULT 'all', conditions_json TEXT NOT NULL DEFAULT '[]',
+			actions_json TEXT NOT NULL DEFAULT '[]', stop_on_match BOOL NOT NULL DEFAULT false,
+			created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL)`,
+		`CREATE INDEX IF NOT EXISTS idx_mail_rules_user ON mail_rules(user_id, priority)`,
+		`CREATE TABLE IF NOT EXISTS action_cards (
+			id TEXT PRIMARY KEY, user_id TEXT NOT NULL, message_id TEXT NOT NULL,
+			type TEXT NOT NULL, title TEXT NOT NULL, detail TEXT, due TEXT, assignee TEXT,
+			status TEXT NOT NULL DEFAULT 'pending', export_target TEXT, external_ref TEXT,
+			confidence DOUBLE PRECISION DEFAULT 0, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL)`,
+		`CREATE INDEX IF NOT EXISTS idx_action_cards_user ON action_cards(user_id, status)`,
+		`CREATE TABLE IF NOT EXISTS message_collab (
+			message_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, assignee TEXT,
+			status TEXT NOT NULL DEFAULT 'open', sla_due BIGINT NOT NULL DEFAULT 0,
+			updated_by TEXT, updated_at BIGINT NOT NULL)`,
+		`CREATE INDEX IF NOT EXISTS idx_message_collab_user ON message_collab(user_id, status)`,
+		`CREATE TABLE IF NOT EXISTS message_notes (
+			id TEXT PRIMARY KEY, message_id TEXT NOT NULL, user_id TEXT NOT NULL,
+			author TEXT NOT NULL, body TEXT NOT NULL, created_at BIGINT NOT NULL)`,
+		`CREATE INDEX IF NOT EXISTS idx_message_notes_msg ON message_notes(message_id)`,
 		`CREATE TABLE IF NOT EXISTS embedding_meta (
 			message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE, chunk_id INT NOT NULL,
 			user_id TEXT NOT NULL, account_id TEXT NOT NULL, model TEXT NOT NULL, dim INT NOT NULL,
@@ -564,6 +700,20 @@ func (s *Store) StoredUIDLs(ctx context.Context, accountID string) (map[string]b
 const msgCols = `id,user_id,account_id,uidl,message_id_hdr,subject,from_name,from_email,to_json,cc_json,reply_to_json,
  date,size,raw_hash,raw_uri,thread_id,has_attachments,in_reply_to,refs,auth_results,parse_error,created_at`
 
+// msgSelectCols extends the immutable ingest set (msgCols, used by
+// InsertMessage's fixed placeholder list) with the mutable UX-state columns
+// used by every SELECT + scanMessage.
+const msgSelectCols = msgCols + `,is_archived,is_important,snoozed_until,labels_json,legal_hold`
+
+func labelsFromJSON(s string) []string {
+	if s == "" {
+		return nil
+	}
+	var out []string
+	_ = json.Unmarshal([]byte(s), &out)
+	return out
+}
+
 func (s *Store) InsertMessage(ctx context.Context, m *domain.Message, body *domain.MessageBody, atts []domain.Attachment) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -585,8 +735,16 @@ func (s *Store) InsertMessage(ctx context.Context, m *domain.Message, body *doma
 		return err
 	}
 	if body != nil {
+		sealedText, err := s.sealBody(m.ID, "text", body.TextBody)
+		if err != nil {
+			return err
+		}
+		sealedHTML, err := s.sealBody(m.ID, "html", body.HTMLSanitized)
+		if err != nil {
+			return err
+		}
 		if _, err := tx.Exec(ctx, `INSERT INTO message_bodies (message_id,text_body,html_sanitized,charset) VALUES ($1,$2,$3,$4)`,
-			m.ID, body.TextBody, body.HTMLSanitized, body.Charset); err != nil {
+			m.ID, sealedText, sealedHTML, body.Charset); err != nil {
 			return err
 		}
 	}
@@ -621,10 +779,11 @@ func (s *Store) IsDuplicateHash(ctx context.Context, accountID, rawHash string) 
 
 func scanMessage(row pgx.Row) (*domain.Message, error) {
 	var m domain.Message
-	var toJ, ccJ, rtJ, threadID, parseErr, authRes, inReplyTo, refs *string
+	var toJ, ccJ, rtJ, threadID, parseErr, authRes, inReplyTo, refs, labelsJSON *string
 	err := row.Scan(&m.ID, &m.UserID, &m.AccountID, &m.UIDL, &m.MessageID, &m.Subject, &m.From.Name, &m.From.Email,
 		&toJ, &ccJ, &rtJ, &m.Date, &m.Size, &m.RawHash, &m.RawURI, &threadID,
-		&m.HasAttachments, &inReplyTo, &refs, &authRes, &parseErr, &m.CreatedAt)
+		&m.HasAttachments, &inReplyTo, &refs, &authRes, &parseErr, &m.CreatedAt,
+		&m.IsArchived, &m.IsImportant, &m.SnoozedUntil, &labelsJSON, &m.LegalHold)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -634,6 +793,7 @@ func scanMessage(row pgx.Row) (*domain.Message, error) {
 	m.To, m.Cc, m.ReplyTo = addrFromJSON(deref(toJ)), addrFromJSON(deref(ccJ)), addrFromJSON(deref(rtJ))
 	m.ThreadID, m.ParseError, m.AuthResults = deref(threadID), deref(parseErr), deref(authRes)
 	m.InReplyTo, m.References = deref(inReplyTo), deref(refs)
+	m.Labels = labelsFromJSON(deref(labelsJSON))
 	return &m, nil
 }
 
@@ -645,7 +805,7 @@ func deref(s *string) string {
 }
 
 func (s *Store) GetMessage(ctx context.Context, userID, id string) (*domain.Message, error) {
-	return scanMessage(s.pool.QueryRow(ctx, `SELECT `+msgCols+` FROM messages WHERE id=$1 AND user_id=$2`, id, userID))
+	return scanMessage(s.pool.QueryRow(ctx, `SELECT `+msgSelectCols+` FROM messages WHERE id=$1 AND user_id=$2`, id, userID))
 }
 
 func (s *Store) GetBody(ctx context.Context, userID, messageID string) (*domain.MessageBody, error) {
@@ -661,6 +821,12 @@ func (s *Store) GetBody(ctx context.Context, userID, messageID string) (*domain.
 		return nil, err
 	}
 	b.HTMLSanitized, b.Charset = deref(html), deref(charset)
+	if b.TextBody, err = s.openBody(messageID, "text", b.TextBody); err != nil {
+		return nil, err
+	}
+	if b.HTMLSanitized, err = s.openBody(messageID, "html", b.HTMLSanitized); err != nil {
+		return nil, err
+	}
 	return &b, nil
 }
 
@@ -685,15 +851,27 @@ func (s *Store) ListAttachments(ctx context.Context, userID, messageID string) (
 	return out, rows.Err()
 }
 
+// UpdateMessage persists the mutable UX-state columns. A failure is surfaced
+// directly — there is no subject-only fallback that would report a false
+// success when the state write did not land.
 func (s *Store) UpdateMessage(ctx context.Context, m *domain.Message) error {
-	labelsJSON, _ := json.Marshal(m.Labels)
-	_, err := s.pool.Exec(ctx, `UPDATE messages SET is_archived=$1, is_important=$2, snoozed_until=$3, labels_json=$4 WHERE id=$5 AND user_id=$6`,
-		m.IsArchived, m.IsImportant, m.SnoozedUntil, string(labelsJSON), m.ID, m.UserID)
-	if err != nil {
-		// Fallback query if optional UX columns are not migrated yet
-		_, err = s.pool.Exec(ctx, `UPDATE messages SET subject=$1 WHERE id=$2 AND user_id=$3`, m.Subject, m.ID, m.UserID)
+	labels := m.Labels
+	if labels == nil {
+		labels = []string{}
 	}
-	return err
+	labelsJSON, err := json.Marshal(labels)
+	if err != nil {
+		return err
+	}
+	ct, err := s.pool.Exec(ctx, `UPDATE messages SET is_archived=$1, is_important=$2, snoozed_until=$3, labels_json=$4, legal_hold=$5 WHERE id=$6 AND user_id=$7`,
+		m.IsArchived, m.IsImportant, m.SnoozedUntil, string(labelsJSON), m.LegalHold, m.ID, m.UserID)
+	if err != nil {
+		return err
+	}
+	if ct.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (s *Store) Search(ctx context.Context, q domain.SearchQuery) (*domain.SearchResult, error) {
@@ -728,6 +906,25 @@ func (s *Store) Search(ctx context.Context, q domain.SearchQuery) (*domain.Searc
 	if q.HasAttachment != nil {
 		add("m.has_attachments = $%d", *q.HasAttachment)
 	}
+	if q.IsImportant != nil {
+		add("m.is_important = $%d", *q.IsImportant)
+	}
+	if q.IsArchived != nil {
+		add("m.is_archived = $%d", *q.IsArchived)
+	}
+	if q.Label != "" {
+		add("m.labels_json LIKE $%d", `%"`+q.Label+`"%`)
+	}
+	switch q.Folder {
+	case "inbox":
+		add("(m.is_archived = false AND (m.snoozed_until = 0 OR m.snoozed_until <= $%d))", now())
+	case "archive":
+		conds = append(conds, "m.is_archived = true")
+	case "important":
+		conds = append(conds, "m.is_important = true")
+	case "snoozed":
+		add("m.snoozed_until > $%d", now())
+	}
 	if q.Text != "" {
 		add("m.search_tsv @@ websearch_to_tsquery('simple', $%d)", q.Text)
 	}
@@ -743,7 +940,7 @@ func (s *Store) Search(ctx context.Context, q domain.SearchQuery) (*domain.Searc
 		}
 	}
 	args = append(args, limit+1)
-	query := `SELECT ` + prefixCols(msgCols, "m.") + ` FROM messages m WHERE ` + strings.Join(conds, " AND ") +
+	query := `SELECT ` + prefixCols(msgSelectCols, "m.") + ` FROM messages m WHERE ` + strings.Join(conds, " AND ") +
 		fmt.Sprintf(` ORDER BY m.date DESC, m.id DESC LIMIT $%d`, len(args))
 	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
@@ -808,7 +1005,7 @@ func (s *Store) ResolveThread(ctx context.Context, userID, accountID string, ref
 }
 
 func (s *Store) GetThreadMessages(ctx context.Context, userID, threadID string) ([]domain.Message, error) {
-	rows, err := s.pool.Query(ctx, `SELECT `+msgCols+` FROM messages WHERE user_id=$1 AND thread_id=$2 ORDER BY date ASC`, userID, threadID)
+	rows, err := s.pool.Query(ctx, `SELECT `+msgSelectCols+` FROM messages WHERE user_id=$1 AND thread_id=$2 ORDER BY date ASC`, userID, threadID)
 	if err != nil {
 		return nil, err
 	}
@@ -820,6 +1017,248 @@ func (s *Store) GetThreadMessages(ctx context.Context, userID, threadID string) 
 			return nil, err
 		}
 		out = append(out, *m)
+	}
+	return out, rows.Err()
+}
+
+// ---------- mail rules ----------
+
+const ruleCols = `id,user_id,name,enabled,priority,match_mode,conditions_json,actions_json,stop_on_match,created_at,updated_at`
+
+func (s *Store) CreateRule(ctx context.Context, r *domain.MailRule) error {
+	r.CreatedAt, r.UpdatedAt = now(), now()
+	conds, _ := json.Marshal(r.Conditions)
+	acts, _ := json.Marshal(r.Actions)
+	_, err := s.pool.Exec(ctx, `INSERT INTO mail_rules
+	 (id,user_id,name,enabled,priority,match_mode,conditions_json,actions_json,stop_on_match,created_at,updated_at)
+	 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+		r.ID, r.UserID, r.Name, r.Enabled, r.Priority, r.Match,
+		string(conds), string(acts), r.StopOnMatch, r.CreatedAt, r.UpdatedAt)
+	return err
+}
+
+func (s *Store) UpdateRule(ctx context.Context, r *domain.MailRule) error {
+	r.UpdatedAt = now()
+	conds, _ := json.Marshal(r.Conditions)
+	acts, _ := json.Marshal(r.Actions)
+	ct, err := s.pool.Exec(ctx, `UPDATE mail_rules SET name=$1,enabled=$2,priority=$3,match_mode=$4,
+	 conditions_json=$5,actions_json=$6,stop_on_match=$7,updated_at=$8 WHERE id=$9 AND user_id=$10`,
+		r.Name, r.Enabled, r.Priority, r.Match, string(conds), string(acts),
+		r.StopOnMatch, r.UpdatedAt, r.ID, r.UserID)
+	if err != nil {
+		return err
+	}
+	if ct.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) DeleteRule(ctx context.Context, userID, id string) error {
+	ct, err := s.pool.Exec(ctx, `DELETE FROM mail_rules WHERE id=$1 AND user_id=$2`, id, userID)
+	if err != nil {
+		return err
+	}
+	if ct.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func scanRule(row pgx.Row) (*domain.MailRule, error) {
+	var r domain.MailRule
+	var conds, acts string
+	if err := row.Scan(&r.ID, &r.UserID, &r.Name, &r.Enabled, &r.Priority, &r.Match,
+		&conds, &acts, &r.StopOnMatch, &r.CreatedAt, &r.UpdatedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	_ = json.Unmarshal([]byte(conds), &r.Conditions)
+	_ = json.Unmarshal([]byte(acts), &r.Actions)
+	return &r, nil
+}
+
+func (s *Store) GetRule(ctx context.Context, userID, id string) (*domain.MailRule, error) {
+	return scanRule(s.pool.QueryRow(ctx, `SELECT `+ruleCols+` FROM mail_rules WHERE id=$1 AND user_id=$2`, id, userID))
+}
+
+func (s *Store) ListRules(ctx context.Context, userID string) ([]domain.MailRule, error) {
+	rows, err := s.pool.Query(ctx, `SELECT `+ruleCols+` FROM mail_rules WHERE user_id=$1 ORDER BY priority, created_at`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.MailRule
+	for rows.Next() {
+		r, err := scanRule(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *r)
+	}
+	return out, rows.Err()
+}
+
+// ---------- action cards ----------
+
+const actionCardCols = `id,user_id,message_id,type,title,COALESCE(detail,''),COALESCE(due,''),COALESCE(assignee,''),status,COALESCE(export_target,''),COALESCE(external_ref,''),COALESCE(confidence,0),created_at,updated_at`
+
+func (s *Store) CreateActionCard(ctx context.Context, c *domain.ActionCard) error {
+	c.CreatedAt, c.UpdatedAt = now(), now()
+	if c.Status == "" {
+		c.Status = domain.ActionCardPending
+	}
+	_, err := s.pool.Exec(ctx, `INSERT INTO action_cards
+	 (id,user_id,message_id,type,title,detail,due,assignee,status,export_target,external_ref,confidence,created_at,updated_at)
+	 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+		c.ID, c.UserID, c.MessageID, c.Type, c.Title, c.Detail, c.Due, c.Assignee,
+		c.Status, c.ExportTarget, c.ExternalRef, c.Confidence, c.CreatedAt, c.UpdatedAt)
+	return err
+}
+
+func (s *Store) UpdateActionCard(ctx context.Context, c *domain.ActionCard) error {
+	c.UpdatedAt = now()
+	ct, err := s.pool.Exec(ctx, `UPDATE action_cards SET type=$1,title=$2,detail=$3,due=$4,assignee=$5,
+	 status=$6,export_target=$7,external_ref=$8,confidence=$9,updated_at=$10 WHERE id=$11 AND user_id=$12`,
+		c.Type, c.Title, c.Detail, c.Due, c.Assignee, c.Status, c.ExportTarget, c.ExternalRef,
+		c.Confidence, c.UpdatedAt, c.ID, c.UserID)
+	if err != nil {
+		return err
+	}
+	if ct.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func scanActionCard(row pgx.Row) (*domain.ActionCard, error) {
+	var c domain.ActionCard
+	if err := row.Scan(&c.ID, &c.UserID, &c.MessageID, &c.Type, &c.Title, &c.Detail, &c.Due,
+		&c.Assignee, &c.Status, &c.ExportTarget, &c.ExternalRef, &c.Confidence, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &c, nil
+}
+
+func (s *Store) GetActionCard(ctx context.Context, userID, id string) (*domain.ActionCard, error) {
+	return scanActionCard(s.pool.QueryRow(ctx, `SELECT `+actionCardCols+` FROM action_cards WHERE id=$1 AND user_id=$2`, id, userID))
+}
+
+func (s *Store) ListActionCards(ctx context.Context, userID, status string, limit int) ([]domain.ActionCard, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	query := `SELECT ` + actionCardCols + ` FROM action_cards WHERE user_id=$1`
+	args := []any{userID}
+	if status != "" {
+		query += ` AND status=$2`
+		args = append(args, status)
+	}
+	query += ` ORDER BY created_at DESC LIMIT $` + strconv.Itoa(len(args)+1)
+	args = append(args, limit)
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.ActionCard
+	for rows.Next() {
+		c, err := scanActionCard(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *c)
+	}
+	return out, rows.Err()
+}
+
+// ---------- collaboration (shared mailbox) ----------
+
+func (s *Store) UpsertMessageCollab(ctx context.Context, mc *domain.MessageCollab) error {
+	mc.UpdatedAt = now()
+	_, err := s.pool.Exec(ctx, `INSERT INTO message_collab
+	 (message_id,user_id,assignee,status,sla_due,updated_by,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7)
+	 ON CONFLICT(message_id) DO UPDATE SET assignee=excluded.assignee, status=excluded.status,
+	   sla_due=excluded.sla_due, updated_by=excluded.updated_by, updated_at=excluded.updated_at`,
+		mc.MessageID, mc.UserID, mc.Assignee, mc.Status, mc.SLADue, mc.UpdatedBy, mc.UpdatedAt)
+	return err
+}
+
+func (s *Store) GetMessageCollab(ctx context.Context, userID, messageID string) (*domain.MessageCollab, error) {
+	var mc domain.MessageCollab
+	var assignee, updatedBy *string
+	err := s.pool.QueryRow(ctx, `SELECT message_id,user_id,assignee,status,sla_due,updated_by,updated_at
+	 FROM message_collab WHERE message_id=$1 AND user_id=$2`, messageID, userID).
+		Scan(&mc.MessageID, &mc.UserID, &assignee, &mc.Status, &mc.SLADue, &updatedBy, &mc.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	mc.Assignee, mc.UpdatedBy = deref(assignee), deref(updatedBy)
+	return &mc, nil
+}
+
+func (s *Store) ListMessageCollab(ctx context.Context, userID, status, assignee string, limit int) ([]domain.MessageCollab, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	q := `SELECT message_id,user_id,COALESCE(assignee,''),status,sla_due,COALESCE(updated_by,''),updated_at
+	 FROM message_collab WHERE user_id=$1`
+	args := []any{userID}
+	if status != "" {
+		args = append(args, status)
+		q += ` AND status=$` + strconv.Itoa(len(args))
+	}
+	if assignee != "" {
+		args = append(args, assignee)
+		q += ` AND assignee=$` + strconv.Itoa(len(args))
+	}
+	args = append(args, limit)
+	q += ` ORDER BY updated_at DESC LIMIT $` + strconv.Itoa(len(args))
+	rows, err := s.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.MessageCollab
+	for rows.Next() {
+		var mc domain.MessageCollab
+		if err := rows.Scan(&mc.MessageID, &mc.UserID, &mc.Assignee, &mc.Status, &mc.SLADue, &mc.UpdatedBy, &mc.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, mc)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) AddMessageNote(ctx context.Context, n *domain.MessageNote) error {
+	n.CreatedAt = now()
+	_, err := s.pool.Exec(ctx, `INSERT INTO message_notes (id,message_id,user_id,author,body,created_at)
+	 VALUES ($1,$2,$3,$4,$5,$6)`, n.ID, n.MessageID, n.UserID, n.Author, n.Body, n.CreatedAt)
+	return err
+}
+
+func (s *Store) ListMessageNotes(ctx context.Context, userID, messageID string) ([]domain.MessageNote, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id,message_id,user_id,author,body,created_at
+	 FROM message_notes WHERE message_id=$1 AND user_id=$2 ORDER BY created_at`, messageID, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.MessageNote
+	for rows.Next() {
+		var n domain.MessageNote
+		if err := rows.Scan(&n.ID, &n.MessageID, &n.UserID, &n.Author, &n.Body, &n.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, n)
 	}
 	return out, rows.Err()
 }
@@ -1135,7 +1574,6 @@ func (s *Store) ListJobs(ctx context.Context, userID string, limit int) ([]domai
 	return out, rows.Err()
 }
 
-
 // ---------- audit ----------
 
 func (s *Store) AppendAudit(ctx context.Context, ev domain.AuditEvent) error {
@@ -1423,7 +1861,6 @@ func (s *Store) RevokeMCPKey(ctx context.Context, userID, keyID string) error {
 	return nil
 }
 
-
 func (s *Store) TouchMCPKey(ctx context.Context, keyID string, lastUsedAt int64) error {
 	_, err := s.pool.Exec(ctx, `UPDATE mcp_keys SET last_used_at = $1 WHERE id = $2`, lastUsedAt, keyID)
 	return err
@@ -1461,7 +1898,7 @@ func (s *Store) ListenSettingsChange(ctx context.Context, cb func()) {
 			}
 
 			slog.Info("pgstore: listening for postra_settings_changed notifications")
-			
+
 			// We define a loop to handle notifications
 			for {
 				notification, err := conn.Conn().WaitForNotification(ctx)
@@ -1470,11 +1907,11 @@ func (s *Store) ListenSettingsChange(ctx context.Context, cb func()) {
 					slog.Warn("pgstore: listen connection lost, reconnecting", "error", err)
 					break
 				}
-				
+
 				slog.Info("pgstore: received settings changed notification", "payload", notification.Payload)
 				cb()
 			}
-			
+
 			time.Sleep(2 * time.Second)
 		}
 	}()
@@ -1483,22 +1920,22 @@ func (s *Store) ListenSettingsChange(ctx context.Context, cb func()) {
 func (s *Store) TryAcquireLease(ctx context.Context, key, nodeID string, durationSec int) (bool, error) {
 	nowTS := time.Now().Unix()
 	expiresTS := nowTS + int64(durationSec)
-	
+
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return false, err
 	}
 	defer tx.Rollback(ctx)
-	
+
 	var value string
 	var updatedAt int64
 	err = tx.QueryRow(ctx, `SELECT value, updated_at FROM system_settings WHERE key = $1 FOR UPDATE`, key).Scan(&value, &updatedAt)
-	
+
 	type Lease struct {
 		NodeID    string `json:"node_id"`
 		ExpiresAt int64  `json:"expires_at"`
 	}
-	
+
 	var current Lease
 	isFree := false
 	hasRow := true
@@ -1513,14 +1950,14 @@ func (s *Store) TryAcquireLease(ctx context.Context, key, nodeID string, duratio
 			isFree = true
 		}
 	}
-	
+
 	if !isFree {
 		return false, nil
 	}
-	
+
 	newLease := Lease{NodeID: nodeID, ExpiresAt: expiresTS}
 	newVal, _ := json.Marshal(newLease)
-	
+
 	if hasRow {
 		_, err = tx.Exec(ctx, `UPDATE system_settings SET value = $1, updated_at = $2, updated_by = $3 WHERE key = $4`,
 			string(newVal), nowTS, nodeID, key)
@@ -1531,7 +1968,7 @@ func (s *Store) TryAcquireLease(ctx context.Context, key, nodeID string, duratio
 	if err != nil {
 		return false, err
 	}
-	
+
 	err = tx.Commit(ctx)
 	if err != nil {
 		return false, err
@@ -1540,4 +1977,3 @@ func (s *Store) TryAcquireLease(ctx context.Context, key, nodeID string, duratio
 }
 
 var _ application.Storage = (*Store)(nil)
-
