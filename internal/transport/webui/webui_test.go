@@ -137,13 +137,13 @@ func TestLocalLoginSessionAndLogout(t *testing.T) {
 	h := New(app, "").Handler()
 
 	rec := do(t, h, http.MethodGet, "/ui/", nil, nil)
-	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/ui/login" {
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/ui/login" {
 		t.Fatalf("anonymous request: code=%d location=%q", rec.Code, rec.Header().Get("Location"))
 	}
 	rec = do(t, h, http.MethodPost, "/ui/login", url.Values{
 		"login_id": {"admin"}, "password": {"a-secure-password"},
 	}, nil)
-	if rec.Code != http.StatusSeeOther {
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "./" {
 		t.Fatalf("login: code=%d body=%s", rec.Code, rec.Body.String())
 	}
 	var sessionCookie *http.Cookie
@@ -160,17 +160,21 @@ func TestLocalLoginSessionAndLogout(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("authenticated request: code=%d", rec.Code)
 	}
+	rec = do(t, h, http.MethodGet, "/ui/login", nil, sessionCookie)
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "./" {
+		t.Fatalf("authenticated login page re-entry: code=%d location=%q", rec.Code, rec.Header().Get("Location"))
+	}
 
 	req := httptest.NewRequest(http.MethodPost, "/ui/logout", nil)
 	req.AddCookie(sessionCookie)
 	req.Header.Set("Origin", "http://example.com")
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusSeeOther {
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/ui/login" {
 		t.Fatalf("logout: code=%d body=%s", rec.Code, rec.Body.String())
 	}
 	rec = do(t, h, http.MethodGet, "/ui/", nil, sessionCookie)
-	if rec.Code != http.StatusSeeOther {
+	if rec.Code != http.StatusFound {
 		t.Fatalf("logged-out cookie remained valid: code=%d", rec.Code)
 	}
 }
@@ -202,6 +206,40 @@ func TestLoginRedirectWithRealCookieJar(t *testing.T) {
 	}
 	if strings.Contains(string(body), "Postra 로그인") {
 		t.Fatal("successful login redirected back to the login page")
+	}
+}
+
+func TestLoginBehindPathRewritingProxy(t *testing.T) {
+	app, _ := newTestApp(t)
+	app.Cfg.Auth.Enabled = true
+	if _, err := app.SetupInitialAdmin(context.Background(), "admin", "Administrator", "a-secure-password"); err != nil {
+		t.Fatal(err)
+	}
+	backend := New(app, "").Handler()
+	proxy := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/login":
+			r.URL.Path = "/ui/login"
+		case "/":
+			r.URL.Path = "/ui/"
+		}
+		backend.ServeHTTP(w, r)
+	})
+	server := httptest.NewServer(proxy)
+	defer server.Close()
+	jar, _ := cookiejar.New(nil)
+	client := server.Client()
+	client.Jar = jar
+
+	resp, err := client.PostForm(server.URL+"/login", url.Values{
+		"login_id": {"admin"}, "password": {"a-secure-password"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || resp.Request.URL.Path != "/" {
+		t.Fatalf("proxied login ended at %s with %d", resp.Request.URL.Path, resp.StatusCode)
 	}
 }
 
@@ -258,7 +296,7 @@ func TestAuthGate(t *testing.T) {
 
 	// No cookie → redirect to login.
 	rec := do(t, h, "GET", "/ui/", nil, nil)
-	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/ui/login" {
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/ui/login" {
 		t.Fatalf("expected redirect to login, got %d %q", rec.Code, rec.Header().Get("Location"))
 	}
 
@@ -270,7 +308,7 @@ func TestAuthGate(t *testing.T) {
 
 	// Correct token login sets the cookie.
 	rec = do(t, h, "POST", "/ui/login", url.Values{"token": {"sekret"}}, nil)
-	if rec.Code != http.StatusSeeOther {
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "./" {
 		t.Fatalf("login code=%d", rec.Code)
 	}
 	var sess *http.Cookie

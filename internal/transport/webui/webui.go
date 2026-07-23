@@ -121,18 +121,18 @@ func (s *Server) gate(h http.HandlerFunc) http.HandlerFunc {
 				return
 			}
 			if needsSetup {
-				http.Redirect(w, r, "/ui/setup", http.StatusSeeOther)
+				http.Redirect(w, r, "/ui/setup", http.StatusFound)
 				return
 			}
 			c, err := r.Cookie(cookieName)
 			if err != nil {
-				http.Redirect(w, r, "/ui/login", http.StatusSeeOther)
+				http.Redirect(w, r, "/ui/login", http.StatusFound)
 				return
 			}
 			_, principal, err := s.app.AuthenticateSession(r.Context(), c.Value)
 			if err != nil {
 				s.clearAuthCookies(w, r)
-				http.Redirect(w, r, "/ui/login", http.StatusSeeOther)
+				http.Redirect(w, r, "/ui/login", http.StatusFound)
 				return
 			}
 			if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -146,7 +146,7 @@ func (s *Server) gate(h http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		if s.apiToken != "" && !s.authed(r) {
-			http.Redirect(w, r, "/ui/login", http.StatusSeeOther)
+			http.Redirect(w, r, "/ui/login", http.StatusFound)
 			return
 		}
 		h(w, r.WithContext(application.WithActor(r.Context(), "webui")))
@@ -186,14 +186,24 @@ func (s *Server) loginForm(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	if s.app.Cfg.Auth.Enabled {
 		if needs, _ := s.app.NeedsAdminSetup(r.Context()); needs {
-			http.Redirect(w, r, "/ui/setup", http.StatusSeeOther)
+			http.Redirect(w, r, "./setup", http.StatusFound)
 			return
+		}
+		if c, err := r.Cookie(cookieName); err == nil {
+			if _, _, err := s.app.AuthenticateSession(r.Context(), c.Value); err == nil {
+				redirectRelative(w, "./")
+				return
+			}
 		}
 		s.render(w, "login", http.StatusOK, map[string]any{"LocalAuth": true, "OIDCEnabled": s.app.OIDCConfigured(r.Context())})
 		return
 	}
 	if s.apiToken == "" {
-		http.Redirect(w, r, "/ui/", http.StatusSeeOther)
+		redirectRelative(w, "./")
+		return
+	}
+	if s.authed(r) {
+		redirectRelative(w, "./")
 		return
 	}
 	s.render(w, "login", http.StatusOK, map[string]any{})
@@ -215,11 +225,13 @@ func (s *Server) loginSubmit(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.setAuthCookies(w, r, raw, csrf)
-		http.Redirect(w, r, "/ui/", http.StatusSeeOther)
+		// Some offline reverse proxies do not rewrite 303 Location headers.
+		// A relative 302 works for both public /login and internal /ui/login.
+		redirectRelative(w, "./")
 		return
 	}
 	if s.apiToken == "" {
-		http.Redirect(w, r, "/ui/", http.StatusSeeOther)
+		redirectRelative(w, "./")
 		return
 	}
 	if subtle.ConstantTimeCompare([]byte(r.FormValue("token")), []byte(s.apiToken)) != 1 {
@@ -234,7 +246,12 @@ func (s *Server) loginSubmit(w http.ResponseWriter, r *http.Request) {
 		Name: cookieName, Value: s.apiToken, Path: "/",
 		HttpOnly: true, SameSite: http.SameSiteStrictMode,
 	})
-	http.Redirect(w, r, "/ui/", http.StatusSeeOther)
+	redirectRelative(w, "./")
+}
+
+func redirectRelative(w http.ResponseWriter, location string) {
+	w.Header().Set("Location", location)
+	w.WriteHeader(http.StatusFound)
 }
 
 func (s *Server) oidcStart(w http.ResponseWriter, r *http.Request) {
@@ -336,7 +353,7 @@ func (s *Server) setupForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !needs {
-		http.Redirect(w, r, "/ui/login", http.StatusSeeOther)
+		http.Redirect(w, r, "/ui/login", http.StatusFound)
 		return
 	}
 	s.render(w, "setup", http.StatusOK, map[string]any{})
@@ -386,7 +403,7 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.clearAuthCookies(w, r)
-	http.Redirect(w, r, "/ui/login", http.StatusSeeOther)
+	http.Redirect(w, r, "/ui/login", http.StatusFound)
 }
 
 func csrfFromRequest(r *http.Request) string {
