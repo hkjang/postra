@@ -1238,6 +1238,36 @@ func (s *Store) SaveEmbedding(ctx context.Context, userID, accountID, messageID 
 	return tx.Commit(ctx)
 }
 
+func (s *Store) SaveEmbeddingsBatch(ctx context.Context, userID, accountID string, items []domain.EmbeddingItem) error {
+	if len(items) == 0 {
+		return nil
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	for _, item := range items {
+		_, err = tx.Exec(ctx, `INSERT INTO embedding_meta (message_id,chunk_id,user_id,account_id,model,dim)
+		 VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (message_id,chunk_id) DO UPDATE SET model=excluded.model, dim=excluded.dim`,
+			item.MessageID, item.ChunkID, userID, accountID, item.Model, len(item.Vector))
+		if err != nil {
+			return err
+		}
+
+		if s.hasPgVector && len(item.Vector) > 0 {
+			_, err = tx.Exec(ctx, `INSERT INTO embeddings (message_id,chunk_id,user_id,account_id,model,dim,vec)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7::vector) ON CONFLICT (message_id,chunk_id) DO UPDATE SET model=excluded.model, dim=excluded.dim, vec=excluded.vec`,
+				item.MessageID, item.ChunkID, userID, accountID, item.Model, len(item.Vector), vectorLiteral(item.Vector))
+			if err != nil {
+				return err
+			}
+		}
+	}
+	return tx.Commit(ctx)
+}
+
 func (s *Store) MessagesMissingEmbeddings(ctx context.Context, userID, accountID string, limit int) ([]string, error) {
 	if limit <= 0 {
 		limit = 200

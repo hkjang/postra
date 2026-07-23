@@ -34,6 +34,28 @@ func (s *Store) SaveEmbedding(ctx context.Context, userID, accountID, messageID 
 	return err
 }
 
+func (s *Store) SaveEmbeddingsBatch(ctx context.Context, userID, accountID string, items []domain.EmbeddingItem) error {
+	if len(items) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	for _, item := range items {
+		_, err := tx.ExecContext(ctx, `INSERT INTO embeddings
+		 (message_id,chunk_id,user_id,account_id,model,dim,vec) VALUES (?,?,?,?,?,?,?)
+		 ON CONFLICT(message_id,chunk_id) DO UPDATE SET model=excluded.model, dim=excluded.dim, vec=excluded.vec`,
+			item.MessageID, item.ChunkID, userID, accountID, item.Model, len(item.Vector), float32sToBytes(item.Vector))
+		if err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 // MessagesMissingEmbeddings returns IDs of stored messages that have no
 // embedding yet, so BuildEmbeddings can backfill incrementally.
 func (s *Store) MessagesMissingEmbeddings(ctx context.Context, userID, accountID string, limit int) ([]string, error) {

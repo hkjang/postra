@@ -59,6 +59,9 @@ type Config struct {
 	// When APIToken is set the UI requires a cookie login with that token.
 	WebUIEnabled bool `json:"web_ui_enabled"`
 
+	// WorkerEnabled controls whether this node runs background tasks (sync, retry outbox, embed build).
+	WorkerEnabled bool `json:"worker_enabled"`
+
 	AI          AIConfig         `json:"ai"`
 	Auth        AuthConfig       `json:"auth"`
 	Sync        SyncConfig       `json:"sync"`
@@ -150,6 +153,7 @@ func Default() Config {
 		EncryptAtRest:     true,
 		MetricsEnabled:    true,
 		WebUIEnabled:      true,
+		WorkerEnabled:     true,
 		Auth: AuthConfig{
 			Enabled:           true,
 			SessionHours:      12,
@@ -234,6 +238,7 @@ func applyEnv(cfg *Config) {
 	set("POSTRA_HTTP_ADDR", &cfg.HTTPAddr)
 	set("POSTRA_MCP_HTTP_ADDR", &cfg.MCPHTTPAddr)
 	set("POSTRA_API_TOKEN", &cfg.APIToken)
+	setBool("POSTRA_WORKER_ENABLED", &cfg.WorkerEnabled)
 	setBool("POSTRA_ALLOW_INSECURE_MAIL", &cfg.AllowInsecureMail)
 	setBool("POSTRA_ALLOW_PRIVATE_HOSTS", &cfg.AllowPrivateHosts)
 	set("POSTRA_AI_BASE_URL", &cfg.AI.BaseURL)

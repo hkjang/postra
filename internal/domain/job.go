@@ -80,6 +80,13 @@ type EmbeddingResult struct {
 	Model   string
 }
 
+type EmbeddingItem struct {
+	MessageID string
+	ChunkID   int
+	Vector    []float32
+	Model     string
+}
+
 type AIProvider interface {
 	Generate(ctx context.Context, req GenerationRequest) (GenerationResult, error)
 	// Embed returns one vector per input string. Used for semantic search.

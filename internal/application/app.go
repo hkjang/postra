@@ -381,6 +381,11 @@ func (a *App) startLeaderElectionLoop() {
 }
 
 func (a *App) electLeader(ctx context.Context) {
+	if !a.Cfg.WorkerEnabled {
+		a.setLeaderState(false)
+		return
+	}
+
 	const leaseKey = "internal.leader_lease"
 	const leaseSec = 15
 
@@ -414,4 +419,5 @@ func (a *App) releaseLease(ctx context.Context) {
 	_ = a.Store.UpsertSettings(ctx, map[string]string{
 		leaseKey: string(newVal),
 	})
+	a.setLeaderState(false)
 }

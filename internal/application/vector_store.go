@@ -8,18 +8,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
 	"postra/internal/domain"
 )
 
-type EmbeddingItem struct {
-	MessageID string
-	ChunkID   int
-	Vector    []float32
-	Model     string
-}
+type EmbeddingItem = domain.EmbeddingItem
 
 // VectorStore abstraction supports swapping implementations at runtime (§24).
 type VectorStore interface {
@@ -177,12 +173,9 @@ func (m *MilvusVectorStore) SaveEmbeddingsBatch(ctx context.Context, userID, acc
 		return fmt.Errorf("milvus insert returned HTTP %d: %s", resp.StatusCode, string(body))
 	}
 
-	// Save embedding meta to primary DB to mark as embedded.
-	for _, item := range items {
-		err := m.store.SaveEmbedding(ctx, userID, accountID, item.MessageID, item.ChunkID, nil, item.Model)
-		if err != nil {
-			return fmt.Errorf("failed to save embedding metadata to primary database: %w", err)
-		}
+	// Save embedding meta to primary DB to mark as embedded using batch transaction.
+	if err := m.store.SaveEmbeddingsBatch(ctx, userID, accountID, items); err != nil {
+		return fmt.Errorf("failed to save embedding metadata to primary database: %w", err)
 	}
 
 	return nil
@@ -198,6 +191,7 @@ type milvusSearchReq struct {
 	Filter         string    `json:"filter,omitempty"`
 	Limit          int       `json:"limit"`
 	OutputFields   []string  `json:"outputFields"`
+	MetricType     string    `json:"metricType,omitempty"`
 }
 
 type milvusSearchResp struct {
@@ -223,6 +217,7 @@ func (m *MilvusVectorStore) SemanticSearch(ctx context.Context, userID, accountI
 		Filter:         filter,
 		Limit:          limit,
 		OutputFields:   []string{"message_id"},
+		MetricType:     "COSINE",
 	})
 	if err != nil {
 		return nil, err
@@ -264,6 +259,8 @@ func (m *MilvusVectorStore) SemanticSearch(ctx context.Context, userID, accountI
 			Score:     d.Distance,
 		})
 	}
+
+	sort.Slice(hits, func(i, j int) bool { return hits[i].Score > hits[j].Score })
 
 	return hits, nil
 }
