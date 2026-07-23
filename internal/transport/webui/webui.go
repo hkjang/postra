@@ -29,7 +29,7 @@ import (
 	"postra/internal/platform/metrics"
 )
 
-//go:embed templates/*.html
+//go:embed templates/*.html static/*
 var files embed.FS
 
 const (
@@ -80,6 +80,10 @@ func parseTemplates() map[string]*template.Template {
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /ui/static/", s.serveStatic)
+	mux.HandleFunc("GET /favicon.ico", s.serveFavicon)
+	mux.HandleFunc("GET /favicon.png", s.serveFavicon)
+	mux.HandleFunc("GET /logo.png", s.serveLogo)
 	mux.HandleFunc("GET /ui/setup", s.setupForm)
 	mux.HandleFunc("POST /ui/setup", s.setupSubmit)
 	mux.HandleFunc("GET /ui/login", s.loginForm)
@@ -128,6 +132,48 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /ui/drafts/{id}/send", s.gate(s.sendForm))
 	mux.HandleFunc("POST /ui/drafts/{id}/send", s.gate(s.sendSubmit))
 	return mux
+}
+
+func (s *Server) serveStatic(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/ui/static/")
+	data, err := files.ReadFile("static/" + path)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	contentType := mime.TypeByExtension(path[strings.LastIndex(path, "."):])
+	if contentType == "" {
+		if strings.HasSuffix(path, ".png") || strings.HasSuffix(path, ".ico") {
+			contentType = "image/png"
+		} else {
+			contentType = "application/octet-stream"
+		}
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	_, _ = w.Write(data)
+}
+
+func (s *Server) serveFavicon(w http.ResponseWriter, r *http.Request) {
+	data, err := files.ReadFile("static/favicon.png")
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	_, _ = w.Write(data)
+}
+
+func (s *Server) serveLogo(w http.ResponseWriter, r *http.Request) {
+	data, err := files.ReadFile("static/logo.png")
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	_, _ = w.Write(data)
 }
 
 // gate enforces the cookie login when an API token is configured. With no

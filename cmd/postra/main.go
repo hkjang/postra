@@ -473,7 +473,11 @@ func serve(configPath string) error {
 	root.Handle("/", httpapi.New(app, cfg.APIToken).Handler())
 	root.Handle("/mcp", mcpserver.HTTPHandler(app, cfg.APIToken))
 	if cfg.WebUIEnabled {
-		root.Handle("/ui/", webui.New(app, cfg.APIToken).Handler())
+		uiHandler := webui.New(app, cfg.APIToken).Handler()
+		root.Handle("/ui/", uiHandler)
+		root.Handle("/favicon.ico", uiHandler)
+		root.Handle("/favicon.png", uiHandler)
+		root.Handle("/logo.png", uiHandler)
 		slog.Info("web UI enabled", "path", "/ui/")
 	}
 	restSrv := &http.Server{

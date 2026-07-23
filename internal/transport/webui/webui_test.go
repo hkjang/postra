@@ -526,6 +526,21 @@ func TestMessageAnalysisAndAttachmentDownload(t *testing.T) {
 	}
 }
 
+func TestStaticAssets(t *testing.T) {
+	app, _ := newTestApp(t)
+	h := New(app, "").Handler()
+
+	for _, path := range []string{"/favicon.ico", "/favicon.png", "/logo.png", "/ui/static/logo.png", "/ui/static/favicon.png"} {
+		rec := do(t, h, "GET", path, nil, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("path %s returned status %d", path, rec.Code)
+		}
+		if len(rec.Body.Bytes()) == 0 {
+			t.Fatalf("path %s returned empty body", path)
+		}
+	}
+}
+
 // extractToken pulls the hidden token field value out of the confirm form.
 func extractToken(html string) string {
 	const marker = `name="token" value="`
