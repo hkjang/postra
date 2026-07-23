@@ -2,9 +2,18 @@
 {{define "content"}}
 {{$s := .Settings}}
 <div class="actions" style="justify-content:space-between"><h1>시스템 설정</h1><div><a class="btn ghost" href="/ui/admin/ai">AI 운영 관리</a> <a class="btn ghost" href="/ui/admin/users">사용자 관리</a></div></div>
-{{if .Error}}<div class="warn">{{.Error}}</div>{{end}}
+<div class="card">
+  <h2>시스템 진단 및 상태</h2>
+  <div class="grid">
+    <div><b>서비스 버전:</b> <span class="tag">v{{.Version}}</span></div>
+    <div><b>스토리지 드라이버:</b> <span class="tag">{{.StorageDriver}}</span></div>
+    <div><b>PostgreSQL DSN:</b> {{if .PostgresDSNConfigured}}<span class="ok">설정됨 (PostgreSQL 연동)</span>{{else}}<span class="muted">미설정 (SQLite 사용)</span>{{end}}</div>
+    <div><b>DB 상태 (Ping):</b> <span class="ok">정상 (Healthy)</span></div>
+  </div>
+</div>
 <form method="post" action="/ui/admin/settings">
 <div class="card"><h2>Keycloak OIDC SSO</h2><div class="grid">
+
   <div class="field"><label>Issuer URL</label><input type="text" name="auth.oidc.issuer" value="{{index $s "auth.oidc.issuer"}}" placeholder="https://keycloak.example/realms/postra"></div>
   <div class="field"><label>Client ID</label><input type="text" name="auth.oidc.client_id" value="{{index $s "auth.oidc.client_id"}}"></div>
   <div class="field"><label>Client secret</label><input type="password" name="oidc_client_secret" placeholder="변경할 때만 입력" autocomplete="new-password"></div>

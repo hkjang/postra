@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
 
 	"golang.org/x/term"
 
@@ -112,29 +114,79 @@ func loadApp(configPath string) (*application.App, config.Config, error) {
 	return app, cfg, err
 }
 
+func maskDSN(dsn string) string {
+	if u, err := url.Parse(dsn); err == nil && u.User != nil {
+		if _, hasPass := u.User.Password(); hasPass {
+			u.User = url.UserPassword(u.User.Username(), "*****")
+			return u.String()
+		}
+	}
+	return dsn
+}
+
 // openStorage selects the persistence backend. SQLite is the personal/
 // embedded default (with optional at-rest body encryption); PostgreSQL is
 // the server/multi-user backend with pgvector semantic search.
 func openStorage(cfg config.Config, kek *crypto.KEK) (application.Storage, error) {
-	switch cfg.StorageDriver {
+	driver := cfg.StorageDriver
+	postgresConfigured := strings.TrimSpace(cfg.PostgresDSN) != ""
+	if postgresConfigured && (driver == "" || driver == "sqlite") && os.Getenv("POSTRA_STORAGE_DRIVER") != "sqlite" {
+		driver = "postgres"
+	}
+	slog.Info("initializing storage backend",
+		"driver", driver,
+		"postgres_dsn_configured", postgresConfigured,
+		"data_dir", cfg.DataDir,
+	)
+
+	switch driver {
 	case "", "sqlite":
 		st, err := persistence.Open(filepath.Join(cfg.DataDir, "postra.db"))
 		if err != nil {
-			return nil, err
+			slog.Error("failed to open sqlite database", "error", err, "path", filepath.Join(cfg.DataDir, "postra.db"))
+			return nil, fmt.Errorf("sqlite storage open failed: %w", err)
 		}
 		if cfg.EncryptAtRest {
 			st.EnableEncryption(kek) // body-column encryption (SQLite only)
 		}
+		slog.Info("successfully opened sqlite storage", "postgres_dsn_configured", postgresConfigured)
 		return st, nil
+
 	case "postgres":
-		if cfg.PostgresDSN == "" {
-			return nil, fmt.Errorf("storage_driver=postgres requires postgres_dsn")
+		if !postgresConfigured {
+			err := fmt.Errorf("storage_driver=postgres requires postgres_dsn")
+			slog.Error("postgres storage initialization failed",
+				"reason", "postgres_dsn is not configured or empty",
+				"postgres_dsn_configured", false,
+				"error", err,
+			)
+			return nil, err
 		}
-		return pgstore.Open(context.Background(), cfg.PostgresDSN)
+		slog.Info("connecting to postgres storage",
+			"postgres_dsn_configured", true,
+			"dsn_masked", maskDSN(cfg.PostgresDSN),
+		)
+		st, err := pgstore.Open(context.Background(), cfg.PostgresDSN)
+		if err != nil {
+			slog.Error("failed to connect to postgres database",
+				"error", err,
+				"reason", err.Error(),
+				"postgres_dsn_configured", true,
+				"dsn_masked", maskDSN(cfg.PostgresDSN),
+			)
+			return nil, fmt.Errorf("postgres storage open failed: %w", err)
+		}
+		slog.Info("successfully connected and migrated postgres storage", "postgres_dsn_configured", true)
+		return st, nil
+
 	default:
-		return nil, fmt.Errorf("unknown storage_driver %q (sqlite|postgres)", cfg.StorageDriver)
+		err := fmt.Errorf("unknown storage_driver %q (sqlite|postgres)", driver)
+		slog.Error("storage initialization failed", "error", err, "driver", driver)
+		return nil, err
 	}
 }
+
+
 
 func run(cmd string, args []string) error {
 	fs := flag.NewFlagSet(cmd, flag.ExitOnError)
@@ -186,7 +238,8 @@ func run(cmd string, args []string) error {
 		return accountCmd(args)
 
 	case "sync":
-		maxN := fs.Int("max", 0, "max messages this run")
+		maxN := fs.Int("max", 0, "max messages this run (0 = full sync)")
+		fullSync := fs.Bool("full", false, "force full sync of all messages")
 		account := fs.String("account", "", "account ID")
 		wait := fs.Bool("wait", false, "wait for completion")
 		fs.Parse(args)
@@ -198,7 +251,9 @@ func run(cmd string, args []string) error {
 			return err
 		}
 		ctx := application.WithActor(context.Background(), "cli")
-		job, err := app.StartSync(ctx, *account, application.SyncOptions{MaxMessages: *maxN})
+		opts := application.SyncOptions{MaxMessages: *maxN, FullSync: *fullSync || *maxN <= 0}
+		job, err := app.StartSync(ctx, *account, opts)
+
 		if err != nil {
 			return err
 		}

@@ -184,6 +184,11 @@ func HTTPHandler(app *application.App, apiToken string) http.Handler {
 				}
 			}
 			if !ok && raw != "" {
+				if _, p, err := app.AuthenticateMCPKey(r.Context(), raw); err == nil {
+					principal, ok = p, true
+				}
+			}
+			if !ok && raw != "" {
 				if p, err := app.AuthenticateOIDCAccessToken(r.Context(), raw); err == nil {
 					principal, ok = p, true
 				}
@@ -195,6 +200,7 @@ func HTTPHandler(app *application.App, apiToken string) http.Handler {
 			ctx = application.WithPrincipal(ctx, principal)
 		}
 		inner.ServeHTTP(w, r.WithContext(ctx))
+
 	})
 }
 
@@ -332,12 +338,14 @@ func registerSyncTools(s *mcp.Server, app *application.App) {
 		AccountID   string `json:"account_id" jsonschema:"the mail account ID"`
 		MaxMessages int    `json:"max_messages,omitempty" jsonschema:"optional cap on messages fetched this run"`
 	}) (*mcp.CallToolResult, any, error) {
-		job, err := app.StartSync(ctx, in.AccountID, application.SyncOptions{MaxMessages: in.MaxMessages})
+		fullSync := in.MaxMessages <= 0
+		job, err := app.StartSync(ctx, in.AccountID, application.SyncOptions{MaxMessages: in.MaxMessages, FullSync: fullSync})
 		if err != nil {
 			return nil, nil, err
 		}
 		return nil, job, nil
 	})
+
 
 	type jobIDInput struct {
 		JobID string `json:"job_id" jsonschema:"the job ID"`

@@ -5,6 +5,7 @@
 package mailparse
 
 import (
+	"bytes"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -22,6 +23,7 @@ import (
 
 	"postra/internal/domain"
 )
+
 
 type AttachmentPart struct {
 	Name     string
@@ -86,12 +88,13 @@ func buildPolicy() *bluemonday.Policy {
 
 func Parse(raw []byte) *Parsed {
 	out := &Parsed{}
-	msg, err := mail.ReadMessage(strings.NewReader(string(raw)))
+	msg, err := mail.ReadMessage(bytes.NewReader(raw))
 	if err != nil {
 		out.ParseError = "header parse: " + err.Error()
 		out.TextBody = string(raw) // preserve something searchable
 		return out
 	}
+
 	h := msg.Header
 	out.Subject = decodeWord(h.Get("Subject"))
 	out.MessageID = strings.TrimSpace(h.Get("Message-ID"))
@@ -240,7 +243,7 @@ func decodeCharset(b []byte, label string) string {
 	if label == "" || strings.EqualFold(label, "utf-8") || strings.EqualFold(label, "us-ascii") {
 		return string(b)
 	}
-	r, err := charset.NewReaderLabel(label, strings.NewReader(string(b)))
+	r, err := charset.NewReaderLabel(label, bytes.NewReader(b))
 	if err != nil {
 		return string(b)
 	}
@@ -250,6 +253,7 @@ func decodeCharset(b []byte, label string) string {
 	}
 	return string(dec)
 }
+
 
 func decodeWord(s string) string {
 	d, err := wordDecoder.DecodeHeader(s)

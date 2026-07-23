@@ -361,3 +361,94 @@ func ClientIP(remoteAddr string) string {
 	}
 	return remoteAddr
 }
+
+// ---------- MCP Key Management ----------
+
+func (a *App) CreateMCPKey(ctx context.Context, name string) (*domain.MCPKey, string, error) {
+	userID := userIDFrom(ctx)
+	if userID == "" {
+		return nil, "", userErrf("authentication required")
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = "MCP Key"
+	}
+	rawSecret, err := token(32)
+	if err != nil {
+		return nil, "", err
+	}
+	rawKey := "mk_" + rawSecret
+	prefix := rawKey[:8] + "..."
+	hash := tokenHash(rawKey)
+
+	key := &domain.MCPKey{
+		ID:        persistence.NewID("mcpk"),
+		UserID:    userID,
+		Name:      name,
+		KeyHash:   hash,
+		KeyPrefix: prefix,
+		Status:    "active",
+	}
+	if err := a.Store.CreateMCPKey(ctx, key); err != nil {
+		return nil, "", err
+	}
+	a.audit(ctx, "mcp_key_create", "mcp_key:"+key.ID, "ok", "name:"+name)
+	return key, rawKey, nil
+}
+
+func (a *App) ListMyMCPKeys(ctx context.Context) ([]domain.MCPKey, error) {
+	userID := userIDFrom(ctx)
+	if userID == "" {
+		return nil, userErrf("authentication required")
+	}
+	return a.Store.ListMCPKeys(ctx, userID)
+}
+
+func (a *App) RevokeMyMCPKey(ctx context.Context, keyID string) error {
+	userID := userIDFrom(ctx)
+	if userID == "" {
+		return userErrf("authentication required")
+	}
+	if err := a.Store.RevokeMCPKey(ctx, userID, keyID); err != nil {
+		return err
+	}
+	a.audit(ctx, "mcp_key_revoke", "mcp_key:"+keyID, "ok", "")
+	return nil
+}
+
+func (a *App) AdminListMCPKeys(ctx context.Context) ([]domain.MCPKey, error) {
+	if _, err := requireAdmin(ctx); err != nil {
+		return nil, err
+	}
+	return a.Store.ListAllMCPKeys(ctx)
+}
+
+func (a *App) AdminRevokeMCPKey(ctx context.Context, keyID string) error {
+	if _, err := requireAdmin(ctx); err != nil {
+		return err
+	}
+	if err := a.Store.RevokeMCPKey(ctx, "", keyID); err != nil {
+		return err
+	}
+	a.audit(ctx, "mcp_key_admin_revoke", "mcp_key:"+keyID, "ok", "")
+	return nil
+}
+
+func (a *App) AuthenticateMCPKey(ctx context.Context, raw string) (*domain.MCPKey, domain.Principal, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || !strings.HasPrefix(raw, "mk_") {
+		return nil, domain.Principal{}, domain.ErrNotFound
+	}
+	hash := tokenHash(raw)
+	key, u, err := a.Store.GetMCPKeyByHash(ctx, hash)
+	if err != nil || u.Status != domain.UserActive || key.Status != "active" {
+		return nil, domain.Principal{}, domain.ErrNotFound
+	}
+	now := time.Now().Unix()
+	if now-key.LastUsedAt >= 60 {
+		_ = a.Store.TouchMCPKey(ctx, key.ID, now)
+	}
+	p := principalFor(u, "mcp_key")
+	return key, p, nil
+}
+

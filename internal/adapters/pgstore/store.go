@@ -15,6 +15,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -33,24 +35,40 @@ type Store struct {
 // Ping verifies the PostgreSQL pool is usable (readiness probe).
 func (s *Store) Ping(ctx context.Context) error { return s.pool.Ping(ctx) }
 
+func maskDSN(dsn string) string {
+	if u, err := url.Parse(dsn); err == nil && u.User != nil {
+		if _, hasPass := u.User.Password(); hasPass {
+			u.User = url.UserPassword(u.User.Username(), "*****")
+			return u.String()
+		}
+	}
+	return dsn
+}
+
 // Open connects to PostgreSQL and applies the schema. The pgvector extension
 // is required for semantic search.
 func Open(ctx context.Context, dsn string) (*Store, error) {
+	slog.Info("pgstore: connecting to postgres", "dsn_masked", maskDSN(dsn))
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
-		return nil, err
+		slog.Error("pgstore: postgres pool creation failed", "error", err, "reason", err.Error(), "dsn_masked", maskDSN(dsn))
+		return nil, fmt.Errorf("postgres pool creation failed: %w", err)
 	}
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
-		return nil, err
+		slog.Error("pgstore: postgres ping failed", "error", err, "reason", err.Error(), "dsn_masked", maskDSN(dsn))
+		return nil, fmt.Errorf("postgres ping failed: %w", err)
 	}
 	s := &Store{pool: pool}
 	if err := s.migrate(ctx); err != nil {
 		pool.Close()
-		return nil, err
+		slog.Error("pgstore: postgres migration failed", "error", err, "reason", err.Error(), "dsn_masked", maskDSN(dsn))
+		return nil, fmt.Errorf("postgres migration failed: %w", err)
 	}
+	slog.Info("pgstore: postgres connection and migration successful")
 	return s, nil
 }
+
 
 func (s *Store) Close() error { s.pool.Close(); return nil }
 
@@ -94,6 +112,11 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS system_settings (
 			key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at BIGINT NOT NULL,
 			updated_by TEXT NOT NULL DEFAULT '')`,
+		`CREATE TABLE IF NOT EXISTS mcp_keys (
+			id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			name TEXT NOT NULL, key_hash TEXT UNIQUE NOT NULL, key_prefix TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'active', created_at BIGINT NOT NULL, last_used_at BIGINT DEFAULT 0)`,
+		`CREATE INDEX IF NOT EXISTS idx_mcp_keys_user ON mcp_keys(user_id)`,
 		`CREATE TABLE IF NOT EXISTS mail_accounts (
 			id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL, email TEXT NOT NULL, status TEXT NOT NULL,
 			inbound_protocol TEXT NOT NULL DEFAULT 'pop3',
@@ -1037,6 +1060,43 @@ func (s *Store) GetJob(ctx context.Context, userID, id string) (*domain.Job, err
 	return &j, nil
 }
 
+func (s *Store) ListJobs(ctx context.Context, userID string, limit int) ([]domain.Job, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	query := `SELECT id, user_id, type, account_id, status, progress, stats_json, error, meta_json, created_at, updated_at
+		FROM jobs WHERE user_id=$1 ORDER BY updated_at DESC LIMIT $2`
+	args := []any{userID, limit}
+	if userID == "" {
+		query = `SELECT id, user_id, type, account_id, status, progress, stats_json, error, meta_json, created_at, updated_at
+			FROM jobs ORDER BY updated_at DESC LIMIT $1`
+		args = []any{limit}
+	}
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.Job
+	for rows.Next() {
+		var j domain.Job
+		var stats, meta, accountID, progress, jerr *string
+		if err := rows.Scan(&j.ID, &j.UserID, &j.Type, &accountID, &j.Status, &progress, &stats, &jerr, &meta, &j.CreatedAt, &j.UpdatedAt); err != nil {
+			return nil, err
+		}
+		j.AccountID, j.Progress, j.Error = deref(accountID), deref(progress), deref(jerr)
+		if deref(stats) != "" {
+			_ = json.Unmarshal([]byte(*stats), &j.Stats)
+		}
+		if deref(meta) != "" {
+			_ = json.Unmarshal([]byte(*meta), &j.Meta)
+		}
+		out = append(out, j)
+	}
+	return out, rows.Err()
+}
+
+
 // ---------- audit ----------
 
 func (s *Store) AppendAudit(ctx context.Context, ev domain.AuditEvent) error {
@@ -1186,4 +1246,95 @@ func (s *Store) SemanticSearch(ctx context.Context, userID, accountID string, qu
 	return out, rows.Err()
 }
 
+// ---------- MCP Keys ----------
+
+func (s *Store) CreateMCPKey(ctx context.Context, key *domain.MCPKey) error {
+	key.CreatedAt = now()
+	_, err := s.pool.Exec(ctx, `INSERT INTO mcp_keys (id, user_id, name, key_hash, key_prefix, status, created_at, last_used_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		key.ID, key.UserID, key.Name, key.KeyHash, key.KeyPrefix, key.Status, key.CreatedAt, key.LastUsedAt)
+	return err
+}
+
+func (s *Store) GetMCPKeyByHash(ctx context.Context, keyHash string) (*domain.MCPKey, *domain.User, error) {
+	var k domain.MCPKey
+	var u domain.User
+	err := s.pool.QueryRow(ctx, `SELECT k.id, k.user_id, k.name, k.key_hash, k.key_prefix, k.status, k.created_at, k.last_used_at,
+		u.id, u.login_id, u.display_name, u.email, u.role, u.status, u.auth_provider, u.created_at, u.updated_at, u.last_login_at
+		FROM mcp_keys k JOIN users u ON u.id = k.user_id WHERE k.key_hash = $1 AND k.status = 'active'`, keyHash).
+		Scan(&k.ID, &k.UserID, &k.Name, &k.KeyHash, &k.KeyPrefix, &k.Status, &k.CreatedAt, &k.LastUsedAt,
+			&u.ID, &u.LoginID, &u.DisplayName, &u.Email, &u.Role, &u.Status, &u.AuthProvider, &u.CreatedAt, &u.UpdatedAt, &u.LastLoginAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	return &k, &u, nil
+}
+
+func (s *Store) ListMCPKeys(ctx context.Context, userID string) ([]domain.MCPKey, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id, user_id, name, key_hash, key_prefix, status, created_at, last_used_at
+		FROM mcp_keys WHERE user_id = $1 ORDER BY created_at DESC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.MCPKey
+	for rows.Next() {
+		var k domain.MCPKey
+		if err := rows.Scan(&k.ID, &k.UserID, &k.Name, &k.KeyHash, &k.KeyPrefix, &k.Status, &k.CreatedAt, &k.LastUsedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, k)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ListAllMCPKeys(ctx context.Context) ([]domain.MCPKey, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id, user_id, name, key_hash, key_prefix, status, created_at, last_used_at
+		FROM mcp_keys ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.MCPKey
+	for rows.Next() {
+		var k domain.MCPKey
+		if err := rows.Scan(&k.ID, &k.UserID, &k.Name, &k.KeyHash, &k.KeyPrefix, &k.Status, &k.CreatedAt, &k.LastUsedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, k)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) RevokeMCPKey(ctx context.Context, userID, keyID string) error {
+	if userID != "" {
+		res, err := s.pool.Exec(ctx, `UPDATE mcp_keys SET status = 'revoked' WHERE id = $1 AND user_id = $2`, keyID, userID)
+		if err != nil {
+			return err
+		}
+		if res.RowsAffected() == 0 {
+			return ErrNotFound
+		}
+	} else {
+		res, err := s.pool.Exec(ctx, `UPDATE mcp_keys SET status = 'revoked' WHERE id = $1`, keyID)
+		if err != nil {
+			return err
+		}
+		if res.RowsAffected() == 0 {
+			return ErrNotFound
+		}
+	}
+	return nil
+}
+
+
+func (s *Store) TouchMCPKey(ctx context.Context, keyID string, lastUsedAt int64) error {
+	_, err := s.pool.Exec(ctx, `UPDATE mcp_keys SET last_used_at = $1 WHERE id = $2`, lastUsedAt, keyID)
+	return err
+}
+
 var _ application.Storage = (*Store)(nil)
+

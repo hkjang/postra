@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"runtime"
 	"strings"
 
 	"postra/internal/adapters/mailparse"
@@ -16,11 +17,14 @@ import (
 	"postra/internal/platform/metrics"
 )
 
+
 type SyncOptions struct {
-	MaxMessages int `json:"max_messages,omitempty"`
+	MaxMessages int  `json:"max_messages,omitempty"`
+	FullSync    bool `json:"full_sync,omitempty"`
 	// DeleteAfterFetch is intentionally absent from the MVP sync path:
 	// server-side deletion is a separate, approval-gated flow (§5.2).
 }
+
 
 // StartSync launches an asynchronous POP3 sync job and returns its job ID.
 func (a *App) StartSync(ctx context.Context, accountID string, opts SyncOptions) (*domain.Job, error) {
@@ -80,6 +84,11 @@ func (a *App) GetJob(ctx context.Context, jobID string) (*domain.Job, error) {
 	return a.Store.GetJob(ctx, userIDFrom(ctx), jobID)
 }
 
+func (a *App) ListJobs(ctx context.Context, limit int) ([]domain.Job, error) {
+	return a.Store.ListJobs(ctx, userIDFrom(ctx), limit)
+}
+
+
 func (a *App) runSync(ctx context.Context, job *domain.Job, acc *domain.MailAccount, opts SyncOptions) {
 	stats := domain.SyncStats{}
 	finish := func(status domain.JobStatus, errMsg string) {
@@ -136,19 +145,28 @@ func (a *App) runSync(ctx context.Context, job *domain.Job, acc *domain.MailAcco
 		}
 	}
 
+	// Reverse remote so newest messages (higher sequence numbers) are ingested first.
+	for i, j := 0, len(remote)-1; i < j; i, j = i+1, j-1 {
+		remote[i], remote[j] = remote[j], remote[i]
+	}
+
 	maxN := a.Cfg.Sync.MaxPerSync
-	if opts.MaxMessages > 0 && opts.MaxMessages < maxN {
+	if opts.FullSync || opts.MaxMessages < 0 {
+		maxN = 0
+	} else if opts.MaxMessages > 0 {
 		maxN = opts.MaxMessages
 	}
+
 	fetched := 0
 	for _, rm := range remote {
 		if ctx.Err() != nil {
 			finish(domain.JobCancelled, "cancelled")
 			return
 		}
-		if fetched >= maxN {
+		if maxN > 0 && fetched >= maxN {
 			break
 		}
+
 		stats.Seen++
 		if uidlSupported && rm.UIDL != "" {
 			dup, err := a.Store.HasCheckpoint(ctx, acc.ID, rm.UIDL)
@@ -166,6 +184,9 @@ func (a *App) runSync(ctx context.Context, job *domain.Job, acc *domain.MailAcco
 			continue
 		}
 		fetched++
+		if fetched%10 == 0 {
+			runtime.GC()
+		}
 		job.Progress = fmt.Sprintf("%d/%d", fetched, len(remote))
 		_ = a.Store.UpdateJob(ctx, job)
 	}
@@ -248,7 +269,8 @@ func (a *App) ingestOne(ctx context.Context, sess domain.POP3Session, acc *domai
 		HTMLSanitized: parsed.HTMLSafe, Charset: parsed.Charset,
 	}
 	var atts []domain.Attachment
-	for _, ap := range parsed.Attachments {
+	for i := range parsed.Attachments {
+		ap := &parsed.Attachments[i]
 		// Policy + archive scan before retention (MIME-011/012/015).
 		verdict := a.Scanner.Scan(ctx, domain.ScanInput{
 			Name: ap.Name, MIMEType: ap.MIMEType, Data: ap.Data,
@@ -260,16 +282,16 @@ func (a *App) ingestOne(ctx context.Context, sess domain.POP3Session, acc *domai
 		}
 		if verdict.StoreContent {
 			uri, hash, _, err := a.Objects.Put("att", bytes.NewReader(ap.Data))
-			if err != nil {
-				continue
+			if err == nil {
+				at.StorageURI, at.Hash = uri, hash
 			}
-			at.StorageURI, at.Hash = uri, hash
 		} else {
 			// Dangerous content (blocked extension / zip bomb) is recorded
 			// but never retained (§13 악성 첨부).
 			a.audit(ctx, "attachment_blocked", "message:"+msg.ID, "ok",
 				fmt.Sprintf("%s: %s", ap.Name, verdict.Detail))
 		}
+		ap.Data = nil // release attachment memory immediately
 		atts = append(atts, at)
 	}
 	if err := a.Store.InsertMessage(ctx, msg, body, atts); err != nil {
@@ -284,3 +306,4 @@ func (a *App) ingestOne(ctx context.Context, sess domain.POP3Session, acc *domai
 	stats.New++
 	return nil
 }
+

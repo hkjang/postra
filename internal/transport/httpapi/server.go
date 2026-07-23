@@ -10,14 +10,17 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"postra/internal/application"
 	"postra/internal/domain"
+	"postra/internal/platform/build"
 	"postra/internal/platform/metrics"
 )
+
 
 type Server struct {
 	app      *application.App
@@ -37,10 +40,17 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/admin/users/{id}", s.adminUpdateUser)
 	mux.HandleFunc("DELETE /api/admin/users/{id}", s.adminDeleteUser)
 	mux.HandleFunc("POST /api/admin/users/{id}/password", s.adminResetPassword)
+	mux.HandleFunc("GET /api/admin/mcp-keys", s.adminListMCPKeys)
+	mux.HandleFunc("DELETE /api/admin/mcp-keys/{id}", s.adminRevokeMCPKey)
 	mux.HandleFunc("GET /api/admin/settings", s.adminGetSettings)
 	mux.HandleFunc("PATCH /api/admin/settings", s.adminSaveSettings)
 	mux.HandleFunc("PUT /api/admin/ai", s.adminSaveAI)
 	mux.HandleFunc("POST /api/admin/ai/test", s.adminTestAI)
+
+	mux.HandleFunc("GET /api/mcp-keys", s.listMyMCPKeys)
+	mux.HandleFunc("POST /api/mcp-keys", s.createMCPKey)
+	mux.HandleFunc("DELETE /api/mcp-keys/{id}", s.revokeMyMCPKey)
+
 
 	mux.HandleFunc("POST /api/secrets", s.postSecret)
 	mux.HandleFunc("POST /api/secrets/{ref}/rotate", s.rotateSecret)
@@ -55,8 +65,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/accounts/{id}/disable", s.disableAccount)
 	mux.HandleFunc("POST /api/accounts/{id}/sync", s.startSync)
 
+	mux.HandleFunc("GET /api/jobs", s.listJobs)
 	mux.HandleFunc("GET /api/jobs/{id}", s.getJob)
 	mux.HandleFunc("POST /api/jobs/{id}/cancel", s.cancelJob)
+
 
 	mux.HandleFunc("GET /api/messages", s.search)
 	mux.HandleFunc("GET /api/messages/{id}", s.getMessage)
@@ -94,6 +106,8 @@ func (s *Server) Handler() http.Handler {
 	})
 	mux.HandleFunc("GET /api/readyz", s.readyz)
 	mux.HandleFunc("GET /api/healthz", s.readyz)
+	mux.HandleFunc("GET /api/system/info", s.systemInfo)
+
 
 	// Prometheus scrape endpoint (§18.1): unauthenticated so scrapers need no
 	// token; gated by config and by whatever the operator binds HTTPAddr to.
@@ -318,6 +332,11 @@ func (s *Server) authenticate(r *http.Request) (domain.Principal, bool) {
 		}
 	}
 	if raw != "" {
+		if _, p, err := s.app.AuthenticateMCPKey(r.Context(), raw); err == nil {
+			return p, true
+		}
+	}
+	if raw != "" {
 		if p, err := s.app.AuthenticateOIDCAccessToken(r.Context(), raw); err == nil {
 			return p, true
 		}
@@ -329,6 +348,7 @@ func (s *Server) authenticate(r *http.Request) (domain.Principal, bool) {
 	}
 	return domain.Principal{}, false
 }
+
 
 // ---------- helpers ----------
 
@@ -493,7 +513,11 @@ func (s *Server) startSync(w http.ResponseWriter, r *http.Request) {
 	if r.ContentLength > 0 {
 		opts, _ = decode[application.SyncOptions](r)
 	}
+	if opts.MaxMessages <= 0 {
+		opts.FullSync = true
+	}
 	job, err := s.app.StartSync(r.Context(), r.PathValue("id"), opts)
+
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -508,6 +532,35 @@ func (s *Server) getJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, job)
+}
+
+func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	jobs, err := s.app.ListJobs(r.Context(), limit)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, jobs)
+}
+
+
+
+
+
+func (s *Server) systemInfo(w http.ResponseWriter, r *http.Request) {
+	pgConfigured := strings.TrimSpace(s.app.Cfg.PostgresDSN) != ""
+	driver := s.app.Cfg.StorageDriver
+	if pgConfigured && (driver == "" || driver == "sqlite") && os.Getenv("POSTRA_STORAGE_DRIVER") != "sqlite" {
+		driver = "postgres"
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"version":                 build.Version,
+		"storage_driver":          driver,
+		"postgres_dsn_configured": pgConfigured,
+		"auth_enabled":            s.app.Cfg.Auth.Enabled,
+		"ai_model":                s.app.Cfg.AI.Model,
+	})
 }
 
 func (s *Server) cancelJob(w http.ResponseWriter, r *http.Request) {
@@ -841,3 +894,56 @@ func (s *Server) audit(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, evs)
 }
+
+func (s *Server) createMCPKey(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Name string `json:"name"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	key, rawKey, err := s.app.CreateMCPKey(r.Context(), body.Name)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"key":     key,
+		"raw_key": rawKey,
+	})
+}
+
+func (s *Server) listMyMCPKeys(w http.ResponseWriter, r *http.Request) {
+	keys, err := s.app.ListMyMCPKeys(r.Context())
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"keys": keys})
+}
+
+func (s *Server) revokeMyMCPKey(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := s.app.RevokeMyMCPKey(r.Context(), id); err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "revoked"})
+}
+
+func (s *Server) adminListMCPKeys(w http.ResponseWriter, r *http.Request) {
+	keys, err := s.app.AdminListMCPKeys(r.Context())
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"keys": keys})
+}
+
+func (s *Server) adminRevokeMCPKey(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := s.app.AdminRevokeMCPKey(r.Context(), id); err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "revoked"})
+}
+

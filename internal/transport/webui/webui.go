@@ -8,22 +8,28 @@ package webui
 import (
 	"crypto/subtle"
 	"embed"
+	"encoding/json"
 	"errors"
 	"html/template"
 	"io"
+
 	"log/slog"
 	"mime"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
+
 	"postra/internal/application"
 	"postra/internal/domain"
+	"postra/internal/platform/build"
 	"postra/internal/platform/metrics"
 )
+
 
 //go:embed templates/*.html
 var files embed.FS
@@ -63,7 +69,7 @@ var funcs = template.FuncMap{
 func parseTemplates() map[string]*template.Template {
 	pages := []string{"search", "message", "draft", "send", "sent", "login", "error",
 		"accounts", "account_new", "account", "compose", "analysis", "job",
-		"setup", "admin_users", "admin_settings"}
+		"setup", "admin_users", "admin_settings", "mcp_keys"}
 	pages = append(pages, "admin_ai")
 	out := make(map[string]*template.Template, len(pages))
 	for _, p := range pages {
@@ -83,13 +89,20 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /ui/auth/oidc/start", s.oidcStart)
 	mux.HandleFunc("GET /ui/auth/oidc/callback", s.oidcCallback)
 	mux.HandleFunc("POST /ui/logout", s.gate(s.logout))
+	mux.HandleFunc("GET /ui/mcp-keys", s.gate(s.mcpKeys))
+	mux.HandleFunc("POST /ui/mcp-keys", s.gate(s.mcpKeyCreate))
+	mux.HandleFunc("POST /ui/mcp-keys/{id}/revoke", s.gate(s.mcpKeyRevoke))
+	mux.HandleFunc("POST /ui/admin/mcp-keys/{id}/revoke", s.gate(s.adminMCPKeyRevoke))
 	mux.HandleFunc("GET /ui/admin/users", s.gate(s.adminUsers))
+
 	mux.HandleFunc("POST /ui/admin/users", s.gate(s.adminUserCreate))
 	mux.HandleFunc("POST /ui/admin/users/{id}", s.gate(s.adminUserUpdate))
 	mux.HandleFunc("POST /ui/admin/users/{id}/password", s.gate(s.adminPasswordReset))
 	mux.HandleFunc("POST /ui/admin/users/{id}/delete", s.gate(s.adminUserDelete))
 	mux.HandleFunc("GET /ui/admin/settings", s.gate(s.adminSettings))
 	mux.HandleFunc("POST /ui/admin/settings", s.gate(s.adminSettingsSave))
+	mux.HandleFunc("GET /ui/jobs/status", s.gate(s.jobsStatus))
+
 	mux.HandleFunc("GET /ui/admin/ai", s.gate(s.adminAI))
 	mux.HandleFunc("POST /ui/admin/ai", s.gate(s.adminAISave))
 	mux.HandleFunc("POST /ui/admin/ai/test", s.gate(s.adminAITest))
@@ -162,7 +175,7 @@ func (s *Server) gate(h http.HandlerFunc) http.HandlerFunc {
 }
 
 func validRequestOrigin(r *http.Request) bool {
-	if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" && site != "none" {
+	if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" && site != "same-site" && site != "none" {
 		return false
 	}
 	origin := r.Header.Get("Origin")
@@ -173,12 +186,20 @@ func validRequestOrigin(r *http.Request) bool {
 	if err != nil {
 		return false
 	}
+	originHostname := u.Hostname()
+
 	requestHost := r.Host
 	if forwarded := firstForwarded(r.Header.Get("X-Forwarded-Host")); forwarded != "" {
 		requestHost = forwarded
 	}
-	return strings.EqualFold(u.Host, requestHost)
+	requestHostname, _, err := net.SplitHostPort(requestHost)
+	if err != nil {
+		requestHostname = requestHost
+	}
+
+	return strings.EqualFold(originHostname, requestHostname) || strings.EqualFold(u.Host, requestHost)
 }
+
 
 func (s *Server) authed(r *http.Request) bool {
 	c, err := r.Cookie(cookieName)
@@ -321,8 +342,13 @@ func (s *Server) oidcCallback(w http.ResponseWriter, r *http.Request) {
 }
 
 func secureRequest(r *http.Request) bool {
-	return r.TLS != nil || strings.EqualFold(firstForwarded(r.Header.Get("X-Forwarded-Proto")), "https")
+	return r.TLS != nil ||
+		strings.EqualFold(firstForwarded(r.Header.Get("X-Forwarded-Proto")), "https") ||
+		strings.EqualFold(firstForwarded(r.Header.Get("X-Forwarded-Scheme")), "https") ||
+		strings.EqualFold(r.Header.Get("Front-End-Https"), "on") ||
+		strings.EqualFold(r.Header.Get("X-Url-Scheme"), "https")
 }
+
 
 func firstForwarded(value string) string {
 	if value, _, ok := strings.Cut(value, ","); ok {
@@ -479,8 +505,18 @@ func (s *Server) adminSettings(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	s.render(w, "admin_settings", http.StatusOK, map[string]any{"Settings": settings})
+	pgConfigured := strings.TrimSpace(s.app.Cfg.PostgresDSN) != ""
+	driver := s.app.Cfg.StorageDriver
+	if pgConfigured && (driver == "" || driver == "sqlite") && os.Getenv("POSTRA_STORAGE_DRIVER") != "sqlite" {
+		driver = "postgres"
+	}
+	s.render(w, "admin_settings", http.StatusOK, map[string]any{
+		"Settings":               settings,
+		"StorageDriver":          driver,
+		"PostgresDSNConfigured": pgConfigured,
+	})
 }
+
 
 func (s *Server) adminSettingsSave(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
@@ -792,7 +828,8 @@ func (s *Server) accountTest(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) accountSync(w http.ResponseWriter, r *http.Request) {
-	job, err := s.app.StartSync(r.Context(), r.PathValue("id"), application.SyncOptions{})
+	job, err := s.app.StartSync(r.Context(), r.PathValue("id"), application.SyncOptions{FullSync: true})
+
 	if err != nil {
 		metrics.UIActions.WithLabelValues("sync_start", "error").Inc()
 		acc, getErr := s.app.GetAccount(r.Context(), r.PathValue("id"))
@@ -816,6 +853,27 @@ func (s *Server) job(w http.ResponseWriter, r *http.Request) {
 	running := job.Status == domain.JobQueued || job.Status == domain.JobRunning
 	s.render(w, "job", http.StatusOK, map[string]any{"Job": job, "Running": running})
 }
+
+func (s *Server) jobsStatus(w http.ResponseWriter, r *http.Request) {
+	jobs, err := s.app.ListJobs(r.Context(), 10)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	var active []domain.Job
+	for _, j := range jobs {
+		if j.Status == domain.JobQueued || j.Status == domain.JobRunning {
+			active = append(active, j)
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"jobs":        jobs,
+		"active_jobs": active,
+		"has_active":  len(active) > 0,
+	})
+}
+
 
 func (s *Server) message(w http.ResponseWriter, r *http.Request) {
 	view, err := s.app.GetMessage(r.Context(), r.PathValue("id"), true)
@@ -1000,6 +1058,10 @@ func (s *Server) render(w http.ResponseWriter, page string, code int, data map[s
 		http.Error(w, "unknown page", http.StatusInternalServerError)
 		return
 	}
+	if data == nil {
+		data = map[string]any{}
+	}
+	data["Version"] = build.Version
 	if page == "login" || page == "setup" {
 		data["AuthPage"] = true
 	}
@@ -1009,6 +1071,7 @@ func (s *Server) render(w http.ResponseWriter, page string, code int, data map[s
 		slog.Error("webui render failed", "page", page, "err", err)
 	}
 }
+
 
 // fail renders user errors as 400 and everything else as 500, mirroring the
 // REST error mapping so the UI never leaks raw internals as a 200.
@@ -1053,3 +1116,66 @@ func humanSize(n int64) string {
 	}
 	return strconv.FormatFloat(float64(n)/float64(div), 'f', 1, 64) + " " + string("KMGT"[exp]) + "B"
 }
+
+// ---------- MCP Keys Web UI ----------
+
+func (s *Server) mcpKeys(w http.ResponseWriter, r *http.Request) {
+	keys, err := s.app.ListMyMCPKeys(r.Context())
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	data := map[string]any{
+		"Keys": keys,
+	}
+	p, ok := application.PrincipalFrom(r.Context())
+	if ok && p.IsAdmin() {
+		if adminKeys, err := s.app.AdminListMCPKeys(r.Context()); err == nil {
+			data["AdminKeys"] = adminKeys
+		}
+	}
+	s.render(w, "mcp_keys", http.StatusOK, data)
+}
+
+func (s *Server) mcpKeyCreate(w http.ResponseWriter, r *http.Request) {
+	name := r.FormValue("name")
+	key, rawKey, err := s.app.CreateMCPKey(r.Context(), name)
+	if err != nil {
+		keys, _ := s.app.ListMyMCPKeys(r.Context())
+		data := map[string]any{"Error": err.Error(), "Keys": keys}
+		s.render(w, "mcp_keys", http.StatusBadRequest, data)
+		return
+	}
+	keys, _ := s.app.ListMyMCPKeys(r.Context())
+	data := map[string]any{
+		"Keys":   keys,
+		"Key":    key,
+		"RawKey": rawKey,
+	}
+	p, ok := application.PrincipalFrom(r.Context())
+	if ok && p.IsAdmin() {
+		if adminKeys, err := s.app.AdminListMCPKeys(r.Context()); err == nil {
+			data["AdminKeys"] = adminKeys
+		}
+	}
+	s.render(w, "mcp_keys", http.StatusOK, data)
+}
+
+func (s *Server) mcpKeyRevoke(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := s.app.RevokeMyMCPKey(r.Context(), id); err != nil {
+		s.fail(w, err)
+		return
+	}
+	http.Redirect(w, r, "/ui/mcp-keys", http.StatusSeeOther)
+}
+
+func (s *Server) adminMCPKeyRevoke(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := s.app.AdminRevokeMCPKey(r.Context(), id); err != nil {
+		s.fail(w, err)
+		return
+	}
+	http.Redirect(w, r, "/ui/mcp-keys", http.StatusSeeOther)
+}
+

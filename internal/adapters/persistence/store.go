@@ -177,6 +177,12 @@ CREATE TABLE IF NOT EXISTS system_settings (
   key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL,
   updated_by TEXT NOT NULL DEFAULT '');
 
+CREATE TABLE IF NOT EXISTS mcp_keys (
+  id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL, key_hash TEXT UNIQUE NOT NULL, key_prefix TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active', created_at INTEGER NOT NULL, last_used_at INTEGER DEFAULT 0);
+CREATE INDEX IF NOT EXISTS idx_mcp_keys_user ON mcp_keys(user_id);
+
 CREATE TABLE IF NOT EXISTS mail_accounts (
   id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL,
   email TEXT NOT NULL, status TEXT NOT NULL,
@@ -1358,6 +1364,43 @@ func (s *Store) GetJob(ctx context.Context, userID, id string) (*domain.Job, err
 	return &j, nil
 }
 
+func (s *Store) ListJobs(ctx context.Context, userID string, limit int) ([]domain.Job, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	query := `SELECT id, user_id, type, account_id, status, progress, stats_json, error, meta_json, created_at, updated_at
+		FROM jobs WHERE user_id=? ORDER BY updated_at DESC LIMIT ?`
+	args := []any{userID, limit}
+	if userID == "" {
+		query = `SELECT id, user_id, type, account_id, status, progress, stats_json, error, meta_json, created_at, updated_at
+			FROM jobs ORDER BY updated_at DESC LIMIT ?`
+		args = []any{limit}
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.Job
+	for rows.Next() {
+		var j domain.Job
+		var stats, meta, accountID, progress, jerr sql.NullString
+		if err := rows.Scan(&j.ID, &j.UserID, &j.Type, &accountID, &j.Status, &progress, &stats, &jerr, &meta, &j.CreatedAt, &j.UpdatedAt); err != nil {
+			return nil, err
+		}
+		j.AccountID, j.Progress, j.Error = accountID.String, progress.String, jerr.String
+		if stats.String != "" {
+			_ = json.Unmarshal([]byte(stats.String), &j.Stats)
+		}
+		if meta.String != "" {
+			_ = json.Unmarshal([]byte(meta.String), &j.Meta)
+		}
+		out = append(out, j)
+	}
+	return out, rows.Err()
+}
+
+
 // ---------- audit ----------
 
 func (s *Store) AppendAudit(ctx context.Context, ev domain.AuditEvent) error {
@@ -1404,3 +1447,89 @@ func boolInt(b bool) int {
 	}
 	return 0
 }
+
+// ---------- MCP Keys ----------
+
+func (s *Store) CreateMCPKey(ctx context.Context, key *domain.MCPKey) error {
+	key.CreatedAt = time.Now().Unix()
+	_, err := s.db.ExecContext(ctx, `INSERT INTO mcp_keys (id, user_id, name, key_hash, key_prefix, status, created_at, last_used_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		key.ID, key.UserID, key.Name, key.KeyHash, key.KeyPrefix, key.Status, key.CreatedAt, key.LastUsedAt)
+	return err
+}
+
+func (s *Store) GetMCPKeyByHash(ctx context.Context, keyHash string) (*domain.MCPKey, *domain.User, error) {
+	var k domain.MCPKey
+	var u domain.User
+	err := s.db.QueryRowContext(ctx, `SELECT k.id, k.user_id, k.name, k.key_hash, k.key_prefix, k.status, k.created_at, k.last_used_at,
+		u.id, u.login_id, u.display_name, u.email, u.role, u.status, u.auth_provider, u.created_at, u.updated_at, u.last_login_at
+		FROM mcp_keys k JOIN users u ON u.id = k.user_id WHERE k.key_hash = ? AND k.status = 'active'`, keyHash).
+		Scan(&k.ID, &k.UserID, &k.Name, &k.KeyHash, &k.KeyPrefix, &k.Status, &k.CreatedAt, &k.LastUsedAt,
+			&u.ID, &u.LoginID, &u.DisplayName, &u.Email, &u.Role, &u.Status, &u.AuthProvider, &u.CreatedAt, &u.UpdatedAt, &u.LastLoginAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	return &k, &u, nil
+}
+
+func (s *Store) ListMCPKeys(ctx context.Context, userID string) ([]domain.MCPKey, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, user_id, name, key_hash, key_prefix, status, created_at, last_used_at
+		FROM mcp_keys WHERE user_id = ? ORDER BY created_at DESC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.MCPKey
+	for rows.Next() {
+		var k domain.MCPKey
+		if err := rows.Scan(&k.ID, &k.UserID, &k.Name, &k.KeyHash, &k.KeyPrefix, &k.Status, &k.CreatedAt, &k.LastUsedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, k)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ListAllMCPKeys(ctx context.Context) ([]domain.MCPKey, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, user_id, name, key_hash, key_prefix, status, created_at, last_used_at
+		FROM mcp_keys ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.MCPKey
+	for rows.Next() {
+		var k domain.MCPKey
+		if err := rows.Scan(&k.ID, &k.UserID, &k.Name, &k.KeyHash, &k.KeyPrefix, &k.Status, &k.CreatedAt, &k.LastUsedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, k)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) RevokeMCPKey(ctx context.Context, userID, keyID string) error {
+	var err error
+	var res sql.Result
+	if userID != "" {
+		res, err = s.db.ExecContext(ctx, `UPDATE mcp_keys SET status = 'revoked' WHERE id = ? AND user_id = ?`, keyID, userID)
+	} else {
+		res, err = s.db.ExecContext(ctx, `UPDATE mcp_keys SET status = 'revoked' WHERE id = ?`, keyID)
+	}
+	if err != nil {
+		return err
+	}
+	if rows, _ := res.RowsAffected(); rows == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) TouchMCPKey(ctx context.Context, keyID string, lastUsedAt int64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE mcp_keys SET last_used_at = ? WHERE id = ?`, lastUsedAt, keyID)
+	return err
+}
+

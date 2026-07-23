@@ -2,7 +2,7 @@
 {{define "content"}}
 <div class="auth-shell">
 <section class="auth-panel">
-  <div class="auth-brand"><span class="brand-mark">P</span>Postra</div>
+  <div class="auth-brand"><span class="brand-mark">P</span>Postra <span class="tag" style="margin-left:0.5rem">v{{.Version}}</span></div>
   <div class="auth-card">
   <h1>다시 만나 반갑습니다</h1>
   <p class="muted">조직의 안전한 메일 워크스페이스에 로그인하세요.</p>
@@ -17,8 +17,9 @@
     <button type="submit" class="auth-submit">로그인</button>
   </form>
   {{if .OIDCEnabled}}<div class="auth-divider">또는</div><a class="btn ghost sso-button" href="/ui/auth/oidc/start">Keycloak SSO로 계속하기</a>{{end}}
-  <p class="small muted" style="margin-top:1.5rem">접속 기록은 보안 감사 목적으로 기록됩니다.</p>
+  <p class="small muted" style="margin-top:1.5rem">접속 기록은 보안 감사 목적으로 기록됩니다. · Postra v{{.Version}}</p>
   </div>
+
 </section>
 <aside class="auth-visual">
   <div class="auth-message">

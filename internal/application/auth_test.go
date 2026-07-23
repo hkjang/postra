@@ -228,3 +228,65 @@ func createScopedAccount(t *testing.T, app *App, ctx context.Context, email stri
 	}
 	return acc
 }
+
+func TestMCPKeyLifecycleAndAdminControl(t *testing.T) {
+	app, _, _, _ := newTestApp(t)
+	base := WithActor(context.Background(), "test")
+	admin, err := app.SetupInitialAdmin(base, "admin", "Admin", "admin-password-long")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminCtx := WithPrincipal(base, principalFor(admin, "local"))
+
+	// Create user
+	u2, err := app.AdminCreateUser(adminCtx, CreateUserInput{
+		LoginID: "user2", DisplayName: "User 2", Password: "user2-password-long", Role: domain.RoleUser,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	user2Ctx := WithPrincipal(base, principalFor(u2, "local"))
+
+	// Create MCP keys for admin and user2
+	adminKey, adminRawKey, err := app.CreateMCPKey(adminCtx, "Admin Laptop")
+	if err != nil || adminKey == nil || adminRawKey == "" {
+		t.Fatalf("CreateMCPKey admin error: %v", err)
+	}
+	u2Key, u2RawKey, err := app.CreateMCPKey(user2Ctx, "User2 Claude")
+	if err != nil || u2Key == nil || u2RawKey == "" {
+		t.Fatalf("CreateMCPKey user2 error: %v", err)
+	}
+
+	// Test AuthenticateMCPKey
+	_, pAdmin, err := app.AuthenticateMCPKey(base, adminRawKey)
+	if err != nil || pAdmin.UserID != admin.ID || pAdmin.AuthMethod != "mcp_key" || !pAdmin.IsAdmin() {
+		t.Fatalf("AuthenticateMCPKey admin error: %v, principal: %+v", err, pAdmin)
+	}
+	_, pUser2, err := app.AuthenticateMCPKey(base, u2RawKey)
+	if err != nil || pUser2.UserID != u2.ID || pUser2.AuthMethod != "mcp_key" || pUser2.IsAdmin() {
+		t.Fatalf("AuthenticateMCPKey user2 error: %v, principal: %+v", err, pUser2)
+	}
+
+	// List user's own keys
+	myKeys, err := app.ListMyMCPKeys(user2Ctx)
+	if err != nil || len(myKeys) != 1 || myKeys[0].ID != u2Key.ID {
+		t.Fatalf("ListMyMCPKeys error: %v, keys: %+v", err, myKeys)
+	}
+
+	// Admin list all keys
+	allKeys, err := app.AdminListMCPKeys(adminCtx)
+	if err != nil || len(allKeys) < 2 {
+		t.Fatalf("AdminListMCPKeys error: %v, keys: %+v", err, allKeys)
+	}
+
+	// Admin revokes user2's key
+	if err := app.AdminRevokeMCPKey(adminCtx, u2Key.ID); err != nil {
+		t.Fatalf("AdminRevokeMCPKey error: %v", err)
+	}
+
+	// User2's revoked key can no longer authenticate
+	if _, _, err := app.AuthenticateMCPKey(base, u2RawKey); err == nil {
+		t.Fatal("revoked MCP key was successfully authenticated")
+	}
+}
+

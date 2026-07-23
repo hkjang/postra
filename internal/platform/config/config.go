@@ -171,10 +171,11 @@ func Default() Config {
 		},
 		Sync: SyncConfig{
 			MaxMessageBytes:   50 << 20,
-			MaxPerSync:        500,
+			MaxPerSync:        0, // 0 = unlimited / full sync
 			ConnectTimeoutSec: 15,
 			CommandTimeoutSec: 60,
 		},
+
 		Send: SendConfig{
 			MaxPerMinute:     20,
 			MaxPerHour:       200,
@@ -211,8 +212,12 @@ func Load(path string) (Config, error) {
 		return cfg, err
 	}
 	applyEnv(&cfg)
+	if cfg.PostgresDSN != "" && (cfg.StorageDriver == "" || cfg.StorageDriver == "sqlite") && os.Getenv("POSTRA_STORAGE_DRIVER") != "sqlite" {
+		cfg.StorageDriver = "postgres"
+	}
 	return cfg, nil
 }
+
 
 func applyEnv(cfg *Config) {
 	set := func(key string, dst *string) {

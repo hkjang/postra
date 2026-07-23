@@ -260,8 +260,11 @@ func (s *session) firstLiteral() (io.ReadCloser, error) {
 	if len(s.literals) == 0 {
 		return nil, fmt.Errorf("no message literal in FETCH response")
 	}
-	return io.NopCloser(strings.NewReader(s.literals[0])), nil
+	lit := s.literals[0]
+	s.literals = nil
+	return io.NopCloser(strings.NewReader(lit)), nil
 }
+
 
 func (s *session) Delete(ctx context.Context, number int) error {
 	if _, err := s.exec(`STORE %d +FLAGS (\Deleted)`, number); err != nil {

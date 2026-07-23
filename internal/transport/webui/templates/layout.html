@@ -76,14 +76,19 @@ button.ghost,.btn.ghost{background:var(--card);color:var(--accent);border:1px so
 </head>
 <body>
 {{if not .AuthPage}}<header class="app-header">
-  <a href="/ui/" class="brand"><span class="brand-mark">P</span><span>Postra</span></a>
+  <a href="/ui/" class="brand"><span class="brand-mark">P</span><span>Postra</span><span class="tag">v{{.Version}}</span></a>
   <nav>
     <a href="/ui/">받은편지함</a>
     <a href="/ui/compose">새 메일</a>
     <a href="/ui/accounts">계정</a>
+    <a href="/ui/mcp-keys">MCP Key</a>
     <a href="/ui/admin/ai">AI</a>
     <a href="/ui/admin/users">관리</a>
   </nav>
+  <div id="live-sync-badge" style="display:none;margin-left:auto;margin-right:1rem;font-size:0.825rem;align-items:center;gap:0.4rem;padding:0.2rem 0.6rem;background:rgba(59,130,246,0.1);border:1px solid var(--accent,#3b82f6);border-radius:1rem;color:var(--accent,#3b82f6)">
+    <span>🔄</span>
+    <span id="live-sync-text">동기화 진행 중...</span>
+  </div>
   <form method="post" action="/ui/logout" class="header-logout">
     <button type="submit" class="ghost">로그아웃</button>
   </form>
@@ -91,5 +96,32 @@ button.ghost,.btn.ghost{background:var(--card);color:var(--accent);border:1px so
 <main{{if .AuthPage}} class="auth-main"{{end}}>
 {{block "content" .}}{{end}}
 </main>
+{{if not .AuthPage}}
+<footer style="max-width:1180px;margin:3rem auto 2rem;padding:1rem 1.5rem;border-top:1px solid var(--line);display:flex;justify-content:space-between;align-items:center" class="small muted">
+  <div>Postra Mail Platform · <b>v{{.Version}}</b></div>
+  <div><a href="/ui/mcp-keys" class="muted" style="text-decoration:none;margin-right:1rem">MCP Key 관리</a><a href="/ui/admin/settings" class="muted" style="text-decoration:none">시스템 설정</a></div>
+</footer>
+<script>
+(function() {
+  function checkSyncStatus() {
+    fetch('/ui/jobs/status').then(function(r){ return r.json(); }).then(function(d) {
+      var badge = document.getElementById('live-sync-badge');
+      var text = document.getElementById('live-sync-text');
+      if (!badge || !text) return;
+      if (d.has_active && d.active_jobs && d.active_jobs.length > 0) {
+        var job = d.active_jobs[0];
+        badge.style.display = 'inline-flex';
+        text.innerText = '동기화 진행 중 (' + (job.progress || '수집 중') + ')';
+      } else {
+        badge.style.display = 'none';
+      }
+    }).catch(function(){});
+  }
+  checkSyncStatus();
+  setInterval(checkSyncStatus, 4000);
+})();
+</script>
+{{end}}
 </body>
 </html>{{end}}
+

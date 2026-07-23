@@ -32,6 +32,13 @@ type Storage interface {
 	UpsertSettings(ctx context.Context, values map[string]string) error
 	GetOrCreateSetting(ctx context.Context, key, candidate string) (string, error)
 
+	CreateMCPKey(ctx context.Context, key *domain.MCPKey) error
+	GetMCPKeyByHash(ctx context.Context, keyHash string) (*domain.MCPKey, *domain.User, error)
+	ListMCPKeys(ctx context.Context, userID string) ([]domain.MCPKey, error)
+	ListAllMCPKeys(ctx context.Context) ([]domain.MCPKey, error)
+	RevokeMCPKey(ctx context.Context, userID, keyID string) error
+	TouchMCPKey(ctx context.Context, keyID string, lastUsedAt int64) error
+
 	CreateAccount(ctx context.Context, a *domain.MailAccount) error
 	GetAccount(ctx context.Context, userID, id string) (*domain.MailAccount, error)
 	ListAccounts(ctx context.Context, userID string) ([]domain.MailAccount, error)
@@ -81,6 +88,8 @@ type Storage interface {
 	UpdateJob(ctx context.Context, j *domain.Job) error
 	RecoverStaleJobs(ctx context.Context) (int64, error)
 	GetJob(ctx context.Context, userID, id string) (*domain.Job, error)
+	ListJobs(ctx context.Context, userID string, limit int) ([]domain.Job, error)
+
 
 	AppendAudit(ctx context.Context, ev domain.AuditEvent) error
 	SearchAudit(ctx context.Context, userID string, limit int) ([]domain.AuditEvent, error)
