@@ -30,8 +30,12 @@ type Message struct {
 	References     string `json:"references,omitempty"`
 	// AuthResults summarizes SPF/DKIM/DMARC from Authentication-Results (MIME-016).
 	AuthResults string `json:"auth_results,omitempty"`
-	ParseError  string `json:"parse_error,omitempty"` // partial-parse marker (MIME-004)
-	CreatedAt   int64  `json:"created_at"`
+	ParseError   string   `json:"parse_error,omitempty"` // partial-parse marker (MIME-004)
+	CreatedAt    int64    `json:"created_at"`
+	IsArchived   bool     `json:"is_archived,omitempty"`
+	IsImportant  bool     `json:"is_important,omitempty"`
+	SnoozedUntil int64    `json:"snoozed_until,omitempty"`
+	Labels       []string `json:"labels,omitempty"`
 }
 
 type MessageBody struct {
@@ -111,6 +115,10 @@ type SearchQuery struct {
 	HasAttachment *bool  `json:"has_attachment,omitempty"`
 	Limit         int    `json:"limit,omitempty"`
 	Cursor        string `json:"cursor,omitempty"`
+	Folder        string `json:"folder,omitempty"` // "inbox", "important", "archive", "snoozed"
+	Label         string `json:"label,omitempty"`
+	IsImportant   *bool  `json:"is_important,omitempty"`
+	IsArchived    *bool  `json:"is_archived,omitempty"`
 }
 
 type SearchResult struct {

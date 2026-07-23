@@ -87,6 +87,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/qa", s.questionAnswer)
 	mux.HandleFunc("POST /api/embeddings/build", s.buildEmbeddings)
 	mux.HandleFunc("POST /api/semantic-search", s.semanticSearch)
+	mux.HandleFunc("POST /api/hybrid-search", s.hybridSearch)
+	mux.HandleFunc("POST /api/messages/batch", s.batchUpdateMessages)
+	mux.HandleFunc("GET /api/threads/{id}/timeline", s.getThreadTimeline)
 
 	mux.HandleFunc("POST /api/drafts", s.createDraft)
 	mux.HandleFunc("GET /api/drafts/{id}", s.getDraft)
@@ -955,5 +958,43 @@ func (s *Server) adminRevokeMCPKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "revoked"})
+}
+
+func (s *Server) batchUpdateMessages(w http.ResponseWriter, r *http.Request) {
+	var opts application.BatchUpdateOptions
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&opts); err != nil {
+		writeErr(w, err)
+		return
+	}
+	count, err := s.app.BatchUpdateMessages(r.Context(), opts)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"updated": count})
+}
+
+func (s *Server) hybridSearch(w http.ResponseWriter, r *http.Request) {
+	var opts application.HybridSearchOptions
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&opts); err != nil {
+		writeErr(w, err)
+		return
+	}
+	views, err := s.app.HybridSearch(r.Context(), opts)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"results": views, "count": len(views)})
+}
+
+func (s *Server) getThreadTimeline(w http.ResponseWriter, r *http.Request) {
+	threadID := r.PathValue("id")
+	timeline, err := s.app.GetThreadTimeline(r.Context(), threadID)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"timeline": timeline, "count": len(timeline)})
 }
 

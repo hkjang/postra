@@ -119,6 +119,34 @@ button.ghost,.btn.ghost{background:var(--card);color:var(--accent);border:1px so
   }
   checkSyncStatus();
   setInterval(checkSyncStatus, 4000);
+
+  // Global Keyboard Shortcuts (§P2 키보드 단축키)
+  document.addEventListener('keydown', function(e) {
+    if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+    if (e.key === '/') {
+      var searchInput = document.querySelector('input[name="q"], input[type="search"]');
+      if (searchInput) {
+        e.preventDefault();
+        searchInput.focus();
+      }
+    } else if (e.key === 'c') {
+      e.preventDefault();
+      window.location.href = '/ui/compose';
+    } else if (e.key === 'j' || e.key === 'k') {
+      var rows = Array.from(document.querySelectorAll('tr.msg-row, .message-card'));
+      if (rows.length === 0) return;
+      var activeIndex = rows.findIndex(r => r.classList.contains('focused-row'));
+      if (activeIndex !== -1) rows[activeIndex].classList.remove('focused-row');
+      if (e.key === 'j') activeIndex = Math.min(rows.length - 1, activeIndex + 1);
+      if (e.key === 'k') activeIndex = Math.max(0, activeIndex - 1);
+      if (activeIndex >= 0 && rows[activeIndex]) {
+        rows[activeIndex].classList.add('focused-row');
+        rows[activeIndex].scrollIntoView({ block: 'nearest' });
+      }
+    }
+  });
 })();
 </script>
 {{end}}

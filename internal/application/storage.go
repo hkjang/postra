@@ -60,6 +60,7 @@ type Storage interface {
 	GetBody(ctx context.Context, userID, messageID string) (*domain.MessageBody, error)
 	ListAttachments(ctx context.Context, userID, messageID string) ([]domain.Attachment, error)
 	Search(ctx context.Context, q domain.SearchQuery) (*domain.SearchResult, error)
+	UpdateMessage(ctx context.Context, m *domain.Message) error
 
 	ResolveThread(ctx context.Context, userID, accountID string, refs []string, subjectKey string, date int64) (string, error)
 	GetThreadMessages(ctx context.Context, userID, threadID string) ([]domain.Message, error)

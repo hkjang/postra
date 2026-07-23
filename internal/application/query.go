@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sort"
 
 	"postra/internal/domain"
 	"postra/internal/platform/mask"
@@ -154,4 +155,101 @@ func (a *App) PolicySnapshot() map[string]any {
 		"max_message_bytes":      a.Cfg.Sync.MaxMessageBytes,
 		"max_per_sync":           a.Cfg.Sync.MaxPerSync,
 	}
+}
+
+type BatchAction string
+
+const (
+	BatchActionDelete    BatchAction = "delete"
+	BatchActionArchive   BatchAction = "archive"
+	BatchActionUnarchive BatchAction = "unarchive"
+	BatchActionImportant BatchAction = "important"
+	BatchActionSnooze    BatchAction = "snooze"
+)
+
+type BatchUpdateOptions struct {
+	MessageIDs   []string    `json:"message_ids"`
+	Action       BatchAction `json:"action"`
+	SnoozedUntil int64       `json:"snoozed_until,omitempty"`
+}
+
+// BatchUpdateMessages performs bulk operations (delete, archive, mark important, snooze) on messages (§P2 메일 UX 확장).
+func (a *App) BatchUpdateMessages(ctx context.Context, opts BatchUpdateOptions) (int, error) {
+	userID := userIDFrom(ctx)
+	if len(opts.MessageIDs) == 0 {
+		return 0, userErrf("no message IDs provided")
+	}
+
+	count := 0
+	for _, id := range opts.MessageIDs {
+		switch opts.Action {
+		case BatchActionDelete:
+			if err := a.LocalDelete(ctx, id); err == nil {
+				count++
+			}
+		case BatchActionArchive, BatchActionUnarchive:
+			if m, err := a.Store.GetMessage(ctx, userID, id); err == nil {
+				m.IsArchived = (opts.Action == BatchActionArchive)
+				if err := a.Store.UpdateMessage(ctx, m); err == nil {
+					count++
+				}
+			}
+		case BatchActionImportant:
+			if m, err := a.Store.GetMessage(ctx, userID, id); err == nil {
+				m.IsImportant = !m.IsImportant
+				if err := a.Store.UpdateMessage(ctx, m); err == nil {
+					count++
+				}
+			}
+		case BatchActionSnooze:
+			if m, err := a.Store.GetMessage(ctx, userID, id); err == nil {
+				m.SnoozedUntil = opts.SnoozedUntil
+				if err := a.Store.UpdateMessage(ctx, m); err == nil {
+					count++
+				}
+			}
+		default:
+			return 0, userErrf("unsupported batch action %q", opts.Action)
+		}
+	}
+
+	a.audit(ctx, "batch_update_messages", "action:"+string(opts.Action), "ok", fmt.Sprintf("count=%d", count))
+	return count, nil
+}
+
+// GetThreadTimeline returns all messages in a conversation thread formatted for a interactive timeline view (§P2 대화형 타임라인).
+func (a *App) GetThreadTimeline(ctx context.Context, threadID string) ([]MessageView, error) {
+	if threadID == "" {
+		return nil, userErrf("threadID is required")
+	}
+	userID := userIDFrom(ctx)
+
+	res, err := a.Store.Search(ctx, domain.SearchQuery{
+		UserID: userID,
+		Limit:  100,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var threadMsgs []domain.Message
+	for _, m := range res.Messages {
+		if m.ThreadID == threadID || m.ID == threadID {
+			threadMsgs = append(threadMsgs, m)
+		}
+	}
+
+	sort.Slice(threadMsgs, func(i, j int) bool {
+		return threadMsgs[i].Date < threadMsgs[j].Date
+	})
+
+	var timeline []MessageView
+	for _, m := range threadMsgs {
+		v, err := a.GetMessage(ctx, m.ID, true)
+		if err == nil && v != nil {
+			timeline = append(timeline, *v)
+		}
+	}
+
+	return timeline, nil
 }

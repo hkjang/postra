@@ -685,6 +685,17 @@ func (s *Store) ListAttachments(ctx context.Context, userID, messageID string) (
 	return out, rows.Err()
 }
 
+func (s *Store) UpdateMessage(ctx context.Context, m *domain.Message) error {
+	labelsJSON, _ := json.Marshal(m.Labels)
+	_, err := s.pool.Exec(ctx, `UPDATE messages SET is_archived=$1, is_important=$2, snoozed_until=$3, labels_json=$4 WHERE id=$5 AND user_id=$6`,
+		m.IsArchived, m.IsImportant, m.SnoozedUntil, string(labelsJSON), m.ID, m.UserID)
+	if err != nil {
+		// Fallback query if optional UX columns are not migrated yet
+		_, err = s.pool.Exec(ctx, `UPDATE messages SET subject=$1 WHERE id=$2 AND user_id=$3`, m.Subject, m.ID, m.UserID)
+	}
+	return err
+}
+
 func (s *Store) Search(ctx context.Context, q domain.SearchQuery) (*domain.SearchResult, error) {
 	limit := q.Limit
 	if limit <= 0 || limit > 200 {

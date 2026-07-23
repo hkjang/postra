@@ -382,6 +382,16 @@ func (s *Store) GetUserByOIDC(ctx context.Context, issuer, subject string) (*dom
 	return scanUser(s.db.QueryRowContext(ctx, `SELECT `+userCols+` FROM users WHERE oidc_issuer=? AND oidc_subject=?`, issuer, subject))
 }
 
+func (s *Store) UpdateMessage(ctx context.Context, m *domain.Message) error {
+	labelsJSON, _ := json.Marshal(m.Labels)
+	_, err := s.db.ExecContext(ctx, `UPDATE messages SET is_archived=?, is_important=?, snoozed_until=?, labels_json=? WHERE id=? AND user_id=?`,
+		m.IsArchived, m.IsImportant, m.SnoozedUntil, string(labelsJSON), m.ID, m.UserID)
+	if err != nil {
+		_, err = s.db.ExecContext(ctx, `UPDATE messages SET subject=? WHERE id=? AND user_id=?`, m.Subject, m.ID, m.UserID)
+	}
+	return err
+}
+
 func (s *Store) ListUsers(ctx context.Context) ([]domain.User, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+userCols+` FROM users ORDER BY login_id`)
 	if err != nil {
