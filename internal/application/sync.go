@@ -25,12 +25,12 @@ type SyncOptions struct {
 // StartSync launches an asynchronous POP3 sync job and returns its job ID.
 func (a *App) StartSync(ctx context.Context, accountID string, opts SyncOptions) (*domain.Job, error) {
 	userID := userIDFrom(ctx)
-	acc, err := a.Store.GetAccount(ctx, userID, accountID)
+	acc, err := a.GetAccount(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
-	if acc.Status == domain.AccountDisabled {
-		return nil, userErrf("account %s is disabled", accountID)
+	if acc.Status != domain.AccountActive {
+		return nil, userErrf("account %s is %s", accountID, acc.Status)
 	}
 	if acc.POP3Host == "" {
 		return nil, userErrf("account %s has no POP3 server configured", accountID)

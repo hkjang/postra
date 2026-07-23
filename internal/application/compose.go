@@ -48,7 +48,7 @@ func parseAddressStrings(in []string) ([]domain.Address, error) {
 
 func (a *App) CreateDraft(ctx context.Context, in CreateDraftInput) (*DraftView, error) {
 	userID := userIDFrom(ctx)
-	acc, err := a.Store.GetAccount(ctx, userID, in.AccountID)
+	acc, err := a.GetAccount(ctx, in.AccountID)
 	if err != nil {
 		return nil, err
 	}
@@ -253,6 +253,21 @@ func (a *App) GetDraft(ctx context.Context, draftID string) (*DraftView, error) 
 		return nil, err
 	}
 	return &DraftView{Draft: *d, Version: *v}, nil
+}
+
+func (a *App) DiscardDraft(ctx context.Context, draftID string) error {
+	d, _, err := a.Store.GetDraft(ctx, userIDFrom(ctx), draftID)
+	if err != nil {
+		return err
+	}
+	if d.Status == domain.DraftSent {
+		return userErrf("sent drafts cannot be deleted")
+	}
+	if err := a.Store.SetDraftStatus(ctx, userIDFrom(ctx), draftID, domain.DraftDiscarded); err != nil {
+		return err
+	}
+	a.audit(ctx, "draft_discard", "draft:"+draftID, "ok", "")
+	return nil
 }
 
 func quote(body string) string {

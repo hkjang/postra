@@ -497,6 +497,16 @@ func (s *Store) UpsertSettings(ctx context.Context, values map[string]string) er
 	return tx.Commit()
 }
 
+func (s *Store) GetOrCreateSetting(ctx context.Context, key, candidate string) (string, error) {
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO system_settings(key,value,updated_at) VALUES(?,?,?)
+	 ON CONFLICT(key) DO NOTHING`, key, candidate, now()); err != nil {
+		return "", err
+	}
+	var value string
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM system_settings WHERE key=?`, key).Scan(&value)
+	return value, err
+}
+
 // ---------- accounts ----------
 
 func (s *Store) CreateAccount(ctx context.Context, a *domain.MailAccount) error {
@@ -543,7 +553,8 @@ func (s *Store) GetAccount(ctx context.Context, userID, id string) (*domain.Mail
 
 func (s *Store) ListAccounts(ctx context.Context, userID string) ([]domain.MailAccount, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+accountCols+` FROM mail_accounts WHERE user_id=? ORDER BY created_at`, userID)
+		`SELECT `+accountCols+` FROM mail_accounts WHERE user_id=? AND status<>? ORDER BY created_at`,
+		userID, domain.AccountDeleted)
 	if err != nil {
 		return nil, err
 	}

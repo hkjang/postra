@@ -31,6 +31,7 @@
 </div>
 <div class="actions">
   <a class="btn" href="/ui/drafts/{{$d.ID}}/send">발송 미리보기·승인 →</a>
+  <form method="post" action="/ui/drafts/{{$d.ID}}/delete" onsubmit="return confirm('이 초안을 삭제하시겠습니까?')"><button type="submit" class="danger">초안 삭제</button></form>
 </div>
 {{end}}
 {{end}}

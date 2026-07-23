@@ -9,13 +9,15 @@
   <td>{{.AuthProvider}}{{if .OIDCSubject}}<br><span class="small muted">OIDC 연결됨</span>{{end}}</td>
   <td>{{.Role}} · {{.Status}}</td>
   <td><form method="post" action="/ui/admin/users/{{.ID}}" class="actions">
+    <input type="text" name="display_name" value="{{.DisplayName}}" aria-label="표시 이름" required>
+    <input type="email" name="email" value="{{.Email}}" aria-label="이메일">
     <select name="role"><option value="user" {{if eq .Role "user"}}selected{{end}}>user</option><option value="admin" {{if eq .Role "admin"}}selected{{end}}>admin</option></select>
-    <select name="status"><option value="active" {{if eq .Status "active"}}selected{{end}}>active</option><option value="disabled" {{if eq .Status "disabled"}}selected{{end}}>disabled</option></select>
+    <select name="status"><option value="active" {{if eq .Status "active"}}selected{{end}}>active</option><option value="disabled" {{if ne .Status "active"}}selected{{end}}>disabled</option></select>
     <button class="ghost" type="submit">저장</button>
   </form>{{if eq .AuthProvider "local"}}<form method="post" action="/ui/admin/users/{{.ID}}/password" class="actions">
     <input type="password" name="password" minlength="12" placeholder="새 비밀번호" required autocomplete="new-password">
     <button class="ghost" type="submit">재설정</button>
-  </form>{{end}}</td>
+  </form>{{end}}{{if ne .Status "deleted"}}<form method="post" action="/ui/admin/users/{{.ID}}/delete" class="actions" onsubmit="return confirm('이 사용자를 삭제하시겠습니까? 로그인과 모든 세션이 차단됩니다.')"><button class="danger" type="submit">삭제</button></form>{{end}}</td>
 </tr>{{end}}</tbody></table></div>
 <h2>로컬 사용자 추가</h2>
 <form method="post" action="/ui/admin/users"><div class="card grid">

@@ -50,6 +50,12 @@ JSON schema: {"summary": string, "requests": [string], "dates": [string], "confi
 
 // singleVersionPrompts hold prompts that currently have only a v1.
 var singleVersionPrompts = map[string]promptSpec{
+	"triage": {
+		system: "You are a senior email operations analyst. Respond with JSON only, distinguish explicit facts from recommendations, and never invent deadlines.",
+		task: `Triage the email for a busy professional.
+JSON schema: {"sender_intent": string, "priority": "urgent"|"high"|"normal"|"low", "reply_required": boolean, "deadline": string|null, "business_risks": [string], "recommended_next_action": string, "confidence": number}
+Urgent requires explicit time sensitivity or material operational/security impact. A deadline must be copied from the email or null.`,
+	},
 	"classify": {
 		system: "You are an email classification assistant. Respond with JSON only.",
 		task: `Classify the email in the untrusted block.
@@ -108,7 +114,7 @@ func (a *App) activePrompt(analysisType string) (string, promptSpec, bool) {
 	if !ok || len(versions) == 0 {
 		return "", promptSpec{}, false
 	}
-	if pin, ok := a.Cfg.AI.PromptVersions[analysisType]; ok {
+	if pin, ok := a.currentAIConfig().PromptVersions[analysisType]; ok {
 		for _, vp := range versions {
 			if vp.version == pin {
 				return vp.version, vp.spec, true
@@ -122,7 +128,7 @@ func (a *App) activePrompt(analysisType string) (string, promptSpec, bool) {
 // aiEndpointLocal reports whether the configured AI endpoint resolves only to
 // loopback/private addresses (no exfiltration risk).
 func (a *App) aiEndpointLocal(ctx context.Context) bool {
-	u, err := url.Parse(a.Cfg.AI.BaseURL)
+	u, err := url.Parse(a.currentAIConfig().BaseURL)
 	if err != nil {
 		return false
 	}
@@ -148,10 +154,11 @@ func (a *App) aiEndpointLocal(ctx context.Context) bool {
 // checkAIPolicy blocks sending mail content to non-local AI endpoints unless
 // explicitly allowed (AI-011/012, §13 data-exfiltration control).
 func (a *App) checkAIPolicy(ctx context.Context) error {
-	if a.Cfg.AI.AllowExternal || a.aiEndpointLocal(ctx) {
+	cfg := a.currentAIConfig()
+	if cfg.AllowExternal || a.aiEndpointLocal(ctx) {
 		return nil
 	}
-	u, _ := url.Parse(a.Cfg.AI.BaseURL)
+	u, _ := url.Parse(cfg.BaseURL)
 	host := ""
 	if u != nil {
 		host = u.Hostname()
@@ -176,9 +183,10 @@ func (a *App) runAnalysis(ctx context.Context, analysisType, targetType, targetI
 	if err := a.checkAIPolicy(ctx); err != nil {
 		return nil, err
 	}
-	sum := sha256.Sum256([]byte(analysisType + "|" + pv + "|" + a.Cfg.AI.Model + "|" + userTask + "|" + untrusted))
+	aiCfg := a.currentAIConfig()
+	sum := sha256.Sum256([]byte(analysisType + "|" + pv + "|" + aiCfg.Model + "|" + userTask + "|" + untrusted))
 	inputHash := hex.EncodeToString(sum[:])
-	if cached, err := a.Store.FindCachedAnalysis(ctx, userID, analysisType, inputHash, a.Cfg.AI.Model); err == nil {
+	if cached, err := a.Store.FindCachedAnalysis(ctx, userID, analysisType, inputHash, aiCfg.Model); err == nil {
 		return cached, nil // AI-008 cache
 	}
 
@@ -189,7 +197,7 @@ func (a *App) runAnalysis(ctx context.Context, analysisType, targetType, targetI
 	// AI-011: mask PII/secrets before content leaves the box to an external
 	// endpoint. Local endpoints skip masking unless forced by policy.
 	content := truncateRunes(untrusted, maxAIBodyChars)
-	if a.Cfg.AI.MaskExternalPII && !a.aiEndpointLocal(ctx) {
+	if aiCfg.MaskExternalPII && !a.aiEndpointLocal(ctx) {
 		masked, hits := mask.Mask(content)
 		content = masked
 		if len(hits) > 0 {

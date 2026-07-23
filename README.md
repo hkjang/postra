@@ -80,6 +80,32 @@ POSTRA_OIDC_REDIRECT_URL='https://postra.example/ui/auth/oidc/callback' \
 공식 참고: [Keycloak OIDC endpoints](https://www.keycloak.org/securing-apps/oidc-layers),
 [Keycloak application security guide](https://www.keycloak.org/securing-apps/overview).
 
+### Kubernetes·멀티 노드
+
+Replica가 1개라면 Pod가 어느 노드에 배치되든 302 로그인 동작에는 영향이 없습니다. 재시작·
+재스케줄링 후에도 같은 PostgreSQL과 영속 볼륨을 사용해야 합니다. OIDC state 서명 키는
+공유 DB에서 원자적으로 생성되므로 로그인 시작과 callback이 서로 다른 Pod에 도착해도
+검증할 수 있습니다.
+
+2개 이상 Replica로 확장할 때는 다음 조건이 필요합니다.
+
+- `storage_driver=postgres`와 모든 Pod가 공유하는 동일 DSN
+- 모든 Pod에 동일한 `POSTRA_KEK`
+- SecretStore와 원문·첨부 ObjectStore가 있는 `data_dir`에 RWX 영속 볼륨
+- Ingress에서 `X-Forwarded-Host`와 `X-Forwarded-Proto` 전달
+
+SQLite는 단일 Pod 전용입니다. 현재 자동 동기화·outbox worker에는 Kubernetes leader
+election이 없으므로 백그라운드 worker를 실행하는 Postra Replica는 1개로 유지하는 것을
+권장합니다. 웹 수평 확장은 worker 분리 기능이 제공되기 전까지 지원 범위가 아닙니다.
+
+### AI 운영 관리
+
+관리자는 `/ui/admin/ai`에서 OpenAI 호환 Base URL, chat/embedding 모델, timeout, token
+한도, 외부 전송 및 PII 마스킹 정책을 관리합니다. API Key는 암호화 SecretStore에 저장되고
+설정은 실행 중인 provider에 즉시 적용됩니다. 연결 테스트는 실제 chat completion을 호출하되
+메일 본문이나 사용자 데이터는 보내지 않습니다. 메일 상세의 **업무 트리아지**는 발신 의도,
+우선순위, 답장 필요 여부, 명시된 기한, 업무 위험과 권장 다음 행동을 구조화합니다.
+
 ## 주기 동기화
 
 `config.json` 의 `sync.auto_sync_minutes` 를 0보다 크게 두면 `serve` 실행 시 백그라운드 스케줄러가 활성 POP3 계정을 해당 주기로 자동 동기화합니다(계정별 최소 간격 겸용). 또한 기동 시 재기동으로 중단된 `running`/`queued` job을 `failed` 로 정리해 유령 작업을 남기지 않습니다. 0이면 수동 동기화만 사용합니다.

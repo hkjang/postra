@@ -64,6 +64,7 @@ func parseTemplates() map[string]*template.Template {
 	pages := []string{"search", "message", "draft", "send", "sent", "login", "error",
 		"accounts", "account_new", "account", "compose", "analysis", "job",
 		"setup", "admin_users", "admin_settings"}
+	pages = append(pages, "admin_ai")
 	out := make(map[string]*template.Template, len(pages))
 	for _, p := range pages {
 		t := template.Must(template.New("layout").Funcs(funcs).
@@ -86,13 +87,19 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /ui/admin/users", s.gate(s.adminUserCreate))
 	mux.HandleFunc("POST /ui/admin/users/{id}", s.gate(s.adminUserUpdate))
 	mux.HandleFunc("POST /ui/admin/users/{id}/password", s.gate(s.adminPasswordReset))
+	mux.HandleFunc("POST /ui/admin/users/{id}/delete", s.gate(s.adminUserDelete))
 	mux.HandleFunc("GET /ui/admin/settings", s.gate(s.adminSettings))
 	mux.HandleFunc("POST /ui/admin/settings", s.gate(s.adminSettingsSave))
+	mux.HandleFunc("GET /ui/admin/ai", s.gate(s.adminAI))
+	mux.HandleFunc("POST /ui/admin/ai", s.gate(s.adminAISave))
+	mux.HandleFunc("POST /ui/admin/ai/test", s.gate(s.adminAITest))
 	mux.HandleFunc("GET /ui/", s.gate(s.search))
 	mux.HandleFunc("GET /ui/accounts", s.gate(s.accounts))
 	mux.HandleFunc("GET /ui/accounts/new", s.gate(s.accountNew))
 	mux.HandleFunc("POST /ui/accounts", s.gate(s.accountCreate))
 	mux.HandleFunc("GET /ui/accounts/{id}", s.gate(s.account))
+	mux.HandleFunc("POST /ui/accounts/{id}", s.gate(s.accountUpdate))
+	mux.HandleFunc("POST /ui/accounts/{id}/delete", s.gate(s.accountDelete))
 	mux.HandleFunc("POST /ui/accounts/{id}/test", s.gate(s.accountTest))
 	mux.HandleFunc("POST /ui/accounts/{id}/sync", s.gate(s.accountSync))
 	mux.HandleFunc("GET /ui/jobs/{id}", s.gate(s.job))
@@ -104,6 +111,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /ui/messages/{id}/draft", s.gate(s.messageDraft))
 	mux.HandleFunc("GET /ui/drafts/{id}", s.gate(s.draft))
 	mux.HandleFunc("POST /ui/drafts/{id}", s.gate(s.draftUpdate))
+	mux.HandleFunc("POST /ui/drafts/{id}/delete", s.gate(s.draftDelete))
 	mux.HandleFunc("POST /ui/drafts/{id}/rewrite", s.gate(s.draftRewrite))
 	mux.HandleFunc("GET /ui/drafts/{id}/send", s.gate(s.sendForm))
 	mux.HandleFunc("POST /ui/drafts/{id}/send", s.gate(s.sendSubmit))
@@ -436,9 +444,18 @@ func (s *Server) adminUserCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) adminUserUpdate(w http.ResponseWriter, r *http.Request) {
-	if _, err := s.app.AdminUpdateUser(r.Context(), r.PathValue("id"), domain.UserRole(r.FormValue("role")),
-		domain.UserStatus(r.FormValue("status"))); err != nil {
+	if _, err := s.app.AdminEditUser(r.Context(), r.PathValue("id"), r.FormValue("display_name"),
+		r.FormValue("email"), domain.UserRole(r.FormValue("role")), domain.UserStatus(r.FormValue("status"))); err != nil {
 		s.fail(w, err)
+		return
+	}
+	http.Redirect(w, r, "/ui/admin/users", http.StatusSeeOther)
+}
+
+func (s *Server) adminUserDelete(w http.ResponseWriter, r *http.Request) {
+	if err := s.app.AdminDeleteUser(r.Context(), r.PathValue("id")); err != nil {
+		users, _ := s.app.AdminListUsers(r.Context())
+		s.render(w, "admin_users", http.StatusBadRequest, map[string]any{"Users": users, "Error": err.Error()})
 		return
 	}
 	http.Redirect(w, r, "/ui/admin/users", http.StatusSeeOther)
@@ -476,12 +493,14 @@ func (s *Server) adminSettingsSave(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// Unchecked checkboxes are absent from form encoding.
-	for _, key := range []string{application.SettingOIDCAutoProvision, application.SettingAIAllowExternal,
-		application.SettingAIMaskExternalPII, application.SettingAllowInsecureMail,
+	for _, key := range []string{application.SettingOIDCAutoProvision, application.SettingAllowInsecureMail,
 		application.SettingAllowPrivateHosts, application.SettingEncryptAtRest} {
 		if _, ok := values[key]; !ok {
 			values[key] = "false"
 		}
+	}
+	if r.FormValue("remove_oidc_client_secret") == "true" {
+		values[application.SettingOIDCSecretRef] = ""
 	}
 	if err := s.app.AdminSaveSettings(r.Context(), values, r.FormValue("oidc_client_secret")); err != nil {
 		settings, _ := s.app.SystemSettings(r.Context())
@@ -489,6 +508,62 @@ func (s *Server) adminSettingsSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/ui/admin/settings?saved=1", http.StatusSeeOther)
+}
+
+func (s *Server) adminAI(w http.ResponseWriter, r *http.Request) {
+	if p, ok := application.PrincipalFrom(r.Context()); !ok || !p.IsAdmin() {
+		s.render(w, "error", http.StatusForbidden, map[string]any{"Message": "관리자 권한이 필요합니다."})
+		return
+	}
+	settings, err := s.app.SystemSettings(r.Context())
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	s.render(w, "admin_ai", http.StatusOK, map[string]any{
+		"Settings": settings, "Saved": r.URL.Query().Get("saved") == "1",
+	})
+}
+
+func aiFormValues(r *http.Request) map[string]string {
+	values := map[string]string{
+		application.SettingAIBaseURL:         r.FormValue(application.SettingAIBaseURL),
+		application.SettingAIModel:           r.FormValue(application.SettingAIModel),
+		application.SettingAIEmbedModel:      r.FormValue(application.SettingAIEmbedModel),
+		application.SettingAITimeout:         r.FormValue(application.SettingAITimeout),
+		application.SettingAIMaxTokens:       r.FormValue(application.SettingAIMaxTokens),
+		application.SettingAIAllowExternal:   "false",
+		application.SettingAIMaskExternalPII: "false",
+	}
+	if r.FormValue(application.SettingAIAllowExternal) == "true" {
+		values[application.SettingAIAllowExternal] = "true"
+	}
+	if r.FormValue(application.SettingAIMaskExternalPII) == "true" {
+		values[application.SettingAIMaskExternalPII] = "true"
+	}
+	if r.FormValue("remove_api_key") == "true" {
+		values[application.SettingAIAPIKeyRef] = ""
+	}
+	return values
+}
+
+func (s *Server) adminAISave(w http.ResponseWriter, r *http.Request) {
+	if err := s.app.AdminSaveAISettings(r.Context(), aiFormValues(r), r.FormValue("ai_api_key")); err != nil {
+		settings, _ := s.app.SystemSettings(r.Context())
+		s.render(w, "admin_ai", http.StatusBadRequest, map[string]any{"Settings": settings, "Error": err.Error()})
+		return
+	}
+	http.Redirect(w, r, "/ui/admin/ai?saved=1", http.StatusSeeOther)
+}
+
+func (s *Server) adminAITest(w http.ResponseWriter, r *http.Request) {
+	result, err := s.app.AdminTestAI(r.Context())
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	settings, _ := s.app.SystemSettings(r.Context())
+	s.render(w, "admin_ai", http.StatusOK, map[string]any{"Settings": settings, "Test": result})
 }
 
 const searchPageSize = 50
@@ -612,7 +687,85 @@ func (s *Server) account(w http.ResponseWriter, r *http.Request) {
 	}
 	s.render(w, "account", http.StatusOK, map[string]any{
 		"Account": acc, "Created": r.URL.Query().Get("created") == "1",
+		"Saved": r.URL.Query().Get("saved") == "1",
 	})
+}
+
+func (s *Server) accountUpdate(w http.ResponseWriter, r *http.Request) {
+	acc, err := s.app.GetAccount(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	popRef, smtpRef := string(acc.POP3Secret), string(acc.SMTPSecret)
+	name, email := strings.TrimSpace(r.FormValue("name")), strings.TrimSpace(r.FormValue("email"))
+	protocol := r.FormValue("inbound_protocol")
+	inHost, inSecurity := strings.TrimSpace(r.FormValue("inbound_host")), r.FormValue("inbound_security")
+	inUser := strings.TrimSpace(r.FormValue("inbound_username"))
+	smtpHost, smtpSecurity := strings.TrimSpace(r.FormValue("smtp_host")), r.FormValue("smtp_security")
+	smtpUser, smtpAuth := strings.TrimSpace(r.FormValue("smtp_username")), r.FormValue("smtp_auth")
+	status := domain.AccountStatus(r.FormValue("status"))
+	skipVerify := r.FormValue("insecure_skip_verify") == "true"
+	_, err = s.app.UpdateAccount(r.Context(), application.UpdateAccountInput{
+		AccountID: acc.ID, Name: &name, Email: &email, Status: &status, InboundProtocol: &protocol,
+		POP3Host: &inHost, POP3Port: ptr(intForm(r, "inbound_port")), POP3Security: &inSecurity,
+		POP3Username: &inUser, POP3SecretRef: &popRef, SMTPHost: &smtpHost,
+		SMTPPort: ptr(intForm(r, "smtp_port")), SMTPSecurity: &smtpSecurity, SMTPUsername: &smtpUser,
+		SMTPAuth: &smtpAuth, SMTPSecretRef: &smtpRef, InsecureSkipVerify: &skipVerify,
+	})
+	if err != nil {
+		s.render(w, "account", http.StatusBadRequest, map[string]any{"Account": acc, "Error": err.Error()})
+		return
+	}
+	if password := r.FormValue("password"); password != "" {
+		if err := s.app.RotateSecret(r.Context(), acc.POP3Secret, domain.NewSecretHandle([]byte(password))); err != nil {
+			s.render(w, "account", http.StatusBadRequest, map[string]any{"Account": acc, "Error": err.Error()})
+			return
+		}
+	}
+	if password := r.FormValue("smtp_password"); password != "" {
+		if acc.SMTPSecret == acc.POP3Secret {
+			ref, err := s.app.RegisterSecret(r.Context(), domain.SecretMailPassword, name+" 발신",
+				domain.NewSecretHandle([]byte(password)))
+			if err != nil {
+				s.render(w, "account", http.StatusBadRequest, map[string]any{"Account": acc, "Error": err.Error()})
+				return
+			}
+			smtpRef = string(ref)
+			if _, err := s.app.UpdateAccount(r.Context(), application.UpdateAccountInput{
+				AccountID: acc.ID, SMTPSecretRef: &smtpRef,
+			}); err != nil {
+				_ = s.app.RevokeSecret(r.Context(), ref)
+				s.render(w, "account", http.StatusBadRequest, map[string]any{"Account": acc, "Error": err.Error()})
+				return
+			}
+		} else if err := s.app.RotateSecret(r.Context(), acc.SMTPSecret, domain.NewSecretHandle([]byte(password))); err != nil {
+			s.render(w, "account", http.StatusBadRequest, map[string]any{"Account": acc, "Error": err.Error()})
+			return
+		}
+	}
+	http.Redirect(w, r, "/ui/accounts/"+acc.ID+"?saved=1", http.StatusSeeOther)
+}
+
+func ptr[T any](value T) *T { return &value }
+
+func (s *Server) accountDelete(w http.ResponseWriter, r *http.Request) {
+	acc, err := s.app.GetAccount(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if strings.TrimSpace(r.FormValue("confirm")) != acc.Email {
+		s.render(w, "account", http.StatusBadRequest, map[string]any{
+			"Account": acc, "Error": "삭제 확인을 위해 메일 주소를 정확히 입력하세요.",
+		})
+		return
+	}
+	if err := s.app.DeleteAccount(r.Context(), acc.ID); err != nil {
+		s.fail(w, err)
+		return
+	}
+	http.Redirect(w, r, "/ui/accounts?deleted=1", http.StatusSeeOther)
 }
 
 func (s *Server) accountTest(w http.ResponseWriter, r *http.Request) {
@@ -693,7 +846,7 @@ func (s *Server) attachment(w http.ResponseWriter, r *http.Request) {
 func (s *Server) analyze(w http.ResponseWriter, r *http.Request) {
 	kind := r.FormValue("type")
 	switch kind {
-	case "summarize", "phishing", "action_items":
+	case "summarize", "phishing", "action_items", "classify", "entities", "triage":
 	default:
 		s.render(w, "error", http.StatusBadRequest, map[string]any{"Message": "지원하지 않는 AI 분석 유형입니다."})
 		return
@@ -784,6 +937,14 @@ func (s *Server) draftUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/ui/drafts/"+r.PathValue("id")+"?saved=1", http.StatusSeeOther)
+}
+
+func (s *Server) draftDelete(w http.ResponseWriter, r *http.Request) {
+	if err := s.app.DiscardDraft(r.Context(), r.PathValue("id")); err != nil {
+		s.fail(w, err)
+		return
+	}
+	http.Redirect(w, r, "/ui/", http.StatusSeeOther)
 }
 
 func (s *Server) draftRewrite(w http.ResponseWriter, r *http.Request) {

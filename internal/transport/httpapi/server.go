@@ -35,9 +35,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/admin/users", s.adminListUsers)
 	mux.HandleFunc("POST /api/admin/users", s.adminCreateUser)
 	mux.HandleFunc("PATCH /api/admin/users/{id}", s.adminUpdateUser)
+	mux.HandleFunc("DELETE /api/admin/users/{id}", s.adminDeleteUser)
 	mux.HandleFunc("POST /api/admin/users/{id}/password", s.adminResetPassword)
 	mux.HandleFunc("GET /api/admin/settings", s.adminGetSettings)
 	mux.HandleFunc("PATCH /api/admin/settings", s.adminSaveSettings)
+	mux.HandleFunc("PUT /api/admin/ai", s.adminSaveAI)
+	mux.HandleFunc("POST /api/admin/ai/test", s.adminTestAI)
 
 	mux.HandleFunc("POST /api/secrets", s.postSecret)
 	mux.HandleFunc("POST /api/secrets/{ref}/rotate", s.rotateSecret)
@@ -47,6 +50,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/accounts", s.listAccounts)
 	mux.HandleFunc("GET /api/accounts/{id}", s.getAccount)
 	mux.HandleFunc("PATCH /api/accounts/{id}", s.updateAccount)
+	mux.HandleFunc("DELETE /api/accounts/{id}", s.deleteAccount)
 	mux.HandleFunc("POST /api/accounts/{id}/test", s.testAccount)
 	mux.HandleFunc("POST /api/accounts/{id}/disable", s.disableAccount)
 	mux.HandleFunc("POST /api/accounts/{id}/sync", s.startSync)
@@ -74,6 +78,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/drafts", s.createDraft)
 	mux.HandleFunc("GET /api/drafts/{id}", s.getDraft)
 	mux.HandleFunc("PATCH /api/drafts/{id}", s.updateDraft)
+	mux.HandleFunc("DELETE /api/drafts/{id}", s.deleteDraft)
 	mux.HandleFunc("POST /api/drafts/{id}/rewrite", s.rewriteDraft)
 	mux.HandleFunc("POST /api/drafts/{id}/preview", s.previewSend)
 	mux.HandleFunc("POST /api/drafts/{id}/request-approval", s.requestApproval)
@@ -135,19 +140,29 @@ func (s *Server) adminCreateUser(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) adminUpdateUser(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Role   domain.UserRole   `json:"role"`
-		Status domain.UserStatus `json:"status"`
+		DisplayName string            `json:"display_name"`
+		Email       string            `json:"email"`
+		Role        domain.UserRole   `json:"role"`
+		Status      domain.UserStatus `json:"status"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&in); err != nil {
 		writeErr(w, err)
 		return
 	}
-	u, err := s.app.AdminUpdateUser(r.Context(), r.PathValue("id"), in.Role, in.Status)
+	u, err := s.app.AdminEditUser(r.Context(), r.PathValue("id"), in.DisplayName, in.Email, in.Role, in.Status)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, u)
+}
+
+func (s *Server) adminDeleteUser(w http.ResponseWriter, r *http.Request) {
+	if err := s.app.AdminDeleteUser(r.Context(), r.PathValue("id")); err != nil {
+		writeErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) adminResetPassword(w http.ResponseWriter, r *http.Request) {
@@ -197,6 +212,36 @@ func (s *Server) adminSaveSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, settings)
+}
+
+func (s *Server) adminSaveAI(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Values map[string]string `json:"values"`
+		APIKey string            `json:"api_key"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&in); err != nil {
+		writeErr(w, err)
+		return
+	}
+	if err := s.app.AdminSaveAISettings(r.Context(), in.Values, in.APIKey); err != nil {
+		writeErr(w, err)
+		return
+	}
+	settings, err := s.app.SystemSettings(r.Context())
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, settings)
+}
+
+func (s *Server) adminTestAI(w http.ResponseWriter, r *http.Request) {
+	result, err := s.app.AdminTestAI(r.Context())
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 // statusRecorder captures the response status code for request metrics.
@@ -431,6 +476,14 @@ func (s *Server) disableAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "disabled"})
+}
+
+func (s *Server) deleteAccount(w http.ResponseWriter, r *http.Request) {
+	if err := s.app.DeleteAccount(r.Context(), r.PathValue("id")); err != nil {
+		writeErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // ---------- sync & jobs ----------
@@ -707,6 +760,14 @@ func (s *Server) updateDraft(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, dv)
+}
+
+func (s *Server) deleteDraft(w http.ResponseWriter, r *http.Request) {
+	if err := s.app.DiscardDraft(r.Context(), r.PathValue("id")); err != nil {
+		writeErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) rewriteDraft(w http.ResponseWriter, r *http.Request) {

@@ -142,12 +142,13 @@ func (a *App) SearchAudit(ctx context.Context, limit int) ([]domain.AuditEvent, 
 // PolicySnapshot returns the currently applied, non-sensitive policy for the
 // MCP resource policy://mail/current. It never includes secrets or keys.
 func (a *App) PolicySnapshot() map[string]any {
+	aiCfg := a.currentAIConfig()
 	return map[string]any{
 		"allow_insecure_mail":    a.Cfg.AllowInsecureMail,
 		"allow_private_hosts":    a.Cfg.AllowPrivateHosts,
 		"encrypt_at_rest":        a.Cfg.EncryptAtRest,
-		"ai_allow_external":      a.Cfg.AI.AllowExternal,
-		"ai_model":               a.Cfg.AI.Model,
+		"ai_allow_external":      aiCfg.AllowExternal,
+		"ai_model":               aiCfg.Model,
 		"send_requires_approval": true,
 		"server_delete_default":  "retain",
 		"max_message_bytes":      a.Cfg.Sync.MaxMessageBytes,

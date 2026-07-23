@@ -423,6 +423,20 @@ func TestOnboardingComposeAndEdit(t *testing.T) {
 	if err != nil || len(accounts) != 1 {
 		t.Fatalf("accounts=%v err=%v", accounts, err)
 	}
+	rec = do(t, h, "POST", "/ui/accounts/"+accounts[0].ID, url.Values{
+		"name": {"업무 수정"}, "email": {"changed@example.test"}, "status": {"active"},
+		"inbound_protocol": {"pop3"}, "inbound_host": {"127.0.0.1"}, "inbound_port": {"110"},
+		"inbound_security": {"none"}, "inbound_username": {"changed"},
+		"smtp_host": {"127.0.0.1"}, "smtp_port": {"587"}, "smtp_security": {"none"},
+		"smtp_auth": {"none"}, "smtp_username": {"changed"},
+	}, nil)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("account update code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	updated, err := app.GetAccount(context.Background(), accounts[0].ID)
+	if err != nil || updated.Name != "업무 수정" || updated.Email != "changed@example.test" {
+		t.Fatalf("updated account=%+v err=%v", updated, err)
+	}
 	rec = do(t, h, "POST", "/ui/accounts/"+accounts[0].ID+"/test", nil, nil)
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "연결 진단") ||
 		!strings.Contains(rec.Body.String(), "정상") {
@@ -463,6 +477,18 @@ func TestOnboardingComposeAndEdit(t *testing.T) {
 	dv, err := app.GetDraft(context.Background(), draftID)
 	if err != nil || dv.Version.Subject != "수정 제목" || dv.Version.BodyText != "수정 본문" || dv.Draft.CurrentVersion != 2 {
 		t.Fatalf("updated draft=%+v err=%v", dv, err)
+	}
+	rec = do(t, h, "POST", draftURL+"/delete", nil, nil)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("draft delete code=%d", rec.Code)
+	}
+	rec = do(t, h, "POST", "/ui/accounts/"+accounts[0].ID+"/delete",
+		url.Values{"confirm": {"changed@example.test"}}, nil)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("account delete code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if listed, _ := app.ListAccounts(context.Background()); len(listed) != 0 {
+		t.Fatalf("deleted account remained listed: %+v", listed)
 	}
 }
 

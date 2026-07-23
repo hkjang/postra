@@ -85,6 +85,26 @@ func TestOIDCFlowIntegrityAndAdminSettings(t *testing.T) {
 	}
 }
 
+func TestOIDCStateKeyIsSharedAcrossAppInstances(t *testing.T) {
+	app, pop, smtp, aiProvider := newTestApp(t)
+	second, err := New(app.Cfg, app.Store, app.Objects, app.Secrets, pop, smtp, aiProvider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Shutdown()
+	if app.oidcStateKey != second.oidcStateKey {
+		t.Fatal("OIDC state key differs across instances sharing the same database")
+	}
+	flow := OIDCFlow{State: "shared-state", Nonce: "nonce", CodeVerifier: "verifier", ExpiresAt: time.Now().Add(time.Minute).Unix()}
+	signed, err := app.SignOIDCFlow(flow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := second.VerifyOIDCFlow(signed); err != nil {
+		t.Fatalf("another pod could not verify OIDC flow: %v", err)
+	}
+}
+
 func mapValues(values map[string]string) []string {
 	out := make([]string, 0, len(values))
 	for _, value := range values {
@@ -124,6 +144,70 @@ func TestAdminManagementAndTenantIsolation(t *testing.T) {
 	}
 	if _, err := app.GetAccount(userCtx, adminAccount.ID); err == nil {
 		t.Fatal("user could access another tenant's account")
+	}
+	renamed, newEmail := "Renamed account", "renamed@example.test"
+	if _, err := app.UpdateAccount(adminCtx, UpdateAccountInput{
+		AccountID: adminAccount.ID, Name: &renamed, Email: &newEmail,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := app.GetAccount(adminCtx, adminAccount.ID)
+	if err != nil || got.Name != renamed || got.Email != newEmail {
+		t.Fatalf("updated account=%+v err=%v", got, err)
+	}
+	if err := app.DeleteAccount(adminCtx, adminAccount.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.GetAccount(adminCtx, adminAccount.ID); err == nil {
+		t.Fatal("deleted account remained accessible")
+	}
+	if err := app.AdminDeleteUser(adminCtx, user.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.AuthenticateLocal(base, "member", "member-password-long"); err == nil {
+		t.Fatal("deleted user could still sign in")
+	}
+}
+
+func TestAdminAISettingsAndConnectionProbe(t *testing.T) {
+	app, _, _, _ := newTestApp(t)
+	base := WithActor(context.Background(), "test")
+	admin, err := app.SetupInitialAdmin(base, "admin", "Admin", "admin-password-long")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := WithPrincipal(base, principalFor(admin, "local"))
+	if err := app.AdminSaveAISettings(ctx, map[string]string{
+		SettingAIBaseURL:         "http://127.0.0.1:11434/v1",
+		SettingAIModel:           "mail-model",
+		SettingAIEmbedModel:      "embed-model",
+		SettingAITimeout:         "30",
+		SettingAIMaxTokens:       "1024",
+		SettingAIAllowExternal:   "false",
+		SettingAIMaskExternalPII: "true",
+	}, "encrypted-ai-key"); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := app.SystemSettings(ctx)
+	if err != nil || settings[SettingAIModel] != "mail-model" || settings[SettingAIAPIKeyRef] == "" {
+		t.Fatalf("settings=%v err=%v", settings, err)
+	}
+	if strings.Contains(strings.Join(mapValues(settings), " "), "encrypted-ai-key") {
+		t.Fatal("AI API key leaked into settings")
+	}
+	result, err := app.AdminTestAI(ctx)
+	if err != nil || result.Model != "mail-model" {
+		t.Fatalf("AI probe=%+v err=%v", result, err)
+	}
+	if err := app.AdminSaveAISettings(ctx, map[string]string{
+		SettingAIBaseURL: "http://127.0.0.1:11434/v1", SettingAIModel: "mail-model",
+		SettingAIAPIKeyRef: "",
+	}, ""); err != nil {
+		t.Fatal(err)
+	}
+	settings, _ = app.SystemSettings(ctx)
+	if settings[SettingAIAPIKeyRef] != "" {
+		t.Fatal("AI API key reference was not removed")
 	}
 }
 

@@ -2,8 +2,11 @@ package application
 
 import (
 	"context"
+	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"postra/internal/domain"
 	"postra/internal/platform/config"
@@ -67,6 +70,12 @@ func (a *App) SystemSettings(ctx context.Context) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	for key := range stored {
+		if strings.HasPrefix(key, "internal.") {
+			delete(stored, key)
+		}
+	}
+	aiCfg := a.currentAIConfig()
 	defaults := map[string]string{
 		SettingAuthSessionHours: strconv.Itoa(a.Cfg.Auth.SessionHours),
 		SettingOIDCIssuer:       a.Cfg.Auth.OIDCIssuer, SettingOIDCClientID: a.Cfg.Auth.OIDCClientID,
@@ -79,13 +88,13 @@ func (a *App) SystemSettings(ctx context.Context) (map[string]string, error) {
 		SettingSyncMaxPerSync:        strconv.Itoa(a.Cfg.Sync.MaxPerSync),
 		SettingSyncConnectTimeout:    strconv.Itoa(a.Cfg.Sync.ConnectTimeoutSec),
 		SettingSyncCommandTimeout:    strconv.Itoa(a.Cfg.Sync.CommandTimeoutSec),
-		SettingAIBaseURL:             a.Cfg.AI.BaseURL, SettingAIModel: a.Cfg.AI.Model,
-		SettingAIEmbedModel:         a.Cfg.AI.EmbedModel,
-		SettingAIAPIKeyRef:          a.Cfg.AI.APIKeyRef,
-		SettingAITimeout:            strconv.Itoa(a.Cfg.AI.TimeoutSec),
-		SettingAIMaxTokens:          strconv.Itoa(a.Cfg.AI.MaxTokens),
-		SettingAIAllowExternal:      strconv.FormatBool(a.Cfg.AI.AllowExternal),
-		SettingAIMaskExternalPII:    strconv.FormatBool(a.Cfg.AI.MaskExternalPII),
+		SettingAIBaseURL:             aiCfg.BaseURL, SettingAIModel: aiCfg.Model,
+		SettingAIEmbedModel:         aiCfg.EmbedModel,
+		SettingAIAPIKeyRef:          aiCfg.APIKeyRef,
+		SettingAITimeout:            strconv.Itoa(aiCfg.TimeoutSec),
+		SettingAIMaxTokens:          strconv.Itoa(aiCfg.MaxTokens),
+		SettingAIAllowExternal:      strconv.FormatBool(aiCfg.AllowExternal),
+		SettingAIMaskExternalPII:    strconv.FormatBool(aiCfg.MaskExternalPII),
 		SettingSendMaxMinute:        strconv.Itoa(a.Cfg.Send.MaxPerMinute),
 		SettingSendMaxHour:          strconv.Itoa(a.Cfg.Send.MaxPerHour),
 		SettingSendWarnRecipients:   strconv.Itoa(a.Cfg.Send.WarnRecipients),
@@ -154,6 +163,13 @@ func (a *App) AdminSaveSettings(ctx context.Context, values map[string]string, o
 			clean[key] = strings.TrimSpace(value)
 		}
 	}
+	storedBefore, _ := a.Store.GetSettings(ctx)
+	oldOIDCRef := storedBefore[SettingOIDCSecretRef]
+	if oldOIDCRef == "" {
+		oldOIDCRef = a.Cfg.Auth.OIDCSecretRef
+	}
+	_, oidcRefProvided := values[SettingOIDCSecretRef]
+	removeOIDCSecret := oidcClientSecret == "" && clean[SettingOIDCSecretRef] == "" && oidcRefProvided
 	if redirect := clean[SettingOIDCRedirectURL]; redirect != "" {
 		if err := ValidateOIDCRedirect(redirect); err != nil {
 			return err
@@ -175,8 +191,113 @@ func (a *App) AdminSaveSettings(ctx context.Context, values map[string]string, o
 	if err := a.Store.UpsertSettings(ctx, clean); err != nil {
 		return err
 	}
+	if removeOIDCSecret && oldOIDCRef != "" {
+		_ = a.RevokeSecret(ctx, domain.SecretRef(oldOIDCRef))
+	}
+	a.applyAISettings(clean)
 	a.audit(ctx, "settings_update", "system", "ok", "keys="+strconv.Itoa(len(clean)))
 	return nil
+}
+
+func (a *App) currentAIConfig() config.AIConfig {
+	a.aiConfigMu.RLock()
+	defer a.aiConfigMu.RUnlock()
+	return a.Cfg.AI
+}
+
+type aiConfigurable interface {
+	Configure(config.AIConfig)
+}
+
+func (a *App) AdminSaveAISettings(ctx context.Context, values map[string]string, apiKey string) error {
+	if _, err := requireAdmin(ctx); err != nil {
+		return err
+	}
+	clean := map[string]string{}
+	for key, value := range values {
+		if allowedSettings[key] && strings.HasPrefix(key, "ai.") {
+			clean[key] = strings.TrimSpace(value)
+		}
+	}
+	u, err := url.Parse(clean[SettingAIBaseURL])
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return userErrf("AI Base URL must be an absolute HTTP(S) URL")
+	}
+	if clean[SettingAIModel] == "" {
+		return userErrf("AI model is required")
+	}
+	oldKeyRef := a.currentAIConfig().APIKeyRef
+	requestedKeyRef, keyRefProvided := values[SettingAIAPIKeyRef]
+	removeKey := apiKey == "" && keyRefProvided && requestedKeyRef == ""
+	if apiKey != "" {
+		ref, err := a.RegisterSecret(ctx, domain.SecretAPIKey, "AI provider API key",
+			domain.NewSecretHandle([]byte(apiKey)))
+		if err != nil {
+			return err
+		}
+		clean[SettingAIAPIKeyRef] = string(ref)
+	}
+	if err := a.Store.UpsertSettings(ctx, clean); err != nil {
+		return err
+	}
+	if removeKey && oldKeyRef != "" {
+		_ = a.RevokeSecret(ctx, domain.SecretRef(oldKeyRef))
+	}
+	a.applyAISettings(clean)
+	cfg := a.currentAIConfig()
+	a.audit(ctx, "ai_settings_update", "system:ai", "ok", "model="+cfg.Model)
+	return nil
+}
+
+func (a *App) applyAISettings(values map[string]string) {
+	hasAI := false
+	for key := range values {
+		if strings.HasPrefix(key, "ai.") {
+			hasAI = true
+			break
+		}
+	}
+	if !hasAI {
+		return
+	}
+	wrapper := config.Config{AI: a.currentAIConfig()}
+	applyStoredSettings(&wrapper, values)
+	a.aiConfigMu.Lock()
+	a.Cfg.AI = wrapper.AI
+	a.aiConfigMu.Unlock()
+	if configurable, ok := a.aiRaw.(aiConfigurable); ok {
+		configurable.Configure(wrapper.AI)
+	}
+}
+
+type AIConnectionResult struct {
+	OK        bool   `json:"ok"`
+	Model     string `json:"model"`
+	LatencyMS int64  `json:"latency_ms"`
+	Message   string `json:"message"`
+}
+
+func (a *App) AdminTestAI(ctx context.Context) (AIConnectionResult, error) {
+	if _, err := requireAdmin(ctx); err != nil {
+		return AIConnectionResult{}, err
+	}
+	start := time.Now()
+	result, err := a.AI.Generate(ctx, domain.GenerationRequest{
+		System: "You are a connectivity probe. Never include secrets.",
+		User:   "Reply with exactly: POSTRA_AI_OK", MaxTokens: 16,
+	})
+	out := AIConnectionResult{Model: a.currentAIConfig().Model, LatencyMS: time.Since(start).Milliseconds()}
+	if err != nil {
+		out.Message = err.Error()
+		return out, nil
+	}
+	out.OK = strings.Contains(strings.ToUpper(result.Text), "POSTRA_AI_OK")
+	if out.OK {
+		out.Message = "Chat completion connection is healthy."
+	} else {
+		out.Message = fmt.Sprintf("Provider responded, but probe output was unexpected: %.120s", result.Text)
+	}
+	return out, nil
 }
 
 func boolSetting(values map[string]string, key string, fallback bool) bool {

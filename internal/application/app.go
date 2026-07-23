@@ -6,6 +6,7 @@ package application
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"net"
@@ -39,6 +40,8 @@ type App struct {
 	cancelAll    context.CancelFunc
 	workerGroup  sync.WaitGroup
 	oidcStateKey [32]byte
+	aiConfigMu   sync.RWMutex
+	aiRaw        domain.AIProvider
 }
 
 func New(cfg config.Config, store Storage, objects objectstore.Store,
@@ -49,14 +52,27 @@ func New(cfg config.Config, store Storage, objects objectstore.Store,
 	bg, cancel := context.WithCancel(context.Background())
 	a := &App{
 		Cfg: cfg, Store: store, Objects: objects, Secrets: secrets,
-		POP3: pop3, SMTP: smtp, AI: meteredAI{inner: ai},
+		POP3: pop3, SMTP: smtp, AI: meteredAI{inner: ai}, aiRaw: ai,
 		Scanner:    malware.NewHeuristic(cfg.Attachments),
 		background: bg, cancelAll: cancel,
 	}
-	if _, err := rand.Read(a.oidcStateKey[:]); err != nil {
+	candidate := make([]byte, len(a.oidcStateKey))
+	if _, err := rand.Read(candidate); err != nil {
 		cancel()
 		return nil, err
 	}
+	sharedKey, err := store.GetOrCreateSetting(context.Background(), "internal.oidc_state_key",
+		base64.RawURLEncoding.EncodeToString(candidate))
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("initialize shared OIDC state key: %w", err)
+	}
+	decodedKey, err := base64.RawURLEncoding.DecodeString(sharedKey)
+	if err != nil || len(decodedKey) != len(a.oidcStateKey) {
+		cancel()
+		return nil, fmt.Errorf("invalid shared OIDC state key")
+	}
+	copy(a.oidcStateKey[:], decodedKey)
 	if err := store.EnsureUser(context.Background(), DefaultUserID, "local"); err != nil {
 		return nil, err
 	}

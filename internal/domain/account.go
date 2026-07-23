@@ -21,6 +21,7 @@ type AccountStatus string
 const (
 	AccountActive          AccountStatus = "active"
 	AccountDisabled        AccountStatus = "disabled"
+	AccountDeleted         AccountStatus = "deleted"
 	AccountCredentialError AccountStatus = "credential_error" // #nosec G101 -- status enum value, not a credential
 )
 

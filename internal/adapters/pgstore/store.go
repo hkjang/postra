@@ -368,6 +368,16 @@ func (s *Store) UpsertSettings(ctx context.Context, values map[string]string) er
 	return tx.Commit(ctx)
 }
 
+func (s *Store) GetOrCreateSetting(ctx context.Context, key, candidate string) (string, error) {
+	if _, err := s.pool.Exec(ctx, `INSERT INTO system_settings(key,value,updated_at) VALUES($1,$2,$3)
+	 ON CONFLICT(key) DO NOTHING`, key, candidate, now()); err != nil {
+		return "", err
+	}
+	var value string
+	err := s.pool.QueryRow(ctx, `SELECT value FROM system_settings WHERE key=$1`, key).Scan(&value)
+	return value, err
+}
+
 // ---------- accounts ----------
 
 const accountCols = `id,user_id,name,email,status,inbound_protocol,pop3_host,pop3_port,pop3_security,pop3_username,pop3_secret_ref,
@@ -406,7 +416,8 @@ func (s *Store) GetAccount(ctx context.Context, userID, id string) (*domain.Mail
 }
 
 func (s *Store) ListAccounts(ctx context.Context, userID string) ([]domain.MailAccount, error) {
-	rows, err := s.pool.Query(ctx, `SELECT `+accountCols+` FROM mail_accounts WHERE user_id=$1 ORDER BY created_at`, userID)
+	rows, err := s.pool.Query(ctx, `SELECT `+accountCols+` FROM mail_accounts WHERE user_id=$1 AND status<>$2 ORDER BY created_at`,
+		userID, domain.AccountDeleted)
 	if err != nil {
 		return nil, err
 	}

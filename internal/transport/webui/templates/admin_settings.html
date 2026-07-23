@@ -1,7 +1,7 @@
 {{define "title"}}시스템 설정{{end}}
 {{define "content"}}
 {{$s := .Settings}}
-<div class="actions" style="justify-content:space-between"><h1>시스템 설정</h1><a class="btn ghost" href="/ui/admin/users">사용자 관리</a></div>
+<div class="actions" style="justify-content:space-between"><h1>시스템 설정</h1><div><a class="btn ghost" href="/ui/admin/ai">AI 운영 관리</a> <a class="btn ghost" href="/ui/admin/users">사용자 관리</a></div></div>
 {{if .Error}}<div class="warn">{{.Error}}</div>{{end}}
 <form method="post" action="/ui/admin/settings">
 <div class="card"><h2>Keycloak OIDC SSO</h2><div class="grid">
@@ -11,6 +11,7 @@
   <div class="field"><label>Redirect URL</label><input type="text" name="auth.oidc.redirect_url" value="{{index $s "auth.oidc.redirect_url"}}" placeholder="https://postra.example/ui/auth/oidc/callback"></div>
   <div class="field"><label>관리자 그룹</label><input type="text" name="auth.oidc.admin_group" value="{{index $s "auth.oidc.admin_group"}}"></div>
   <label><input type="checkbox" name="auth.oidc.auto_provision" value="true" {{if eq (index $s "auth.oidc.auto_provision") "true"}}checked{{end}}> 최초 SSO 로그인 시 사용자 자동 생성</label>
+  {{if index $s "auth.oidc.secret_ref"}}<label><input type="checkbox" name="remove_oidc_client_secret" value="true"> 저장된 OIDC client secret 삭제</label>{{end}}
 </div></div>
 <div class="card"><h2>로그인·세션</h2><div class="field"><label>세션 유효 시간</label><input type="number" min="1" max="720" name="auth.session_hours" value="{{index $s "auth.session_hours"}}"></div></div>
 <div class="card"><h2>메일 동기화</h2><div class="grid">
@@ -21,16 +22,7 @@
   <div class="field"><label>연결 타임아웃(초)</label><input type="number" min="1" name="sync.connect_timeout_sec" value="{{index $s "sync.connect_timeout_sec"}}"></div>
   <div class="field"><label>명령 타임아웃(초)</label><input type="number" min="1" name="sync.command_timeout_sec" value="{{index $s "sync.command_timeout_sec"}}"></div>
 </div></div>
-<div class="card"><h2>AI</h2><div class="grid">
-  <div class="field"><label>Base URL</label><input type="text" name="ai.base_url" value="{{index $s "ai.base_url"}}"></div>
-  <div class="field"><label>모델</label><input type="text" name="ai.model" value="{{index $s "ai.model"}}"></div>
-  <div class="field"><label>임베딩 모델</label><input type="text" name="ai.embed_model" value="{{index $s "ai.embed_model"}}"></div>
-  <div class="field"><label>API 키 Secret Ref</label><input type="text" name="ai.api_key_ref" value="{{index $s "ai.api_key_ref"}}"></div>
-  <div class="field"><label>타임아웃(초)</label><input type="number" min="1" name="ai.timeout_sec" value="{{index $s "ai.timeout_sec"}}"></div>
-  <div class="field"><label>최대 출력 토큰</label><input type="number" min="1" name="ai.max_tokens" value="{{index $s "ai.max_tokens"}}"></div>
-  <label><input type="checkbox" name="ai.allow_external" value="true" {{if eq (index $s "ai.allow_external") "true"}}checked{{end}}> 외부 AI로 메일 전송 허용</label>
-  <label><input type="checkbox" name="ai.mask_external_pii" value="true" {{if eq (index $s "ai.mask_external_pii") "true"}}checked{{end}}> 외부 AI 전송 전 개인정보 마스킹</label>
-</div></div>
+<div class="card"><h2>AI</h2><p>Provider, 모델, API Key, 개인정보 정책과 연결 테스트는 독립된 AI 운영 화면에서 관리합니다.</p><a class="btn ghost" href="/ui/admin/ai">AI 운영 관리 열기</a></div>
 <div class="card"><h2>발송 정책</h2><div class="grid">
   <div class="field"><label>분당 한도</label><input type="number" min="0" name="send.max_per_minute" value="{{index $s "send.max_per_minute"}}"></div>
   <div class="field"><label>시간당 한도</label><input type="number" min="0" name="send.max_per_hour" value="{{index $s "send.max_per_hour"}}"></div>

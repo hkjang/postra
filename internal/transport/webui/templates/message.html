@@ -34,8 +34,11 @@
 {{end}}
 <h2>AI 도구</h2>
 <div class="card actions">
+  <form method="post" action="/ui/messages/{{$m.ID}}/analyze"><input type="hidden" name="type" value="triage"><button type="submit">업무 트리아지</button></form>
   <form method="post" action="/ui/messages/{{$m.ID}}/analyze"><input type="hidden" name="type" value="summarize"><button type="submit">요약</button></form>
   <form method="post" action="/ui/messages/{{$m.ID}}/analyze"><input type="hidden" name="type" value="action_items"><button class="ghost" type="submit">할 일 추출</button></form>
+  <form method="post" action="/ui/messages/{{$m.ID}}/analyze"><input type="hidden" name="type" value="classify"><button class="ghost" type="submit">분류·중요도</button></form>
+  <form method="post" action="/ui/messages/{{$m.ID}}/analyze"><input type="hidden" name="type" value="entities"><button class="ghost" type="submit">인물·금액 추출</button></form>
   <form method="post" action="/ui/messages/{{$m.ID}}/analyze"><input type="hidden" name="type" value="phishing"><button class="ghost" type="submit">피싱 점검</button></form>
 </div>
 <h2>답장</h2>

@@ -1,20 +1,60 @@
 {{define "title"}}계정 관리{{end}}
 {{define "content"}}
 {{$a := .Account}}
-<p class="small"><a href="/ui/accounts" class="muted">← 계정</a></p>
-<h1>{{$a.Name}} <span class="tag">{{$a.Status}}</span></h1>
-{{if .Created}}<div class="warn">계정이 저장되었습니다. 연결 테스트 후 첫 동기화를 시작하세요.</div>{{end}}
-{{if .Error}}<div class="warn">{{.Error}}</div>{{end}}
-<div class="card"><dl class="kv">
-  <dt>메일</dt><dd>{{$a.Email}}</dd><dt>수신</dt><dd>{{$a.InboundProtocol}} · {{$a.POP3Host}}:{{$a.POP3Port}} · {{$a.POP3Security}}</dd>
-  <dt>발신</dt><dd>{{$a.SMTPHost}}:{{$a.SMTPPort}} · {{$a.SMTPSecurity}}</dd>
-</dl></div>
-<div class="actions">
-  <form method="post" action="/ui/accounts/{{$a.ID}}/test"><button class="ghost" type="submit">연결 단계별 테스트</button></form>
-  <form method="post" action="/ui/accounts/{{$a.ID}}/sync"><button type="submit">지금 동기화</button></form>
+<p class="small"><a href="/ui/accounts" class="muted">← 메일 계정</a></p>
+<div class="actions" style="justify-content:space-between"><h1>{{$a.Name}} <span class="tag">{{$a.Status}}</span></h1>
+  <div class="actions">
+    <form method="post" action="/ui/accounts/{{$a.ID}}/test"><button class="ghost" type="submit">연결 테스트</button></form>
+    <form method="post" action="/ui/accounts/{{$a.ID}}/sync"><button type="submit">지금 동기화</button></form>
+  </div>
 </div>
+{{if .Created}}<div class="warn">계정이 저장되었습니다. 연결 테스트 후 첫 동기화를 시작하세요.</div>{{end}}
+{{if .Saved}}<div class="ok card">계정 설정이 저장되었습니다.</div>{{end}}
+{{if .Error}}<div class="warn">{{.Error}}</div>{{end}}
+
+<form method="post" action="/ui/accounts/{{$a.ID}}">
+<div class="card">
+  <h2>기본 정보</h2><div class="grid">
+    <div class="field"><label>표시 이름</label><input type="text" name="name" value="{{$a.Name}}" required></div>
+    <div class="field"><label>메일 주소</label><input type="email" name="email" value="{{$a.Email}}" required></div>
+    <div class="field"><label>상태</label><select name="status"><option value="active" {{if eq $a.Status "active"}}selected{{end}}>활성</option><option value="disabled" {{if ne $a.Status "active"}}selected{{end}}>비활성</option></select></div>
+  </div>
+</div>
+<div class="card">
+  <h2>받는 메일</h2><div class="grid">
+    <div class="field"><label>프로토콜</label><select name="inbound_protocol"><option value="imap" {{if eq $a.InboundProtocol "imap"}}selected{{end}}>IMAP</option><option value="pop3" {{if eq $a.InboundProtocol "pop3"}}selected{{end}}>POP3</option></select></div>
+    <div class="field"><label>서버</label><input type="text" name="inbound_host" value="{{$a.POP3Host}}" required></div>
+    <div class="field"><label>포트</label><input type="number" name="inbound_port" value="{{$a.POP3Port}}" required></div>
+    <div class="field"><label>보안</label><select name="inbound_security"><option value="tls" {{if eq $a.POP3Security "tls"}}selected{{end}}>TLS</option><option value="starttls" {{if eq $a.POP3Security "starttls"}}selected{{end}}>STARTTLS</option><option value="none" {{if eq $a.POP3Security "none"}}selected{{end}}>없음(격리망)</option></select></div>
+    <div class="field"><label>사용자명</label><input type="text" name="inbound_username" value="{{$a.POP3Username}}" required></div>
+    <div class="field"><label>새 비밀번호</label><input type="password" name="password" autocomplete="new-password" placeholder="변경할 때만 입력"></div>
+  </div>
+</div>
+<div class="card">
+  <h2>보내는 메일</h2><div class="grid">
+    <div class="field"><label>SMTP 서버</label><input type="text" name="smtp_host" value="{{$a.SMTPHost}}" required></div>
+    <div class="field"><label>포트</label><input type="number" name="smtp_port" value="{{$a.SMTPPort}}" required></div>
+    <div class="field"><label>보안</label><select name="smtp_security"><option value="tls" {{if eq $a.SMTPSecurity "tls"}}selected{{end}}>TLS</option><option value="starttls" {{if eq $a.SMTPSecurity "starttls"}}selected{{end}}>STARTTLS</option><option value="none" {{if eq $a.SMTPSecurity "none"}}selected{{end}}>없음(격리망)</option></select></div>
+    <div class="field"><label>인증</label><select name="smtp_auth"><option value="auto" {{if eq $a.SMTPAuth "auto"}}selected{{end}}>자동 인증</option><option value="none" {{if eq $a.SMTPAuth "none"}}selected{{end}}>인증 없음</option></select></div>
+    <div class="field"><label>사용자명</label><input type="text" name="smtp_username" value="{{$a.SMTPUsername}}" required></div>
+    <div class="field"><label>새 SMTP 비밀번호</label><input type="password" name="smtp_password" autocomplete="new-password" placeholder="변경할 때만 입력"></div>
+  </div>
+  <label><input type="checkbox" name="insecure_skip_verify" value="true" {{if $a.InsecureSkipVerify}}checked{{end}}> TLS 인증서 검증 생략(격리망 전용)</label>
+</div>
+<button type="submit">변경사항 저장</button>
+</form>
+
 {{if .Tested}}<h2>연결 진단</h2>{{range .Diagnostics}}
 <div class="card"><h2 style="margin-top:0">{{.Target}} {{if .OK}}<span class="ok">정상</span>{{else}}<span class="err">확인 필요</span>{{end}}</h2>
 {{range .Steps}}<p>{{if .OK}}<span class="ok">✓</span>{{else}}<span class="err">✕</span>{{end}} <b>{{.Step}}</b> {{.Detail}}</p>{{end}}</div>
 {{end}}{{end}}
+
+<div class="card" style="margin-top:2rem;border-color:color-mix(in srgb,var(--danger) 35%,var(--line))">
+  <h2 class="err">계정 삭제</h2>
+  <p class="small muted">계정은 동기화와 발송 대상에서 제거됩니다. 감사 및 기존 메일 데이터는 보존됩니다.</p>
+  <form method="post" action="/ui/accounts/{{$a.ID}}/delete">
+    <div class="field"><label>확인을 위해 <b>{{$a.Email}}</b> 입력</label><input type="text" name="confirm" autocomplete="off" required></div>
+    <button type="submit" class="danger">계정 삭제</button>
+  </form>
+</div>
 {{end}}

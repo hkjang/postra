@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 
 	"postra/internal/adapters/persistence"
 	"postra/internal/domain"
@@ -127,21 +128,31 @@ func (a *App) ListAccounts(ctx context.Context) ([]domain.MailAccount, error) {
 }
 
 func (a *App) GetAccount(ctx context.Context, id string) (*domain.MailAccount, error) {
-	return a.Store.GetAccount(ctx, userIDFrom(ctx), id)
+	acc, err := a.Store.GetAccount(ctx, userIDFrom(ctx), id)
+	if err == nil && acc.Status == domain.AccountDeleted {
+		return nil, domain.ErrNotFound
+	}
+	return acc, err
 }
 
 type UpdateAccountInput struct {
-	AccountID    string  `json:"account_id"`
-	Name         *string `json:"name,omitempty"`
-	POP3Host     *string `json:"pop3_host,omitempty"`
-	POP3Port     *int    `json:"pop3_port,omitempty"`
-	POP3Security *string `json:"pop3_security,omitempty"`
-	POP3Username *string `json:"pop3_username,omitempty"`
-	SMTPHost     *string `json:"smtp_host,omitempty"`
-	SMTPPort     *int    `json:"smtp_port,omitempty"`
-	SMTPSecurity *string `json:"smtp_security,omitempty"`
-	SMTPUsername *string `json:"smtp_username,omitempty"`
-	SMTPAuth     *string `json:"smtp_auth,omitempty"`
+	AccountID          string                `json:"account_id"`
+	Status             *domain.AccountStatus `json:"status,omitempty"`
+	Name               *string               `json:"name,omitempty"`
+	Email              *string               `json:"email,omitempty"`
+	InboundProtocol    *string               `json:"inbound_protocol,omitempty"`
+	POP3Host           *string               `json:"pop3_host,omitempty"`
+	POP3Port           *int                  `json:"pop3_port,omitempty"`
+	POP3Security       *string               `json:"pop3_security,omitempty"`
+	POP3Username       *string               `json:"pop3_username,omitempty"`
+	POP3SecretRef      *string               `json:"pop3_secret_ref,omitempty"`
+	SMTPHost           *string               `json:"smtp_host,omitempty"`
+	SMTPPort           *int                  `json:"smtp_port,omitempty"`
+	SMTPSecurity       *string               `json:"smtp_security,omitempty"`
+	SMTPUsername       *string               `json:"smtp_username,omitempty"`
+	SMTPAuth           *string               `json:"smtp_auth,omitempty"`
+	SMTPSecretRef      *string               `json:"smtp_secret_ref,omitempty"`
+	InsecureSkipVerify *bool                 `json:"insecure_skip_verify,omitempty"`
 }
 
 // UpdateAccount changes non-secret settings only (mail_account_update).
@@ -151,22 +162,57 @@ func (a *App) UpdateAccount(ctx context.Context, in UpdateAccountInput) (*domain
 	if err != nil {
 		return nil, err
 	}
+	if acc.Status == domain.AccountDeleted {
+		return nil, domain.ErrNotFound
+	}
 	setS := func(dst *string, v *string) {
 		if v != nil {
 			*dst = *v
 		}
 	}
 	setS(&acc.Name, in.Name)
+	setS(&acc.Email, in.Email)
 	setS(&acc.POP3Host, in.POP3Host)
 	setS(&acc.POP3Username, in.POP3Username)
 	setS(&acc.SMTPHost, in.SMTPHost)
 	setS(&acc.SMTPUsername, in.SMTPUsername)
 	setS(&acc.SMTPAuth, in.SMTPAuth)
+	if strings.TrimSpace(acc.Email) == "" {
+		return nil, userErrf("email is required")
+	}
+	if acc.SMTPAuth != "auto" && acc.SMTPAuth != "none" {
+		return nil, userErrf("invalid SMTP auth mode")
+	}
+	if in.InboundProtocol != nil {
+		protocol, err := normInboundProtocol(*in.InboundProtocol)
+		if err != nil {
+			return nil, err
+		}
+		acc.InboundProtocol = protocol
+	}
+	if in.POP3SecretRef != nil {
+		acc.POP3Secret = domain.SecretRef(*in.POP3SecretRef)
+	}
+	if in.SMTPSecretRef != nil {
+		acc.SMTPSecret = domain.SecretRef(*in.SMTPSecretRef)
+	}
+	if in.InsecureSkipVerify != nil {
+		acc.InsecureSkipVerify = *in.InsecureSkipVerify
+	}
+	if in.Status != nil {
+		if *in.Status != domain.AccountActive && *in.Status != domain.AccountDisabled {
+			return nil, userErrf("invalid account status")
+		}
+		acc.Status = *in.Status
+	}
 	if in.POP3Port != nil {
 		acc.POP3Port = *in.POP3Port
 	}
 	if in.SMTPPort != nil {
 		acc.SMTPPort = *in.SMTPPort
+	}
+	if acc.POP3Port <= 0 || acc.POP3Port > 65535 || acc.SMTPPort <= 0 || acc.SMTPPort > 65535 {
+		return nil, userErrf("mail server ports must be between 1 and 65535")
 	}
 	if in.POP3Security != nil {
 		sec, err := normSecurity(*in.POP3Security, acc.POP3Security)
@@ -199,8 +245,22 @@ func (a *App) UpdateAccount(ctx context.Context, in UpdateAccountInput) (*domain
 	return acc, nil
 }
 
+// DeleteAccount performs a recoverable logical deletion. Historical mail and
+// audit data remain intact, while the account disappears from active workflows.
+func (a *App) DeleteAccount(ctx context.Context, id string) error {
+	acc, err := a.Store.GetAccount(ctx, userIDFrom(ctx), id)
+	if err != nil {
+		return err
+	}
+	if err := a.Store.SetAccountStatus(ctx, userIDFrom(ctx), id, domain.AccountDeleted); err != nil {
+		return err
+	}
+	a.audit(ctx, "account_delete", "account:"+id, "ok", acc.Email)
+	return nil
+}
+
 func (a *App) DisableAccount(ctx context.Context, id string) error {
-	if _, err := a.Store.GetAccount(ctx, userIDFrom(ctx), id); err != nil {
+	if _, err := a.GetAccount(ctx, id); err != nil {
 		return err
 	}
 	if err := a.Store.SetAccountStatus(ctx, userIDFrom(ctx), id, domain.AccountDisabled); err != nil {
@@ -215,6 +275,9 @@ func (a *App) TestAccount(ctx context.Context, id string) ([]domain.ConnDiagnost
 	acc, err := a.Store.GetAccount(ctx, userIDFrom(ctx), id)
 	if err != nil {
 		return nil, err
+	}
+	if acc.Status == domain.AccountDeleted {
+		return nil, domain.ErrNotFound
 	}
 	var out []domain.ConnDiagnostics
 	if acc.POP3Host != "" {

@@ -1,0 +1,31 @@
+{{define "title"}}AI 운영 관리{{end}}
+{{define "content"}}
+{{$s := .Settings}}
+<div class="actions" style="justify-content:space-between">
+  <div><p class="small muted">관리자 / AI</p><h1>AI 운영 관리</h1></div>
+  <div><a class="btn ghost" href="/ui/admin/settings">시스템 설정</a><a class="btn ghost" href="/ui/admin/users">사용자 관리</a></div>
+</div>
+{{if .Saved}}<div class="ok card">AI 설정이 즉시 적용되었습니다.</div>{{end}}
+{{if .Error}}<div class="warn">{{.Error}}</div>{{end}}
+{{with .Test}}<div class="card">{{if .OK}}<span class="ok">● 연결 정상</span>{{else}}<span class="err">● 연결 실패</span>{{end}}
+  <p>{{.Message}}</p><p class="small muted">모델 {{.Model}} · {{.LatencyMS}}ms</p></div>{{end}}
+
+<form method="post" action="/ui/admin/ai">
+<div class="card"><h2>OpenAI 호환 Provider</h2><p class="small muted">Ollama, vLLM, OpenAI 호환 게이트웨이를 동일하게 연결할 수 있습니다.</p><div class="grid">
+  <div class="field"><label>Base URL</label><input type="text" name="ai.base_url" value="{{index $s "ai.base_url"}}" placeholder="http://ollama:11434/v1" required></div>
+  <div class="field"><label>Chat 모델</label><input type="text" name="ai.model" value="{{index $s "ai.model"}}" required></div>
+  <div class="field"><label>Embedding 모델</label><input type="text" name="ai.embed_model" value="{{index $s "ai.embed_model"}}"></div>
+  <div class="field"><label>API Key {{if index $s "ai.api_key_ref"}}<span class="ok">· 등록됨</span>{{end}}</label><input type="password" name="ai_api_key" autocomplete="new-password" placeholder="변경할 때만 입력"></div>
+  <div class="field"><label>요청 타임아웃(초)</label><input type="number" min="1" max="1800" name="ai.timeout_sec" value="{{index $s "ai.timeout_sec"}}"></div>
+  <div class="field"><label>최대 출력 토큰</label><input type="number" min="16" max="131072" name="ai.max_tokens" value="{{index $s "ai.max_tokens"}}"></div>
+</div></div>
+{{if index $s "ai.api_key_ref"}}<p><label><input type="checkbox" name="remove_api_key" value="true"> 저장된 AI API Key 삭제</label></p>{{end}}
+<div class="card"><h2>데이터 보호 정책</h2>
+  <p><label><input type="checkbox" name="ai.allow_external" value="true" {{if eq (index $s "ai.allow_external") "true"}}checked{{end}}> 외부 AI endpoint로 메일 콘텐츠 전송 허용</label></p>
+  <p><label><input type="checkbox" name="ai.mask_external_pii" value="true" {{if eq (index $s "ai.mask_external_pii") "true"}}checked{{end}}> 외부 전송 전 이메일·전화번호·식별정보 마스킹</label></p>
+  <p class="small muted">메일 본문은 항상 비신뢰 데이터로 격리되며 프롬프트 명령으로 실행되지 않습니다. API Key는 암호화 SecretStore에만 저장됩니다.</p>
+</div>
+<button type="submit">AI 설정 저장</button>
+</form>
+<form method="post" action="/ui/admin/ai/test" style="margin-top:1rem"><button type="submit" class="ghost">저장된 설정으로 연결 테스트</button></form>
+{{end}}

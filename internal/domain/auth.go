@@ -14,6 +14,7 @@ type UserStatus string
 const (
 	UserActive   UserStatus = "active"
 	UserDisabled UserStatus = "disabled"
+	UserDeleted  UserStatus = "deleted"
 )
 
 type User struct {

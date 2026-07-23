@@ -30,6 +30,7 @@ type Storage interface {
 	DeleteUserSessions(ctx context.Context, userID string) error
 	GetSettings(ctx context.Context) (map[string]string, error)
 	UpsertSettings(ctx context.Context, values map[string]string) error
+	GetOrCreateSetting(ctx context.Context, key, candidate string) (string, error)
 
 	CreateAccount(ctx context.Context, a *domain.MailAccount) error
 	GetAccount(ctx context.Context, userID, id string) (*domain.MailAccount, error)

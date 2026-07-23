@@ -256,6 +256,10 @@ func (a *App) AdminListUsers(ctx context.Context) ([]domain.User, error) {
 }
 
 func (a *App) AdminUpdateUser(ctx context.Context, id string, role domain.UserRole, status domain.UserStatus) (*domain.User, error) {
+	return a.AdminEditUser(ctx, id, "", "", role, status)
+}
+
+func (a *App) AdminEditUser(ctx context.Context, id, displayName, email string, role domain.UserRole, status domain.UserStatus) (*domain.User, error) {
 	p, err := requireAdmin(ctx)
 	if err != nil {
 		return nil, err
@@ -281,6 +285,12 @@ func (a *App) AdminUpdateUser(ctx context.Context, id string, role domain.UserRo
 		}
 	}
 	u.Role, u.Status = role, status
+	if strings.TrimSpace(displayName) != "" {
+		u.DisplayName = strings.TrimSpace(displayName)
+	}
+	if displayName != "" || email != "" {
+		u.Email = strings.TrimSpace(email)
+	}
 	if err := a.Store.UpdateUser(ctx, u); err != nil {
 		return nil, err
 	}
@@ -289,6 +299,36 @@ func (a *App) AdminUpdateUser(ctx context.Context, id string, role domain.UserRo
 	}
 	a.audit(ctx, "user_update", "user:"+u.ID, "ok", fmt.Sprintf("by=%s role=%s status=%s", p.UserID, role, status))
 	return u, nil
+}
+
+func (a *App) AdminDeleteUser(ctx context.Context, id string) error {
+	p, err := requireAdmin(ctx)
+	if err != nil {
+		return err
+	}
+	if p.UserID == id {
+		return userErrf("you cannot delete your own signed-in account")
+	}
+	u, err := a.Store.GetUser(ctx, id)
+	if err != nil {
+		return err
+	}
+	if u.Role == domain.RoleAdmin && u.Status == domain.UserActive {
+		n, err := a.Store.CountAdmins(ctx)
+		if err != nil {
+			return err
+		}
+		if n <= 1 {
+			return userErrf("cannot delete the last active administrator")
+		}
+	}
+	u.Status = domain.UserDeleted
+	if err := a.Store.UpdateUser(ctx, u); err != nil {
+		return err
+	}
+	_ = a.Store.DeleteUserSessions(ctx, id)
+	a.audit(ctx, "user_delete", "user:"+id, "ok", "by="+p.UserID)
+	return nil
 }
 
 func (a *App) AdminResetPassword(ctx context.Context, userID, password string) error {

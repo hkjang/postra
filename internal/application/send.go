@@ -124,7 +124,7 @@ func (a *App) PreviewSend(ctx context.Context, draftID string) (*SendPreview, er
 	if err != nil {
 		return nil, err
 	}
-	acc, err := a.Store.GetAccount(ctx, userID, d.AccountID)
+	acc, err := a.GetAccount(ctx, d.AccountID)
 	if err != nil {
 		return nil, err
 	}
@@ -194,7 +194,7 @@ func (a *App) Send(ctx context.Context, in SendInput) (*domain.OutboundMessage, 
 	if err != nil {
 		return nil, err
 	}
-	acc, err := a.Store.GetAccount(ctx, userID, d.AccountID)
+	acc, err := a.GetAccount(ctx, d.AccountID)
 	if err != nil {
 		return nil, err
 	}
