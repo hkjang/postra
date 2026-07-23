@@ -392,10 +392,18 @@ func vectorLiteral(v []float32) string {
 // ---------- users ----------
 
 func (s *Store) EnsureUser(ctx context.Context, id, loginID string) error {
-	_, err := s.pool.Exec(ctx,
+	var exists bool
+	err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE id=$1 OR lower(login_id)=lower($2))`, id, loginID).Scan(&exists)
+	if err == nil && exists {
+		return nil
+	}
+	_, err = s.pool.Exec(ctx,
 		`INSERT INTO users (id,login_id,display_name,role,status,auth_provider,created_at,updated_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (login_id) DO NOTHING`,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (id) DO NOTHING`,
 		id, loginID, loginID, domain.RoleUser, domain.UserActive, "local", now(), now())
+	if err != nil && (strings.Contains(err.Error(), "23505") || strings.Contains(err.Error(), "unique constraint") || strings.Contains(err.Error(), "users_pkey")) {
+		return nil
+	}
 	return err
 }
 

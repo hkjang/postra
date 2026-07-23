@@ -289,3 +289,16 @@ func TestMCPKeyLifecycleAndAdminControl(t *testing.T) {
 		t.Fatal("revoked MCP key was successfully authenticated")
 	}
 }
+
+func TestEnsureUserReRunAfterAdminSetup(t *testing.T) {
+	app, _, _, _ := newTestApp(t)
+	ctx := WithActor(context.Background(), "test")
+
+	if _, err := app.SetupInitialAdmin(ctx, "admin", "Administrator", "a-secure-password-123"); err != nil {
+		t.Fatalf("SetupInitialAdmin error: %v", err)
+	}
+
+	if err := app.Store.EnsureUser(ctx, DefaultUserID, "local"); err != nil {
+		t.Fatalf("EnsureUser re-run failed: %v", err)
+	}
+}

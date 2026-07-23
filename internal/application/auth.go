@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -85,15 +86,26 @@ func (a *App) bootstrapAdmin(ctx context.Context) error {
 	}
 	u, err := a.Store.GetUser(ctx, DefaultUserID)
 	if err != nil {
-		return err
+		if errors.Is(err, domain.ErrNotFound) {
+			u = &domain.User{ID: DefaultUserID}
+		} else {
+			return err
+		}
 	}
 	u.LoginID = strings.TrimSpace(a.Cfg.Auth.BootstrapAdmin)
 	if u.LoginID == "" {
 		u.LoginID = "admin"
 	}
 	u.DisplayName, u.Role, u.Status, u.AuthProvider = u.LoginID, domain.RoleAdmin, domain.UserActive, "local"
-	if err := a.Store.UpdateUser(ctx, u); err != nil {
-		return err
+	existing, _ := a.Store.GetUser(ctx, u.ID)
+	if existing != nil {
+		if err := a.Store.UpdateUser(ctx, u); err != nil {
+			return err
+		}
+	} else {
+		if err := a.Store.CreateUser(ctx, u, hash); err != nil {
+			return err
+		}
 	}
 	return a.Store.SetUserPassword(ctx, u.ID, hash)
 }
@@ -117,7 +129,11 @@ func (a *App) SetupInitialAdmin(ctx context.Context, loginID, displayName, passw
 	}
 	u, err := a.Store.GetUser(ctx, DefaultUserID)
 	if err != nil {
-		return nil, err
+		if errors.Is(err, domain.ErrNotFound) {
+			u = &domain.User{ID: DefaultUserID}
+		} else {
+			return nil, err
+		}
 	}
 	u.LoginID = strings.TrimSpace(loginID)
 	u.DisplayName = strings.TrimSpace(displayName)
@@ -128,8 +144,15 @@ func (a *App) SetupInitialAdmin(ctx context.Context, loginID, displayName, passw
 		return nil, userErrf("login ID is required")
 	}
 	u.Role, u.Status, u.AuthProvider = domain.RoleAdmin, domain.UserActive, "local"
-	if err := a.Store.UpdateUser(ctx, u); err != nil {
-		return nil, err
+	existing, _ := a.Store.GetUser(ctx, u.ID)
+	if existing != nil {
+		if err := a.Store.UpdateUser(ctx, u); err != nil {
+			return nil, err
+		}
+	} else {
+		if err := a.Store.CreateUser(ctx, u, hash); err != nil {
+			return nil, err
+		}
 	}
 	if err := a.Store.SetUserPassword(ctx, u.ID, hash); err != nil {
 		return nil, err

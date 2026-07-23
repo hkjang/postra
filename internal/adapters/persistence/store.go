@@ -363,11 +363,19 @@ var ErrNotFound = domain.ErrNotFound
 // ---------- users ----------
 
 func (s *Store) EnsureUser(ctx context.Context, id, loginID string) error {
-	_, err := s.db.ExecContext(ctx,
+	var exists bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE id=? OR lower(login_id)=lower(?))`, id, loginID).Scan(&exists)
+	if err == nil && exists {
+		return nil
+	}
+	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO users (id, login_id, display_name, role, status, auth_provider, created_at, updated_at)
 		 VALUES (?,?,?,?,?,?,?,?)
-		 ON CONFLICT(login_id) DO NOTHING`,
+		 ON CONFLICT(id) DO NOTHING`,
 		id, loginID, loginID, domain.RoleUser, domain.UserActive, "local", now(), now())
+	if err != nil && (strings.Contains(err.Error(), "UNIQUE") || strings.Contains(err.Error(), "constraint")) {
+		return nil
+	}
 	return err
 }
 
