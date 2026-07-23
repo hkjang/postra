@@ -26,9 +26,24 @@
   <tbody>
   {{range .View.Attachments}}
     <tr><td>{{.Name}}</td><td class="small muted">{{.MIMEType}}</td><td class="small">{{size .Size}}</td>
-      <td class="small">{{.ScanStatus}}</td></tr>
+      <td class="small">{{.ScanStatus}}</td>
+      <td>{{if eq .ScanStatus "blocked"}}<span class="err">차단됨</span>{{else if eq .ScanStatus "clean"}}<a href="/ui/messages/{{$m.ID}}/attachments/{{.ID}}">다운로드</a>{{else}}<a class="err" href="/ui/messages/{{$m.ID}}/attachments/{{.ID}}?ack=true" onclick="return confirm('격리 또는 의심 첨부입니다. 위험을 이해하고 다운로드하시겠습니까?')">확인 후 다운로드</a>{{end}}</td></tr>
   {{end}}
   </tbody>
 </table></div>
 {{end}}
+<h2>AI 도구</h2>
+<div class="card actions">
+  <form method="post" action="/ui/messages/{{$m.ID}}/analyze"><input type="hidden" name="type" value="summarize"><button type="submit">요약</button></form>
+  <form method="post" action="/ui/messages/{{$m.ID}}/analyze"><input type="hidden" name="type" value="action_items"><button class="ghost" type="submit">할 일 추출</button></form>
+  <form method="post" action="/ui/messages/{{$m.ID}}/analyze"><input type="hidden" name="type" value="phishing"><button class="ghost" type="submit">피싱 점검</button></form>
+</div>
+<h2>답장</h2>
+<div class="card">
+  <form method="post" action="/ui/messages/{{$m.ID}}/draft">
+    <div class="field"><label>방식</label><select name="kind"><option value="reply">답장</option><option value="reply_all">전체 답장</option><option value="forward">전달</option></select></div>
+    <div class="field"><label>AI 작성 지시(선택)</label><textarea name="instructions" placeholder="예: 참석 가능하다고 정중하게 답장해 줘"></textarea></div>
+    <button type="submit">초안 만들기</button>
+  </form>
+</div>
 {{end}}

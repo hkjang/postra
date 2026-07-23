@@ -1,0 +1,14 @@
+{{define "title"}}새 메일{{end}}
+{{define "content"}}
+<h1>새 메일</h1>
+{{if .Error}}<div class="warn">{{.Error}}</div>{{end}}
+{{if .Accounts}}<form method="post" action="/ui/compose"><div class="card">
+  <div class="field"><label>보낼 계정</label><select name="account_id">{{range .Accounts}}<option value="{{.ID}}">{{.Name}} · {{.Email}}</option>{{end}}</select></div>
+  <div class="field"><label>받는이</label><input type="text" name="to" placeholder="name@example.com" required></div>
+  <div class="field"><label>참조</label><input type="text" name="cc"></div>
+  <div class="field"><label>제목</label><input type="text" name="subject"></div>
+  <div class="field"><label>본문</label><textarea name="body"></textarea></div>
+  <div class="field"><label>AI 작성 지시(선택 · 입력하면 위 본문 대신 AI가 작성)</label><textarea name="instructions" placeholder="예: 다음 주 화요일 미팅을 요청하는 정중한 메일"></textarea></div>
+  <button type="submit">초안 만들기</button>
+</div></form>{{else}}<div class="card empty"><p class="muted">메일을 보내려면 계정을 먼저 연결하세요.</p><a class="btn" href="/ui/accounts/new">계정 연결</a></div>{{end}}
+{{end}}

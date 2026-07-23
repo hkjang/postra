@@ -227,7 +227,11 @@ func (a *App) TestAccount(ctx context.Context, id string) ([]domain.ConnDiagnost
 }
 
 func (a *App) testPOP3(ctx context.Context, acc *domain.MailAccount) domain.ConnDiagnostics {
-	diag := domain.ConnDiagnostics{Target: "pop3"}
+	target := acc.InboundProtocol
+	if target == "" {
+		target = domain.InboundPOP3
+	}
+	diag := domain.ConnDiagnostics{Target: target}
 	step := func(name string, err error) bool {
 		st := domain.ConnStep{Step: name, OK: err == nil}
 		if err != nil {
@@ -248,7 +252,11 @@ func (a *App) testPOP3(ctx context.Context, acc *domain.MailAccount) domain.Conn
 		}
 		defer secret.Zero()
 	}
-	sess, err := a.POP3.Dial(ctx, domain.POP3DialOptions{
+	dialer, err := a.inboundDialer(acc)
+	if !step("protocol", err) {
+		return diag
+	}
+	sess, err := dialer.Dial(ctx, domain.InboundDialOptions{
 		Host: acc.POP3Host, Port: acc.POP3Port, Security: acc.POP3Security,
 		Username: acc.POP3Username, Password: secret,
 		InsecureSkipVerify: acc.InsecureSkipVerify,
@@ -260,9 +268,8 @@ func (a *App) testPOP3(ctx context.Context, acc *domain.MailAccount) domain.Conn
 	}
 	defer sess.Close()
 	_, err = sess.UIDL(ctx)
-	step("uidl", err)
+	diag.OK = step("uidl", err)
 	sess.Quit(ctx)
-	diag.OK = true
 	return diag
 }
 

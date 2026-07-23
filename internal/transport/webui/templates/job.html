@@ -1,0 +1,11 @@
+{{define "title"}}작업 상태{{end}}
+{{define "content"}}
+{{$j := .Job}}<h1>동기화 상태</h1>
+<div class="card">
+<dl class="kv"><dt>상태</dt><dd class="status-{{$j.Status}}">{{$j.Status}}</dd><dt>진행</dt><dd>{{if $j.Progress}}{{$j.Progress}}{{else}}준비 중{{end}}</dd>
+{{if $j.Error}}<dt>오류</dt><dd class="err">{{$j.Error}}</dd>{{end}}</dl>
+{{if $j.Stats}}<h2>결과</h2><p>신규 {{$j.Stats.new}} · 중복 {{$j.Stats.duplicate}} · 실패 {{$j.Stats.failed}} · 초과 {{$j.Stats.oversize}}</p>{{end}}
+</div>
+{{if .Running}}<meta http-equiv="refresh" content="2"><p class="small muted">작업이 끝날 때까지 자동으로 새로고침합니다.</p>{{else}}
+<div class="actions"><a class="btn" href="/ui/">받은편지함 보기</a><a class="btn ghost" href="/ui/accounts/{{$j.AccountID}}">계정으로</a></div>{{end}}
+{{end}}

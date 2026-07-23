@@ -103,9 +103,10 @@ POSTRA_ALLOW_INSECURE_MAIL=true ./postra serve
 
 `serve` 는 REST 바인드 주소의 `/ui` 에 서버 렌더링 웹 UI를 제공합니다(`config.json` 의 `web_ui_enabled=false` 로 비활성). 외부 의존·빌드 단계·CDN 없이 Go `html/template` + 임베드 자산으로 단일 바이너리에 포함되어 **오프라인망에서 그대로 동작**합니다.
 
-- **검색** (`/ui/`) — 제목·본문·보낸이 검색, 결과에서 메일 상세로 이동
-- **메일 상세** (`/ui/messages/{id}`) — 헤더·본문·첨부(스캔 상태 포함)
-- **초안 검토** (`/ui/drafts/{id}`) — 버전·작성자(AI/사용자)·본문 확인
+- **온보딩·계정** (`/ui/accounts`) — 비밀번호 암호화 등록, POP3/IMAP·SMTP 설정, 단계별 연결 진단, 수동 동기화와 진행 상태
+- **받은편지함·검색** (`/ui/`) — 최신 메일 목록, 계정 필터, 제목·본문·보낸이 검색, 커서 페이지 이동
+- **메일 상세** (`/ui/messages/{id}`) — 헤더·본문, 안전한 첨부 다운로드, 요약·할 일·피싱 AI 분석, 답장·전체 답장·전달 초안
+- **새 메일·초안** (`/ui/compose`, `/ui/drafts/{id}`) — 직접 또는 AI로 초안 작성, 수신자·제목·본문 편집, AI 문체 재작성
 - **발송 승인** (`/ui/drafts/{id}/send`) — 미리보기·경고(외부 도메인/다수 수신자) → **승인 요청** → **발송 확정** 2단계. 초안이 바뀌면 토큰 무효화, 동일 버전 재전송은 멱등(이중 발송 없음)
 
 `APIToken` 이 설정되면 UI는 해당 토큰으로 쿠키 로그인(`/ui/login`)을 요구합니다(HttpOnly·SameSite=Strict). 서버는 평문 HTTP로 서빙하므로 인터넷 노출 시 리버스 프록시에서 TLS를 종단하세요.
@@ -126,10 +127,23 @@ POSTRA_ALLOW_INSECURE_MAIL=true ./postra serve
 | `postra_mcp_requests_total` | counter | `tool`,`result` | MCP 도구 호출 수 |
 | `postra_http_requests_total` | counter | `route`,`method`,`code` | REST 요청(경로 패턴 라벨) |
 | `postra_http_request_duration_seconds` | histogram | `route` | REST 요청 지연 |
+| `postra_ui_actions_total` | counter | `action`,`result` | 계정 연결→동기화→AI→초안→승인·발송의 UI 제품 여정 |
 
 Go 런타임·프로세스 표준 메트릭(`go_*`, `process_*`)과 배포 버전(`postra_build_info`)도 함께 노출됩니다. 라벨은 저카디널리티(계정·메시지 ID 미포함)로 유지해 장기 구동 시 시계열 폭증을 막습니다.
 
 **헬스 프로브**(인증 불요): `GET /api/livez` 는 프로세스 생존(항상 200), `GET /api/readyz`(및 `/api/healthz`)는 저장소 도달 가능 여부를 확인해 실패 시 503을 반환합니다. K8s liveness/readiness 프로브에 각각 매핑하세요.
+
+## 백업과 복구
+
+Postra의 영속 데이터는 모두 `data_dir`(Docker는 `/data` 볼륨)에 있습니다. SQLite DB, 암호화된 원문·첨부, 암호화 SecretStore와 KEK가 함께 있어야 복구할 수 있습니다.
+
+1. `postra serve`를 정상 종료해 진행 중인 동기화·발송 작업을 멈춥니다.
+2. `data_dir` 전체를 권한과 디렉터리 구조를 보존하는 도구로 백업합니다. 일부 파일만 복사하거나 KEK를 제외하면 복구할 수 없습니다.
+3. 복구할 때는 Postra를 정지한 상태에서 빈 `data_dir`에 백업 전체를 복원합니다.
+4. 동일하거나 호환되는 Postra 버전으로 기동하고 `/api/readyz`, 계정 목록, 저장 메일과 첨부 열기를 확인합니다.
+5. 별도 주기에 복구 훈련을 수행하고 백업 자체도 운영 환경과 분리해 암호화·접근 통제합니다.
+
+PostgreSQL 모드는 DB 공급자의 일관된 스냅샷과 `data_dir` 객체·SecretStore·KEK를 같은 복구 시점으로 함께 보관해야 합니다. 실행 중인 SQLite 파일을 단순 복사하는 방식은 일관성을 보장하지 않으므로 사용하지 마세요.
 
 ## 구조 (§15)
 

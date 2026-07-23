@@ -1,0 +1,39 @@
+{{define "title"}}계정 연결{{end}}
+{{define "content"}}
+<p class="small"><a href="/ui/accounts" class="muted">← 계정</a></p>
+<h1>메일 계정 연결</h1>
+{{if .Error}}<div class="warn">{{.Error}}</div>{{end}}
+<form method="post" action="/ui/accounts">
+<div class="card">
+  <h2>기본 정보</h2>
+  <div class="grid">
+    <div class="field"><label>표시 이름</label><input type="text" name="name" required></div>
+    <div class="field"><label>메일 주소</label><input type="email" name="email" required></div>
+  </div>
+</div>
+<div class="card">
+  <h2>받는 메일</h2>
+  <div class="grid">
+    <div class="field"><label>프로토콜</label><select name="inbound_protocol"><option value="imap">IMAP</option><option value="pop3">POP3</option></select></div>
+    <div class="field"><label>서버</label><input type="text" name="inbound_host" placeholder="imap.example.com" required></div>
+    <div class="field"><label>포트(비우면 자동)</label><input type="number" name="inbound_port"></div>
+    <div class="field"><label>보안</label><select name="inbound_security"><option value="tls">TLS</option><option value="starttls">STARTTLS</option><option value="none">없음(격리망)</option></select></div>
+    <div class="field"><label>사용자명</label><input type="text" name="inbound_username" required></div>
+    <div class="field"><label>비밀번호</label><input type="password" name="password" required autocomplete="new-password"></div>
+  </div>
+</div>
+<div class="card">
+  <h2>보내는 메일</h2>
+  <div class="grid">
+    <div class="field"><label>SMTP 서버</label><input type="text" name="smtp_host" placeholder="smtp.example.com" required></div>
+    <div class="field"><label>포트(비우면 자동)</label><input type="number" name="smtp_port"></div>
+    <div class="field"><label>보안</label><select name="smtp_security"><option value="tls">TLS</option><option value="starttls">STARTTLS</option><option value="none">없음(격리망)</option></select></div>
+    <div class="field"><label>인증</label><select name="smtp_auth"><option value="auto">자동 인증</option><option value="none">인증 없음(격리망)</option></select></div>
+    <div class="field"><label>사용자명</label><input type="text" name="smtp_username" required></div>
+    <div class="field"><label>별도 SMTP 비밀번호(선택)</label><input type="password" name="smtp_password" autocomplete="new-password" placeholder="비우면 수신 비밀번호 사용"></div>
+  </div>
+</div>
+<p class="small muted">비밀번호는 암호화 저장되며 화면, 로그, AI 컨텍스트에 노출되지 않습니다.</p>
+<button type="submit">안전하게 연결</button>
+</form>
+{{end}}

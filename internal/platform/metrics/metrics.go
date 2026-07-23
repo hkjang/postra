@@ -75,6 +75,10 @@ var (
 	HTTPRequests = counter("http_requests_total", "REST requests by route, method and status code.", "route", "method", "code")
 	HTTPLatency  = histogram("http_request_duration_seconds", "REST request latency by route.", "route")
 
+	// Product journey. Actions are a fixed catalog (no user/account IDs) so
+	// operators can measure onboarding and daily-use funnels privately.
+	UIActions = counter("ui_actions_total", "Web UI product journey actions by action and result.", "action", "result")
+
 	// Queue depth.
 	OutboxPending = gauge("outbox_pending", "Outbound messages awaiting a (re)delivery attempt.")
 )

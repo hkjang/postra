@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"postra/internal/adapters/objectstore"
 	"postra/internal/adapters/persistence"
@@ -30,6 +31,32 @@ func (f *fakeSMTP) Send(context.Context, domain.SMTPSendOptions, domain.Envelope
 	f.sent++
 	return domain.SendReceipt{ServerResponse: "250 OK"}, nil
 }
+
+type fakeAI struct{}
+
+func (fakeAI) Generate(context.Context, domain.GenerationRequest) (domain.GenerationResult, error) {
+	return domain.GenerationResult{
+		Text:  `{"summary":"중요한 테스트 메일입니다.","requests":[],"dates":[],"confidence":0.9}`,
+		Model: "fake",
+	}, nil
+}
+func (fakeAI) Embed(context.Context, domain.EmbeddingRequest) (domain.EmbeddingResult, error) {
+	return domain.EmbeddingResult{Vectors: [][]float32{{1, 0}}, Model: "fake"}, nil
+}
+
+type fakeInboundDialer struct{}
+type fakeInboundSession struct{}
+
+func (fakeInboundDialer) Dial(context.Context, domain.InboundDialOptions) (domain.InboundSession, error) {
+	return fakeInboundSession{}, nil
+}
+func (fakeInboundSession) List(context.Context) ([]domain.RemoteMessage, error) { return nil, nil }
+func (fakeInboundSession) UIDL(context.Context) ([]domain.RemoteMessage, error) { return nil, nil }
+func (fakeInboundSession) Retrieve(context.Context, int) (io.ReadCloser, error) { return nil, nil }
+func (fakeInboundSession) Top(context.Context, int, int) (io.ReadCloser, error) { return nil, nil }
+func (fakeInboundSession) Delete(context.Context, int) error                    { return nil }
+func (fakeInboundSession) Quit(context.Context) error                           { return nil }
+func (fakeInboundSession) Close() error                                         { return nil }
 
 func newTestApp(t *testing.T) (*application.App, *fakeSMTP) {
 	t.Helper()
@@ -59,6 +86,8 @@ func newTestApp(t *testing.T) (*application.App, *fakeSMTP) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	app.POP3 = fakeInboundDialer{}
+	app.IMAP = fakeInboundDialer{}
 	t.Cleanup(app.Shutdown)
 	return app, smtp
 }
@@ -241,6 +270,116 @@ func TestSendApprovalFlow(t *testing.T) {
 		url.Values{"action": {"confirm"}, "token": {tok}}, nil)
 	if smtp.sent != 1 {
 		t.Fatalf("replay caused a second send (count=%d), want 1", smtp.sent)
+	}
+}
+
+// TestOnboardingComposeAndEdit covers the no-CLI product journey:
+// browser credential registration → account creation → compose → edit.
+func TestOnboardingComposeAndEdit(t *testing.T) {
+	app, _ := newTestApp(t)
+	h := New(app, "").Handler()
+
+	rec := do(t, h, "GET", "/ui/", nil, nil)
+	if !strings.Contains(rec.Body.String(), "첫 계정 연결") {
+		t.Fatal("empty inbox should guide the user to account onboarding")
+	}
+	const password = "not-visible-in-html"
+	rec = do(t, h, "POST", "/ui/accounts", url.Values{
+		"name":             {"업무"},
+		"email":            {"me@example.test"},
+		"inbound_protocol": {"pop3"},
+		"inbound_host":     {"127.0.0.1"},
+		"inbound_security": {"none"},
+		"inbound_username": {"me"},
+		"password":         {password},
+		"smtp_host":        {"127.0.0.1"},
+		"smtp_security":    {"none"},
+		"smtp_username":    {"me"},
+	}, nil)
+	if rec.Code != http.StatusSeeOther || !strings.HasPrefix(rec.Header().Get("Location"), "/ui/accounts/") {
+		t.Fatalf("account create: code=%d location=%q body=%s", rec.Code, rec.Header().Get("Location"), rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), password) || strings.Contains(rec.Header().Get("Location"), password) {
+		t.Fatal("credential leaked into the HTTP response")
+	}
+	accounts, err := app.ListAccounts(context.Background())
+	if err != nil || len(accounts) != 1 {
+		t.Fatalf("accounts=%v err=%v", accounts, err)
+	}
+	rec = do(t, h, "POST", "/ui/accounts/"+accounts[0].ID+"/test", nil, nil)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "연결 진단") ||
+		!strings.Contains(rec.Body.String(), "정상") {
+		t.Fatalf("connection diagnostics code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	rec = do(t, h, "POST", "/ui/accounts/"+accounts[0].ID+"/sync", nil, nil)
+	if rec.Code != http.StatusSeeOther || !strings.HasPrefix(rec.Header().Get("Location"), "/ui/jobs/") {
+		t.Fatalf("sync start code=%d location=%q", rec.Code, rec.Header().Get("Location"))
+	}
+	jobURL := rec.Header().Get("Location")
+	for i := 0; i < 20; i++ {
+		rec = do(t, h, "GET", jobURL, nil, nil)
+		if strings.Contains(rec.Body.String(), "succeeded") {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "succeeded") ||
+		!strings.Contains(rec.Body.String(), "받은편지함 보기") {
+		t.Fatalf("sync status code=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = do(t, h, "POST", "/ui/compose", url.Values{
+		"account_id": {accounts[0].ID}, "to": {"bob@example.test"},
+		"subject": {"초기 제목"}, "body": {"초기 본문"},
+	}, nil)
+	if rec.Code != http.StatusSeeOther || !strings.HasPrefix(rec.Header().Get("Location"), "/ui/drafts/") {
+		t.Fatalf("compose: code=%d location=%q body=%s", rec.Code, rec.Header().Get("Location"), rec.Body.String())
+	}
+	draftURL := rec.Header().Get("Location")
+	draftID := strings.TrimPrefix(draftURL, "/ui/drafts/")
+	rec = do(t, h, "POST", draftURL, url.Values{
+		"to": {"bob@example.test"}, "subject": {"수정 제목"}, "body": {"수정 본문"},
+	}, nil)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("draft update code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	dv, err := app.GetDraft(context.Background(), draftID)
+	if err != nil || dv.Version.Subject != "수정 제목" || dv.Version.BodyText != "수정 본문" || dv.Draft.CurrentVersion != 2 {
+		t.Fatalf("updated draft=%+v err=%v", dv, err)
+	}
+}
+
+func TestMessageAnalysisAndAttachmentDownload(t *testing.T) {
+	app, _ := newTestApp(t)
+	app.AI = fakeAI{}
+	ctx := context.Background()
+	uri, hash, size, err := app.Objects.Put("attachment", strings.NewReader("safe content"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &domain.Message{
+		ID: "msg_tools", UserID: application.DefaultUserID, AccountID: "acc_x",
+		Subject: "도구 테스트", From: domain.Address{Email: "a@example.test"},
+		Date: 1000, RawHash: "raw_tools", RawURI: "local://raw/not-used", HasAttachments: true,
+	}
+	body := &domain.MessageBody{MessageID: m.ID, TextBody: "중요한 요청입니다."}
+	at := domain.Attachment{
+		ID: "att_safe", MessageID: m.ID, Name: "safe.txt", MIMEType: "text/plain",
+		Size: size, Hash: hash, StorageURI: uri, ScanStatus: domain.ScanClean,
+	}
+	if err := app.Store.InsertMessage(ctx, m, body, []domain.Attachment{at}); err != nil {
+		t.Fatal(err)
+	}
+	h := New(app, "").Handler()
+
+	rec := do(t, h, "GET", "/ui/messages/msg_tools/attachments/att_safe", nil, nil)
+	if rec.Code != 200 || rec.Body.String() != "safe content" ||
+		!strings.Contains(rec.Header().Get("Content-Disposition"), "safe.txt") {
+		t.Fatalf("download code=%d headers=%v body=%q", rec.Code, rec.Header(), rec.Body.String())
+	}
+	rec = do(t, h, "POST", "/ui/messages/msg_tools/analyze", url.Values{"type": {"summarize"}}, nil)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "중요한 테스트 메일") {
+		t.Fatalf("analysis code=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 

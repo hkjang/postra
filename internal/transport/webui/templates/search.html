@@ -1,12 +1,25 @@
 {{define "title"}}검색{{end}}
 {{define "content"}}
-<h1>메일 검색</h1>
+<div class="actions" style="justify-content:space-between">
+  <h1>받은편지함 <span class="small muted">메일 검색</span></h1>
+  {{if .HasAccounts}}<a class="btn" href="/ui/compose">새 메일</a>{{end}}
+</div>
+{{if and (not .HasAccounts) (not .HasMessages)}}
+<div class="card empty">
+  <h2>메일 계정을 연결하세요</h2>
+  <p class="muted">계정을 연결하면 받은 메일을 안전하게 동기화하고 검색·분석·답장할 수 있습니다.</p>
+  <a class="btn" href="/ui/accounts/new">첫 계정 연결</a>
+</div>
+{{else}}
 <form class="search" method="get" action="/ui/">
   <input type="text" name="q" value="{{.Query}}" placeholder="제목·본문·보낸이 검색…" autofocus>
+  <select name="account">
+    <option value="">모든 계정</option>
+    {{range .Accounts}}<option value="{{.ID}}" {{if eq $.AccountID .ID}}selected{{end}}>{{.Name}} · {{.Email}}</option>{{end}}
+  </select>
   <button type="submit">검색</button>
 </form>
-{{if .Searched}}
-  {{if .Messages}}
+{{if .Messages}}
   <div class="card">
   <table>
     <thead><tr><th>제목</th><th>보낸이</th><th>날짜</th><th></th></tr></thead>
@@ -24,10 +37,11 @@
   </table>
   </div>
   {{if .NextURL}}<div class="actions"><a class="btn ghost" href="{{.NextURL}}">더 보기</a></div>{{end}}
-  {{else}}
-  <p class="muted">검색 결과가 없습니다.</p>
-  {{end}}
 {{else}}
-  <p class="muted small">제목·본문·보낸이로 저장된 메일을 검색합니다.</p>
+  <div class="card empty">
+    <p class="muted">{{if .Query}}검색 결과가 없습니다.{{else}}동기화된 메일이 없습니다. 계정 화면에서 첫 동기화를 시작하세요.{{end}}</p>
+    <a class="btn ghost" href="/ui/accounts">계정·동기화</a>
+  </div>
+{{end}}
 {{end}}
 {{end}}

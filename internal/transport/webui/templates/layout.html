@@ -26,6 +26,7 @@ td.subj a{color:var(--accent);text-decoration:none;font-weight:500}
 .small{font-size:.85rem}
 form.search{display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:1rem}
 input[type=text],input[type=password],textarea{background:var(--bg);border:1px solid var(--line);border-radius:7px;padding:.5rem .6rem;color:var(--fg);font:inherit}
+input[type=email],input[type=number],select{background:var(--bg);border:1px solid var(--line);border-radius:7px;padding:.5rem .6rem;color:var(--fg);font:inherit}
 input[type=text]{flex:1;min-width:200px}
 textarea{width:100%;min-height:9rem;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 button,.btn{background:var(--accent);color:#fff;border:0;border-radius:7px;padding:.5rem 1rem;font:inherit;font-weight:600;cursor:pointer;text-decoration:none;display:inline-block}
@@ -39,13 +40,23 @@ button.ghost{background:transparent;color:var(--accent);border:1px solid var(--l
 .tag{display:inline-block;font-size:.72rem;padding:.1rem .45rem;border-radius:5px;border:1px solid var(--line);color:var(--muted);margin-left:.3rem}
 .err{color:var(--danger);font-weight:500}
 .actions{display:flex;gap:.6rem;margin-top:1rem;align-items:center}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1rem}
+.field{display:flex;flex-direction:column;gap:.25rem;margin-bottom:.8rem}
+.field label{font-size:.82rem;color:var(--muted);font-weight:600}
+.field input,.field select{width:100%}
+.ok{color:#15803d;font-weight:600}
+.status-failed,.status-credential_error{color:var(--danger);font-weight:600}
+.empty{text-align:center;padding:2rem 1rem}
+.json{white-space:pre-wrap;word-break:break-word}
 </style>
 </head>
 <body>
 <header>
   <a href="/ui/" class="brand">✉ Postra</a>
   <nav>
-    <a href="/ui/">검색</a>
+    <a href="/ui/">받은편지함</a>
+    <a href="/ui/compose">새 메일</a>
+    <a href="/ui/accounts">계정</a>
   </nav>
 </header>
 <main>

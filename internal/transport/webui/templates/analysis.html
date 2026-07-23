@@ -1,0 +1,8 @@
+{{define "title"}}AI 분석{{end}}
+{{define "content"}}
+<p class="small"><a href="/ui/messages/{{.MessageID}}" class="muted">← 메일</a></p>
+<h1>AI 분석 결과</h1>
+{{if .Error}}<div class="warn"><b>AI 분석을 실행할 수 없습니다.</b><br>{{.Error}}<br><span class="small">AI 서버 주소와 모델 설정, 외부 전송 정책을 확인하세요.</span></div>
+{{else}}<div class="card"><p><span class="tag">{{.Analysis.AnalysisType}}</span> <span class="small muted">{{.Analysis.Model}} · prompt {{.Analysis.PromptVersion}}</span></p>
+<div class="pre json">{{.Analysis.ResultJSON}}</div></div>{{end}}
+{{end}}

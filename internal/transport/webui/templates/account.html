@@ -1,0 +1,20 @@
+{{define "title"}}계정 관리{{end}}
+{{define "content"}}
+{{$a := .Account}}
+<p class="small"><a href="/ui/accounts" class="muted">← 계정</a></p>
+<h1>{{$a.Name}} <span class="tag">{{$a.Status}}</span></h1>
+{{if .Created}}<div class="warn">계정이 저장되었습니다. 연결 테스트 후 첫 동기화를 시작하세요.</div>{{end}}
+{{if .Error}}<div class="warn">{{.Error}}</div>{{end}}
+<div class="card"><dl class="kv">
+  <dt>메일</dt><dd>{{$a.Email}}</dd><dt>수신</dt><dd>{{$a.InboundProtocol}} · {{$a.POP3Host}}:{{$a.POP3Port}} · {{$a.POP3Security}}</dd>
+  <dt>발신</dt><dd>{{$a.SMTPHost}}:{{$a.SMTPPort}} · {{$a.SMTPSecurity}}</dd>
+</dl></div>
+<div class="actions">
+  <form method="post" action="/ui/accounts/{{$a.ID}}/test"><button class="ghost" type="submit">연결 단계별 테스트</button></form>
+  <form method="post" action="/ui/accounts/{{$a.ID}}/sync"><button type="submit">지금 동기화</button></form>
+</div>
+{{if .Tested}}<h2>연결 진단</h2>{{range .Diagnostics}}
+<div class="card"><h2 style="margin-top:0">{{.Target}} {{if .OK}}<span class="ok">정상</span>{{else}}<span class="err">확인 필요</span>{{end}}</h2>
+{{range .Steps}}<p>{{if .OK}}<span class="ok">✓</span>{{else}}<span class="err">✕</span>{{end}} <b>{{.Step}}</b> {{.Detail}}</p>{{end}}</div>
+{{end}}{{end}}
+{{end}}

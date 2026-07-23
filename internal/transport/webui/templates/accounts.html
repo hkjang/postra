@@ -1,0 +1,14 @@
+{{define "title"}}메일 계정{{end}}
+{{define "content"}}
+<div class="actions" style="justify-content:space-between"><h1>메일 계정</h1><a class="btn" href="/ui/accounts/new">계정 연결</a></div>
+{{if .Accounts}}
+<div class="grid">{{range .Accounts}}
+  <div class="card">
+    <h2 style="margin-top:0">{{.Name}} <span class="tag">{{.Status}}</span></h2>
+    <p>{{.Email}}</p>
+    <p class="small muted">{{.InboundProtocol}} · {{.POP3Host}}:{{.POP3Port}}<br>SMTP · {{.SMTPHost}}:{{.SMTPPort}}</p>
+    <a class="btn ghost" href="/ui/accounts/{{.ID}}">관리·동기화</a>
+  </div>
+{{end}}</div>
+{{else}}<div class="card empty"><p class="muted">연결된 계정이 없습니다.</p><a class="btn" href="/ui/accounts/new">첫 계정 연결</a></div>{{end}}
+{{end}}

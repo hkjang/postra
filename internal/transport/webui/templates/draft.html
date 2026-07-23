@@ -11,10 +11,26 @@
     {{if $v.Cc}}<dt>참조</dt><dd>{{addrs $v.Cc}}</dd>{{end}}
     <dt>제목</dt><dd>{{$v.Subject}}</dd>
   </dl>
-  <h2>본문</h2>
-  <div class="pre">{{$v.BodyText}}</div>
+  {{if eq $d.Status "open"}}
+  <form method="post" action="/ui/drafts/{{$d.ID}}">
+    <div class="field"><label>받는이</label><input type="text" name="to" value="{{addrs $v.To}}" required></div>
+    <div class="field"><label>참조</label><input type="text" name="cc" value="{{addrs $v.Cc}}"></div>
+    <div class="field"><label>숨은참조</label><input type="text" name="bcc" value="{{addrs $v.Bcc}}"></div>
+    <div class="field"><label>제목</label><input type="text" name="subject" value="{{$v.Subject}}" required></div>
+    <div class="field"><label>본문</label><textarea name="body" required>{{$v.BodyText}}</textarea></div>
+    <button type="submit">변경 저장</button>
+  </form>
+  {{else}}<h2>본문</h2><div class="pre">{{$v.BodyText}}</div>{{end}}
+</div>
+{{if eq $d.Status "open"}}
+<div class="card">
+  <form method="post" action="/ui/drafts/{{$d.ID}}/rewrite" class="actions">
+    <select name="style"><option value="formal">격식 있게</option><option value="concise">간결하게</option><option value="friendly">친근하게</option></select>
+    <button class="ghost" type="submit">AI로 다시 쓰기</button>
+  </form>
 </div>
 <div class="actions">
   <a class="btn" href="/ui/drafts/{{$d.ID}}/send">발송 미리보기·승인 →</a>
 </div>
+{{end}}
 {{end}}
