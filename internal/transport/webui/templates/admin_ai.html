@@ -1,31 +1,81 @@
-{{define "title"}}AI 운영 관리{{end}}
+{{define "title"}}AI & Vector DB 관리{{end}}
 {{define "content"}}
 {{$s := .Settings}}
 <div class="actions" style="justify-content:space-between">
-  <div><p class="small muted">관리자 / AI</p><h1>AI 운영 관리</h1></div>
+  <div><p class="small muted">관리자 / AI & Vector DB</p><h1>AI & Vector DB 관리</h1></div>
   <div><a class="btn ghost" href="/ui/admin/settings">시스템 설정</a><a class="btn ghost" href="/ui/admin/users">사용자 관리</a></div>
 </div>
-{{if .Saved}}<div class="ok card">AI 설정이 즉시 적용되었습니다.</div>{{end}}
+{{if .Saved}}<div class="ok card">설정이 즉시 적용되었습니다.</div>{{end}}
 {{if .Error}}<div class="warn">{{.Error}}</div>{{end}}
-{{with .Test}}<div class="card">{{if .OK}}<span class="ok">● 연결 정상</span>{{else}}<span class="err">● 연결 실패</span>{{end}}
-  <p>{{.Message}}</p><p class="small muted">모델 {{.Model}} · {{.LatencyMS}}ms</p></div>{{end}}
+
+{{with .Test}}
+<div class="card">
+  {{if .OK}}<span class="ok">● AI Chat 연결 정상</span>{{else}}<span class="err">● AI Chat 연결 실패</span>{{end}}
+  <p>{{.Message}}</p>
+  <p class="small muted">모델: {{.Model}} · 지연 시간: {{.LatencyMS}}ms</p>
+</div>
+{{end}}
+
+{{with .VectorTest}}
+<div class="card">
+  <h3>임베딩 & 벡터 저장소 파이프라인 진단 결과</h3>
+  <div style="margin: 0.5rem 0; display: flex; gap: 1rem;">
+    <div>AI 임베딩: {{if .AIEmbedOK}}<span class="ok">● 정상 ({{.AIEmbedLatencyMS}}ms)</span>{{else}}<span class="err">● 실패</span>{{end}}</div>
+    <div>벡터 저장소: {{if .VectorStoreOK}}<span class="ok">● 정상 ({{.VectorStoreLatencyMS}}ms)</span>{{else}}<span class="err">● 실패</span>{{end}}</div>
+  </div>
+  <p>{{.Message}}</p>
+  <p class="small muted">임베딩 모델: {{.AIEmbedModel}} · 저장소 종류: {{.VectorStoreProvider}}</p>
+</div>
+{{end}}
 
 <form method="post" action="/ui/admin/ai">
-<div class="card"><h2>OpenAI 호환 Provider</h2><p class="small muted">Ollama, vLLM, OpenAI 호환 게이트웨이를 동일하게 연결할 수 있습니다.</p><div class="grid">
-  <div class="field"><label>Base URL</label><input type="text" name="ai.base_url" value="{{index $s "ai.base_url"}}" placeholder="http://ollama:11434/v1" required></div>
-  <div class="field"><label>Chat 모델</label><input type="text" name="ai.model" value="{{index $s "ai.model"}}" required></div>
-  <div class="field"><label>Embedding 모델</label><input type="text" name="ai.embed_model" value="{{index $s "ai.embed_model"}}"></div>
-  <div class="field"><label>API Key {{if index $s "ai.api_key_ref"}}<span class="ok">· 등록됨</span>{{end}}</label><input type="password" name="ai_api_key" autocomplete="new-password" placeholder="변경할 때만 입력"></div>
-  <div class="field"><label>요청 타임아웃(초)</label><input type="number" min="1" max="1800" name="ai.timeout_sec" value="{{index $s "ai.timeout_sec"}}"></div>
-  <div class="field"><label>최대 출력 토큰</label><input type="number" min="16" max="131072" name="ai.max_tokens" value="{{index $s "ai.max_tokens"}}"></div>
-</div></div>
+<div class="card">
+  <h2>OpenAI 호환 Chat & Embedding Provider</h2>
+  <p class="small muted">Ollama, vLLM, OpenAI 호환 게이트웨이를 동일하게 연결할 수 있습니다.</p>
+  <div class="grid">
+    <div class="field"><label>Chat Base URL (LLM)</label><input type="text" name="ai.base_url" value="{{index $s "ai.base_url"}}" placeholder="http://ollama:11434/v1" required></div>
+    <div class="field"><label>Embedding Base URL (비어있으면 Chat Base URL 사용)</label><input type="text" name="ai.embed_base_url" value="{{index $s "ai.embed_base_url"}}" placeholder="http://ollama:11434/v1"></div>
+    <div class="field"><label>Chat 모델</label><input type="text" name="ai.model" value="{{index $s "ai.model"}}" required></div>
+    <div class="field"><label>Embedding 모델</label><input type="text" name="ai.embed_model" value="{{index $s "ai.embed_model"}}"></div>
+    <div class="field"><label>API Key {{if index $s "ai.api_key_ref"}}<span class="ok">· 등록됨</span>{{end}}</label><input type="password" name="ai_api_key" autocomplete="new-password" placeholder="변경할 때만 입력"></div>
+    <div class="field"><label>요청 타임아웃(초)</label><input type="number" min="1" max="1800" name="ai.timeout_sec" value="{{index $s "ai.timeout_sec"}}"></div>
+    <div class="field" style="grid-column: span 2"><label>최대 출력 토큰</label><input type="number" min="16" max="131072" name="ai.max_tokens" value="{{index $s "ai.max_tokens"}}"></div>
+    <div class="field" style="grid-column: span 2"><label>추가 HTTP 요청 헤더 (JSON 또는 Key:Value; 형식)</label><input type="text" name="ai.extra_headers" value="{{index $s "ai.extra_headers"}}" placeholder='{"X-Title": "Postra", "X-Custom": "value"} 또는 Header:Value;Header2:Value2'></div>
+  </div>
+  <p style="margin-top: 1rem;"><label><input type="checkbox" name="ai.stream" value="true" {{if eq (index $s "ai.stream") "true"}}checked{{end}}> OpenAI Chat API 응답 스트리밍 사용 ("stream": true)</label></p>
+</div>
+
+<div class="card">
+  <h2>Vector Database 설정</h2>
+  <p class="small muted">메일 임베딩 및 의미(시맨틱) 검색에 사용할 벡터 데이터베이스를 지정합니다.</p>
+  <div class="grid">
+    <div class="field">
+      <label>Vector DB Provider</label>
+      <select name="vector.provider" style="width: 100%; padding: 0.5rem; border-radius: 4px; border: 1px solid var(--border); background-color: var(--card-bg, #fff); color: var(--text, #333);">
+        <option value="" {{if eq (index $s "vector.provider") ""}}selected{{end}}>기본값 자동 감지 (Postgres/SQLite)</option>
+        <option value="postgres" {{if eq (index $s "vector.provider") "postgres"}}selected{{end}}>PostgreSQL + pgvector</option>
+        <option value="milvus" {{if eq (index $s "vector.provider") "milvus"}}selected{{end}}>Milvus (HTTP v2 REST API)</option>
+        <option value="sqlite" {{if eq (index $s "vector.provider") "sqlite"}}selected{{end}}>SQLite (메모리 코사인 연산)</option>
+        <option value="disabled" {{if eq (index $s "vector.provider") "disabled"}}selected{{end}}>비활성화 (Disabled)</option>
+      </select>
+    </div>
+    <div class="field"><label>Milvus URL</label><input type="text" name="vector.milvus_url" value="{{index $s "vector.milvus_url"}}" placeholder="http://localhost:19530"></div>
+    <div class="field"><label>Milvus Token / API Key</label><input type="password" name="vector.milvus_token" value="{{index $s "vector.milvus_token"}}" autocomplete="new-password" placeholder="Milvus 인증 토큰 (필요시)"></div>
+    <div class="field"><label>Milvus Collection</label><input type="text" name="vector.milvus_collection" value="{{index $s "vector.milvus_collection"}}" placeholder="postra_emails"></div>
+  </div>
+</div>
+
 {{if index $s "ai.api_key_ref"}}<p><label><input type="checkbox" name="remove_api_key" value="true"> 저장된 AI API Key 삭제</label></p>{{end}}
 <div class="card"><h2>데이터 보호 정책</h2>
   <p><label><input type="checkbox" name="ai.allow_external" value="true" {{if eq (index $s "ai.allow_external") "true"}}checked{{end}}> 외부 AI endpoint로 메일 콘텐츠 전송 허용</label></p>
   <p><label><input type="checkbox" name="ai.mask_external_pii" value="true" {{if eq (index $s "ai.mask_external_pii") "true"}}checked{{end}}> 외부 전송 전 이메일·전화번호·식별정보 마스킹</label></p>
   <p class="small muted">메일 본문은 항상 비신뢰 데이터로 격리되며 프롬프트 명령으로 실행되지 않습니다. API Key는 암호화 SecretStore에만 저장됩니다.</p>
 </div>
-<button type="submit">AI 설정 저장</button>
+<button type="submit">AI & Vector DB 설정 저장</button>
 </form>
-<form method="post" action="/ui/admin/ai/test" style="margin-top:1rem"><button type="submit" class="ghost">저장된 설정으로 연결 테스트</button></form>
+
+<div style="display:flex; gap:1rem; margin-top:1rem">
+  <form method="post" action="/ui/admin/ai/test"><button type="submit" class="ghost">AI Chat 연결 테스트</button></form>
+  <form method="post" action="/ui/admin/vector/test"><button type="submit" class="ghost">임베딩 & 벡터 저장소 통합 테스트</button></form>
+</div>
 {{end}}

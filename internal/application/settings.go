@@ -34,6 +34,9 @@ const (
 	SettingAIMaxTokens           = "ai.max_tokens"
 	SettingAIAllowExternal       = "ai.allow_external"
 	SettingAIMaskExternalPII     = "ai.mask_external_pii"
+	SettingAIStream              = "ai.stream"
+	SettingAIExtraHeaders        = "ai.extra_headers"
+	SettingAIEmbedBaseURL        = "ai.embed_base_url"
 	SettingSendMaxMinute         = "send.max_per_minute"
 	SettingSendMaxHour           = "send.max_per_hour"
 	SettingSendWarnRecipients    = "send.warn_recipients"
@@ -48,6 +51,10 @@ const (
 	SettingAllowInsecureMail     = "security.allow_insecure_mail"
 	SettingAllowPrivateHosts     = "security.allow_private_hosts"
 	SettingEncryptAtRest         = "security.encrypt_at_rest"
+	SettingVectorProvider        = "vector.provider"
+	SettingVectorMilvusURL       = "vector.milvus_url"
+	SettingVectorMilvusToken     = "vector.milvus_token"
+	SettingVectorMilvusCollection = "vector.milvus_collection"
 )
 
 var allowedSettings = map[string]bool{
@@ -58,11 +65,14 @@ var allowedSettings = map[string]bool{
 	SettingSyncCommandTimeout: true, SettingAIBaseURL: true, SettingAIModel: true,
 	SettingAIEmbedModel: true, SettingAIAPIKeyRef: true, SettingAITimeout: true,
 	SettingAIMaxTokens: true, SettingAIAllowExternal: true, SettingAIMaskExternalPII: true,
+	SettingAIStream: true, SettingAIExtraHeaders: true, SettingAIEmbedBaseURL: true,
 	SettingSendMaxMinute: true, SettingSendMaxHour: true, SettingSendWarnRecipients: true,
 	SettingSendMaxRetries: true, SettingSendRetryBase: true, SettingSendRetryMax: true,
 	SettingAttachmentBlock: true, SettingAttachmentQuarantine: true, SettingArchiveMaxEntries: true,
 	SettingArchiveMaxTotalBytes: true, SettingArchiveMaxRatio: true,
 	SettingAllowInsecureMail: true, SettingAllowPrivateHosts: true, SettingEncryptAtRest: true,
+	SettingVectorProvider: true, SettingVectorMilvusURL: true, SettingVectorMilvusToken: true,
+	SettingVectorMilvusCollection: true,
 }
 
 func (a *App) SystemSettings(ctx context.Context) (map[string]string, error) {
@@ -95,6 +105,9 @@ func (a *App) SystemSettings(ctx context.Context) (map[string]string, error) {
 		SettingAIMaxTokens:          strconv.Itoa(aiCfg.MaxTokens),
 		SettingAIAllowExternal:      strconv.FormatBool(aiCfg.AllowExternal),
 		SettingAIMaskExternalPII:    strconv.FormatBool(aiCfg.MaskExternalPII),
+		SettingAIStream:             strconv.FormatBool(aiCfg.Stream),
+		SettingAIExtraHeaders:       aiCfg.ExtraHeaders,
+		SettingAIEmbedBaseURL:       aiCfg.EmbedBaseURL,
 		SettingSendMaxMinute:        strconv.Itoa(a.Cfg.Send.MaxPerMinute),
 		SettingSendMaxHour:          strconv.Itoa(a.Cfg.Send.MaxPerHour),
 		SettingSendWarnRecipients:   strconv.Itoa(a.Cfg.Send.WarnRecipients),
@@ -109,6 +122,10 @@ func (a *App) SystemSettings(ctx context.Context) (map[string]string, error) {
 		SettingAllowInsecureMail:    strconv.FormatBool(a.Cfg.AllowInsecureMail),
 		SettingAllowPrivateHosts:    strconv.FormatBool(a.Cfg.AllowPrivateHosts),
 		SettingEncryptAtRest:        strconv.FormatBool(a.Cfg.EncryptAtRest),
+		SettingVectorProvider:         "",
+		SettingVectorMilvusURL:        "",
+		SettingVectorMilvusToken:       "",
+		SettingVectorMilvusCollection: "postra_emails",
 	}
 	for key, value := range defaults {
 		if _, ok := stored[key]; !ok {
@@ -137,6 +154,9 @@ func applyStoredSettings(cfg *config.Config, values map[string]string) {
 	cfg.AI.MaxTokens = intSetting(values, SettingAIMaxTokens, cfg.AI.MaxTokens)
 	cfg.AI.AllowExternal = boolSetting(values, SettingAIAllowExternal, cfg.AI.AllowExternal)
 	cfg.AI.MaskExternalPII = boolSetting(values, SettingAIMaskExternalPII, cfg.AI.MaskExternalPII)
+	cfg.AI.Stream = boolSetting(values, SettingAIStream, cfg.AI.Stream)
+	cfg.AI.ExtraHeaders = stringSetting(values, SettingAIExtraHeaders, cfg.AI.ExtraHeaders)
+	cfg.AI.EmbedBaseURL = stringSetting(values, SettingAIEmbedBaseURL, cfg.AI.EmbedBaseURL)
 	cfg.Send.MaxPerMinute = intSetting(values, SettingSendMaxMinute, cfg.Send.MaxPerMinute)
 	cfg.Send.MaxPerHour = intSetting(values, SettingSendMaxHour, cfg.Send.MaxPerHour)
 	cfg.Send.WarnRecipients = intSetting(values, SettingSendWarnRecipients, cfg.Send.WarnRecipients)
@@ -195,6 +215,18 @@ func (a *App) AdminSaveSettings(ctx context.Context, values map[string]string, o
 		_ = a.RevokeSecret(ctx, domain.SecretRef(oldOIDCRef))
 	}
 	a.applyAISettings(clean)
+
+	hasVectorSetting := false
+	for k := range clean {
+		if strings.HasPrefix(k, "vector.") {
+			hasVectorSetting = true
+			break
+		}
+	}
+	if hasVectorSetting {
+		a.initVectorStore(ctx)
+	}
+
 	a.audit(ctx, "settings_update", "system", "ok", "keys="+strconv.Itoa(len(clean)))
 	return nil
 }
@@ -298,6 +330,67 @@ func (a *App) AdminTestAI(ctx context.Context) (AIConnectionResult, error) {
 		out.Message = fmt.Sprintf("Provider responded, but probe output was unexpected: %.120s", result.Text)
 	}
 	return out, nil
+}
+
+type EmbeddingStoreTestResult struct {
+	OK                    bool   `json:"ok"`
+	AIEmbedOK             bool   `json:"ai_embed_ok"`
+	AIEmbedLatencyMS      int64  `json:"ai_embed_latency_ms"`
+	AIEmbedModel          string `json:"ai_embed_model"`
+	VectorStoreOK         bool   `json:"vector_store_ok"`
+	VectorStoreLatencyMS  int64  `json:"vector_store_latency_ms"`
+	VectorStoreProvider   string `json:"vector_store_provider"`
+	Message               string `json:"message"`
+}
+
+func (a *App) AdminTestEmbeddingStore(ctx context.Context) (EmbeddingStoreTestResult, error) {
+	if _, err := requireAdmin(ctx); err != nil {
+		return EmbeddingStoreTestResult{}, err
+	}
+
+	result := EmbeddingStoreTestResult{
+		AIEmbedModel: a.currentAIConfig().EmbedModel,
+	}
+
+	settings, err := a.Store.GetSettings(ctx)
+	if err == nil {
+		result.VectorStoreProvider = settings[SettingVectorProvider]
+	}
+	if result.VectorStoreProvider == "" {
+		if _, ok := a.Store.(interface{ HasPgVector() bool }); ok {
+			result.VectorStoreProvider = "postgres"
+		} else {
+			result.VectorStoreProvider = "sqlite"
+		}
+	}
+
+	embedStart := time.Now()
+	embedRes, err := a.AI.Embed(ctx, domain.EmbeddingRequest{
+		Input: []string{"postra connectivity probe text for embedding"},
+	})
+	result.AIEmbedLatencyMS = time.Since(embedStart).Milliseconds()
+	if err != nil {
+		result.Message = fmt.Sprintf("AI embedding failed: %v", err)
+		return result, nil
+	}
+	if len(embedRes.Vectors) == 0 || len(embedRes.Vectors[0]) == 0 {
+		result.Message = "AI embedding succeeded but returned empty vector"
+		return result, nil
+	}
+	result.AIEmbedOK = true
+
+	vectorStart := time.Now()
+	err = a.VectorStore().Ping(ctx)
+	result.VectorStoreLatencyMS = time.Since(vectorStart).Milliseconds()
+	if err != nil {
+		result.Message = fmt.Sprintf("AI embedding succeeded but Vector store check failed: %v", err)
+		return result, nil
+	}
+	result.VectorStoreOK = true
+	result.OK = true
+	result.Message = fmt.Sprintf("Pipeline is healthy. Embedding Model: %s, Vector Store: %s", result.AIEmbedModel, result.VectorStoreProvider)
+
+	return result, nil
 }
 
 func boolSetting(values map[string]string, key string, fallback bool) bool {

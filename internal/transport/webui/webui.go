@@ -106,6 +106,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /ui/admin/ai", s.gate(s.adminAI))
 	mux.HandleFunc("POST /ui/admin/ai", s.gate(s.adminAISave))
 	mux.HandleFunc("POST /ui/admin/ai/test", s.gate(s.adminAITest))
+	mux.HandleFunc("POST /ui/admin/vector/test", s.gate(s.adminVectorTest))
 	mux.HandleFunc("GET /ui/", s.gate(s.search))
 	mux.HandleFunc("GET /ui/accounts", s.gate(s.accounts))
 	mux.HandleFunc("GET /ui/accounts/new", s.gate(s.accountNew))
@@ -566,16 +567,22 @@ func aiFormValues(r *http.Request) map[string]string {
 		application.SettingAIBaseURL:         r.FormValue(application.SettingAIBaseURL),
 		application.SettingAIModel:           r.FormValue(application.SettingAIModel),
 		application.SettingAIEmbedModel:      r.FormValue(application.SettingAIEmbedModel),
+		application.SettingAIEmbedBaseURL:    r.FormValue(application.SettingAIEmbedBaseURL),
 		application.SettingAITimeout:         r.FormValue(application.SettingAITimeout),
 		application.SettingAIMaxTokens:       r.FormValue(application.SettingAIMaxTokens),
 		application.SettingAIAllowExternal:   "false",
 		application.SettingAIMaskExternalPII: "false",
+		application.SettingAIStream:          "false",
+		application.SettingAIExtraHeaders:    r.FormValue(application.SettingAIExtraHeaders),
 	}
 	if r.FormValue(application.SettingAIAllowExternal) == "true" {
 		values[application.SettingAIAllowExternal] = "true"
 	}
 	if r.FormValue(application.SettingAIMaskExternalPII) == "true" {
 		values[application.SettingAIMaskExternalPII] = "true"
+	}
+	if r.FormValue(application.SettingAIStream) == "true" {
+		values[application.SettingAIStream] = "true"
 	}
 	if r.FormValue("remove_api_key") == "true" {
 		values[application.SettingAIAPIKeyRef] = ""
@@ -584,11 +591,27 @@ func aiFormValues(r *http.Request) map[string]string {
 }
 
 func (s *Server) adminAISave(w http.ResponseWriter, r *http.Request) {
-	if err := s.app.AdminSaveAISettings(r.Context(), aiFormValues(r), r.FormValue("ai_api_key")); err != nil {
+	// 1. Save AI Settings
+	aiValues := aiFormValues(r)
+	if err := s.app.AdminSaveAISettings(r.Context(), aiValues, r.FormValue("ai_api_key")); err != nil {
 		settings, _ := s.app.SystemSettings(r.Context())
 		s.render(w, "admin_ai", http.StatusBadRequest, map[string]any{"Settings": settings, "Error": err.Error()})
 		return
 	}
+
+	// 2. Save Vector Settings
+	vectorValues := map[string]string{
+		application.SettingVectorProvider:         r.FormValue(application.SettingVectorProvider),
+		application.SettingVectorMilvusURL:        r.FormValue(application.SettingVectorMilvusURL),
+		application.SettingVectorMilvusToken:       r.FormValue(application.SettingVectorMilvusToken),
+		application.SettingVectorMilvusCollection:  r.FormValue(application.SettingVectorMilvusCollection),
+	}
+	if err := s.app.AdminSaveSettings(r.Context(), vectorValues, ""); err != nil {
+		settings, _ := s.app.SystemSettings(r.Context())
+		s.render(w, "admin_ai", http.StatusBadRequest, map[string]any{"Settings": settings, "Error": err.Error()})
+		return
+	}
+
 	http.Redirect(w, r, "/ui/admin/ai?saved=1", http.StatusSeeOther)
 }
 
@@ -600,6 +623,16 @@ func (s *Server) adminAITest(w http.ResponseWriter, r *http.Request) {
 	}
 	settings, _ := s.app.SystemSettings(r.Context())
 	s.render(w, "admin_ai", http.StatusOK, map[string]any{"Settings": settings, "Test": result})
+}
+
+func (s *Server) adminVectorTest(w http.ResponseWriter, r *http.Request) {
+	result, err := s.app.AdminTestEmbeddingStore(r.Context())
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	settings, _ := s.app.SystemSettings(r.Context())
+	s.render(w, "admin_ai", http.StatusOK, map[string]any{"Settings": settings, "VectorTest": result})
 }
 
 const searchPageSize = 50

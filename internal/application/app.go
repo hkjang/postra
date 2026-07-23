@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"net"
 	"strings"
 	"sync"
@@ -42,6 +43,8 @@ type App struct {
 	oidcStateKey [32]byte
 	aiConfigMu   sync.RWMutex
 	aiRaw        domain.AIProvider
+	vectorStore  VectorStore
+	vectorMu     sync.RWMutex
 }
 
 func New(cfg config.Config, store Storage, objects objectstore.Store,
@@ -79,6 +82,7 @@ func New(cfg config.Config, store Storage, objects objectstore.Store,
 	if err := a.bootstrapAdmin(context.Background()); err != nil {
 		return nil, err
 	}
+	a.initVectorStore(context.Background())
 	return a, nil
 }
 
@@ -92,6 +96,11 @@ func (a *App) Ready(ctx context.Context) error {
 func (a *App) Shutdown() {
 	a.cancelAll()
 	a.workerGroup.Wait()
+	a.vectorMu.Lock()
+	if a.vectorStore != nil {
+		_ = a.vectorStore.Close()
+	}
+	a.vectorMu.Unlock()
 }
 
 // ---------- actor context ----------
@@ -243,4 +252,67 @@ func randomToken(n int) string {
 	b := make([]byte, n)
 	rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+func (a *App) initVectorStore(ctx context.Context) {
+	a.vectorMu.Lock()
+	defer a.vectorMu.Unlock()
+
+	if a.vectorStore != nil {
+		_ = a.vectorStore.Close()
+	}
+
+	settings, err := a.Store.GetSettings(ctx)
+	if err != nil {
+		slog.Error("app: failed to load settings for vector store initialization", "error", err)
+		a.vectorStore = &DisabledVectorStore{}
+		return
+	}
+
+	provider := settings[SettingVectorProvider]
+	if provider == "" {
+		// Default fallback
+		if pg, ok := a.Store.(interface{ HasPgVector() bool }); ok {
+			if pg.HasPgVector() {
+				provider = "postgres"
+			} else {
+				provider = "disabled"
+				slog.Warn("app: pgvector is not available and no alternative vector provider is configured. Semantic search is disabled.")
+			}
+		} else {
+			provider = "sqlite"
+		}
+	}
+
+	slog.Info("app: initializing vector store provider", "provider", provider)
+
+	switch provider {
+	case "postgres", "sqlite":
+		if provider == "postgres" {
+			if pg, ok := a.Store.(interface{ HasPgVector() bool }); ok && !pg.HasPgVector() {
+				slog.Error("app: requested postgres vector provider, but pgvector is not available. Falling back to disabled vector store.")
+				a.vectorStore = &DisabledVectorStore{}
+				return
+			}
+		}
+		a.vectorStore = &StorageVectorStore{store: a.Store}
+	case "milvus":
+		url := settings[SettingVectorMilvusURL]
+		token := settings[SettingVectorMilvusToken]
+		collection := settings[SettingVectorMilvusCollection]
+		if url == "" {
+			slog.Error("app: milvus provider configured but vector.milvus_url is empty. Falling back to disabled vector store.")
+			a.vectorStore = &DisabledVectorStore{}
+			return
+		}
+		a.vectorStore = NewMilvusVectorStore(url, token, collection, a.Store)
+	default:
+		a.vectorStore = &DisabledVectorStore{}
+	}
+}
+
+func (a *App) VectorStore() VectorStore {
+	a.vectorMu.RLock()
+	defer a.vectorMu.RUnlock()
+	return a.vectorStore
 }

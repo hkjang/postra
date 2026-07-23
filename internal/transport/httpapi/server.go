@@ -46,6 +46,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/admin/settings", s.adminSaveSettings)
 	mux.HandleFunc("PUT /api/admin/ai", s.adminSaveAI)
 	mux.HandleFunc("POST /api/admin/ai/test", s.adminTestAI)
+	mux.HandleFunc("POST /api/admin/vector/test", s.adminTestEmbeddingStore)
 
 	mux.HandleFunc("GET /api/mcp-keys", s.listMyMCPKeys)
 	mux.HandleFunc("POST /api/mcp-keys", s.createMCPKey)
@@ -251,6 +252,15 @@ func (s *Server) adminSaveAI(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) adminTestAI(w http.ResponseWriter, r *http.Request) {
 	result, err := s.app.AdminTestAI(r.Context())
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) adminTestEmbeddingStore(w http.ResponseWriter, r *http.Request) {
+	result, err := s.app.AdminTestEmbeddingStore(r.Context())
 	if err != nil {
 		writeErr(w, err)
 		return

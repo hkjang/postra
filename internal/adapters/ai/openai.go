@@ -62,6 +62,7 @@ type chatRequest struct {
 	MaxTokens      int           `json:"max_tokens,omitempty"`
 	Temperature    float64       `json:"temperature"`
 	ResponseFormat *respFormat   `json:"response_format,omitempty"`
+	Stream         bool          `json:"stream"`
 }
 
 type respFormat struct {
@@ -101,7 +102,7 @@ func (p *OpenAICompat) Generate(ctx context.Context, req domain.GenerationReques
 	if maxTokens <= 0 {
 		maxTokens = cfg.MaxTokens
 	}
-	body := chatRequest{Model: cfg.Model, Messages: msgs, MaxTokens: maxTokens, Temperature: 0.2}
+	body := chatRequest{Model: cfg.Model, Messages: msgs, MaxTokens: maxTokens, Temperature: 0.2, Stream: cfg.Stream}
 	if req.JSONMode {
 		body.ResponseFormat = &respFormat{Type: "json_object"}
 	}
@@ -124,6 +125,7 @@ func (p *OpenAICompat) Generate(ctx context.Context, req domain.GenerationReques
 		httpReq.Header.Set("Authorization", "Bearer "+string(h.Reveal()))
 		defer h.Zero()
 	}
+	injectExtraHeaders(httpReq.Header, cfg.ExtraHeaders)
 
 	resp, err := client.Do(httpReq)
 	if err != nil {
@@ -184,7 +186,11 @@ func (p *OpenAICompat) Embed(ctx context.Context, req domain.EmbeddingRequest) (
 	if err != nil {
 		return domain.EmbeddingResult{}, err
 	}
-	url := strings.TrimSuffix(cfg.BaseURL, "/") + "/embeddings"
+	baseURL := cfg.EmbedBaseURL
+	if baseURL == "" {
+		baseURL = cfg.BaseURL
+	}
+	url := strings.TrimSuffix(baseURL, "/") + "/embeddings"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(b))
 	if err != nil {
 		return domain.EmbeddingResult{}, err
@@ -198,6 +204,7 @@ func (p *OpenAICompat) Embed(ctx context.Context, req domain.EmbeddingRequest) (
 		httpReq.Header.Set("Authorization", "Bearer "+string(h.Reveal()))
 		defer h.Zero()
 	}
+	injectExtraHeaders(httpReq.Header, cfg.ExtraHeaders)
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return domain.EmbeddingResult{}, fmt.Errorf("embed request: %w", err)
@@ -229,6 +236,25 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+func injectExtraHeaders(h http.Header, extra string) {
+	if extra == "" {
+		return
+	}
+	var headers map[string]string
+	if err := json.Unmarshal([]byte(extra), &headers); err == nil {
+		for k, v := range headers {
+			h.Set(k, v)
+		}
+	} else {
+		for _, part := range strings.Split(extra, ";") {
+			kv := strings.SplitN(part, ":", 2)
+			if len(kv) == 2 {
+				h.Set(strings.TrimSpace(kv[0]), strings.TrimSpace(kv[1]))
+			}
+		}
+	}
 }
 
 var _ domain.AIProvider = (*OpenAICompat)(nil)

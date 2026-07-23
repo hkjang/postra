@@ -29,7 +29,12 @@ import (
 )
 
 type Store struct {
-	pool *pgxpool.Pool
+	pool        *pgxpool.Pool
+	hasPgVector bool
+}
+
+func (s *Store) HasPgVector() bool {
+	return s.hasPgVector
 }
 
 // Ping verifies the PostgreSQL pool is usable (readiness probe).
@@ -83,8 +88,16 @@ func NewID(prefix string) string {
 var ErrNotFound = domain.ErrNotFound
 
 func (s *Store) migrate(ctx context.Context) error {
+	var hasPgVector bool
+	if _, err := s.pool.Exec(ctx, `CREATE EXTENSION IF NOT EXISTS vector`); err != nil {
+		slog.Warn("pgstore: pgvector extension is not available. Postgres-native semantic search will be disabled.", "error", err)
+		hasPgVector = false
+	} else {
+		hasPgVector = true
+	}
+	s.hasPgVector = hasPgVector
+
 	stmts := []string{
-		`CREATE EXTENSION IF NOT EXISTS vector`,
 		`CREATE TABLE IF NOT EXISTS users (
 			id TEXT PRIMARY KEY, login_id TEXT UNIQUE NOT NULL,
 			status TEXT NOT NULL DEFAULT 'active', timezone TEXT DEFAULT 'UTC',
@@ -176,7 +189,6 @@ func (s *Store) migrate(ctx context.Context) error {
 			attempts INT NOT NULL DEFAULT 0, next_attempt_at BIGINT NOT NULL DEFAULT 0,
 			created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL)`,
 		`ALTER TABLE outbound_messages ADD COLUMN IF NOT EXISTS next_attempt_at BIGINT NOT NULL DEFAULT 0`,
-		`ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS inbound_protocol TEXT NOT NULL DEFAULT 'pop3'`,
 		`CREATE INDEX IF NOT EXISTS idx_outbound_retry ON outbound_messages(status, next_attempt_at)`,
 		`CREATE TABLE IF NOT EXISTS jobs (
 			id TEXT PRIMARY KEY, user_id TEXT NOT NULL, type TEXT NOT NULL, account_id TEXT, status TEXT NOT NULL,
@@ -185,17 +197,33 @@ func (s *Store) migrate(ctx context.Context) error {
 			id BIGSERIAL PRIMARY KEY, at BIGINT NOT NULL, user_id TEXT, actor TEXT, action TEXT NOT NULL,
 			resource TEXT, result TEXT NOT NULL, detail TEXT)`,
 		`CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_events(at DESC)`,
-		`CREATE TABLE IF NOT EXISTS embeddings (
+		`CREATE TABLE IF NOT EXISTS embedding_meta (
 			message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE, chunk_id INT NOT NULL,
 			user_id TEXT NOT NULL, account_id TEXT NOT NULL, model TEXT NOT NULL, dim INT NOT NULL,
-			vec vector, PRIMARY KEY (message_id, chunk_id))`,
-		`CREATE INDEX IF NOT EXISTS idx_embeddings_scope ON embeddings(user_id, account_id)`,
+			PRIMARY KEY (message_id, chunk_id))`,
+		`CREATE INDEX IF NOT EXISTS idx_embedding_meta_scope ON embedding_meta(user_id, account_id)`,
 	}
 	for _, st := range stmts {
 		if _, err := s.pool.Exec(ctx, st); err != nil {
 			return fmt.Errorf("migrate: %w (stmt: %.60s)", err, st)
 		}
 	}
+
+	if s.hasPgVector {
+		vectorStmts := []string{
+			`CREATE TABLE IF NOT EXISTS embeddings (
+				message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE, chunk_id INT NOT NULL,
+				user_id TEXT NOT NULL, account_id TEXT NOT NULL, model TEXT NOT NULL, dim INT NOT NULL,
+				vec vector, PRIMARY KEY (message_id, chunk_id))`,
+			`CREATE INDEX IF NOT EXISTS idx_embeddings_scope ON embeddings(user_id, account_id)`,
+		}
+		for _, st := range vectorStmts {
+			if _, err := s.pool.Exec(ctx, st); err != nil {
+				return fmt.Errorf("migrate (vector): %w (stmt: %.60s)", err, st)
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -1183,10 +1211,31 @@ func (s *Store) DeleteMessage(ctx context.Context, userID, id string) ([]string,
 // ---------- embeddings ----------
 
 func (s *Store) SaveEmbedding(ctx context.Context, userID, accountID, messageID string, chunkID int, vec []float32, model string) error {
-	_, err := s.pool.Exec(ctx, `INSERT INTO embeddings (message_id,chunk_id,user_id,account_id,model,dim,vec)
-	 VALUES ($1,$2,$3,$4,$5,$6,$7::vector) ON CONFLICT (message_id,chunk_id) DO UPDATE SET model=excluded.model, dim=excluded.dim, vec=excluded.vec`,
-		messageID, chunkID, userID, accountID, model, len(vec), vectorLiteral(vec))
-	return err
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	// Always insert into embedding_meta to track progress
+	_, err = tx.Exec(ctx, `INSERT INTO embedding_meta (message_id,chunk_id,user_id,account_id,model,dim)
+	 VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (message_id,chunk_id) DO UPDATE SET model=excluded.model, dim=excluded.dim`,
+		messageID, chunkID, userID, accountID, model, len(vec))
+	if err != nil {
+		return err
+	}
+
+	// Conditionally insert into embeddings table if pgvector is enabled
+	if s.hasPgVector {
+		_, err = tx.Exec(ctx, `INSERT INTO embeddings (message_id,chunk_id,user_id,account_id,model,dim,vec)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7::vector) ON CONFLICT (message_id,chunk_id) DO UPDATE SET model=excluded.model, dim=excluded.dim, vec=excluded.vec`,
+			messageID, chunkID, userID, accountID, model, len(vec), vectorLiteral(vec))
+		if err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit(ctx)
 }
 
 func (s *Store) MessagesMissingEmbeddings(ctx context.Context, userID, accountID string, limit int) ([]string, error) {
@@ -1194,7 +1243,7 @@ func (s *Store) MessagesMissingEmbeddings(ctx context.Context, userID, accountID
 		limit = 200
 	}
 	args := []any{userID}
-	q := `SELECT m.id FROM messages m WHERE m.user_id=$1 AND NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.message_id=m.id)`
+	q := `SELECT m.id FROM messages m WHERE m.user_id=$1 AND NOT EXISTS (SELECT 1 FROM embedding_meta e WHERE e.message_id=m.id)`
 	if accountID != "" {
 		args = append(args, accountID)
 		q += fmt.Sprintf(" AND m.account_id=$%d", len(args))
@@ -1219,6 +1268,9 @@ func (s *Store) MessagesMissingEmbeddings(ctx context.Context, userID, accountID
 
 // SemanticSearch uses pgvector cosine distance (<=>). Score = 1 - distance.
 func (s *Store) SemanticSearch(ctx context.Context, userID, accountID string, queryVec []float32, limit int) ([]domain.SemanticHit, error) {
+	if !s.hasPgVector {
+		return nil, fmt.Errorf("pgvector semantic search is not available on this database")
+	}
 	if limit <= 0 {
 		limit = 10
 	}

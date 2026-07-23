@@ -111,23 +111,18 @@ type SendConfig struct {
 type AIConfig struct {
 	// BaseURL of an OpenAI-compatible API, e.g. "http://localhost:8000/v1"
 	// (vLLM, Ollama, or a hosted provider).
-	BaseURL string `json:"base_url"`
-	Model   string `json:"model"`
-	// EmbedModel is reserved for semantic search (post-MVP).
-	EmbedModel string `json:"embed_model"`
-	// APIKeyRef is a secret reference resolved through the SecretStore.
-	// Never put a raw API key in configuration.
-	APIKeyRef  string `json:"api_key_ref"`
-	TimeoutSec int    `json:"timeout_sec"`
-	MaxTokens  int    `json:"max_tokens"`
-	// AllowExternal gates sending mail content to non-loopback AI endpoints.
-	AllowExternal bool `json:"allow_external"`
-	// MaskExternalPII redacts PII/secrets from mail content before it is sent
-	// to an external (non-local) AI endpoint (AI-011).
-	MaskExternalPII bool `json:"mask_external_pii"`
-	// PromptVersions pins/rolls back the prompt version per analysis type
-	// (AI-013), e.g. {"summarize": "v1"}. Unset types use the newest version.
+	BaseURL      string            `json:"base_url"`
+	Model        string            `json:"model"`
+	EmbedModel   string            `json:"embed_model"`
+	EmbedBaseURL string            `json:"embed_base_url"`
+	APIKeyRef    string            `json:"api_key_ref"`
+	TimeoutSec   int               `json:"timeout_sec"`
+	MaxTokens    int               `json:"max_tokens"`
+	AllowExternal bool              `json:"allow_external"`
+	MaskExternalPII bool            `json:"mask_external_pii"`
 	PromptVersions map[string]string `json:"prompt_versions,omitempty"`
+	Stream       bool              `json:"stream"`
+	ExtraHeaders string            `json:"extra_headers"`
 }
 
 type SyncConfig struct {

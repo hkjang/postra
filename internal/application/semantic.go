@@ -45,7 +45,7 @@ func (a *App) runBuildEmbeddings(ctx context.Context, job *domain.Job, accountID
 	job.Status = domain.JobRunning
 	_ = a.Store.UpdateJob(ctx, job)
 
-	ids, err := a.Store.MessagesMissingEmbeddings(ctx, job.UserID, accountID, max)
+	ids, err := a.VectorStore().MessagesMissingEmbeddings(ctx, job.UserID, accountID, max)
 	if err != nil {
 		job.Status, job.Error = domain.JobFailed, err.Error()
 		_ = a.Store.UpdateJob(context.Background(), job)
@@ -104,7 +104,7 @@ func (a *App) embedMessage(ctx context.Context, accountID, messageID string) err
 	if acc == "" {
 		acc = m.AccountID
 	}
-	return a.Store.SaveEmbedding(ctx, userID, acc, messageID, 0, res.Vectors[0], res.Model)
+	return a.VectorStore().SaveEmbedding(ctx, userID, acc, messageID, 0, res.Vectors[0], res.Model)
 }
 
 // SemanticSearch embeds the query and returns the most similar stored
@@ -124,7 +124,7 @@ func (a *App) SemanticSearch(ctx context.Context, query, accountID string, limit
 		return nil, userErrf("embedder returned no vector for the query")
 	}
 	userID := userIDFrom(ctx)
-	hits, err := a.Store.SemanticSearch(ctx, userID, accountID, res.Vectors[0], limit)
+	hits, err := a.VectorStore().SemanticSearch(ctx, userID, accountID, res.Vectors[0], limit)
 	if err != nil {
 		return nil, err
 	}
