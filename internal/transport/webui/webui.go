@@ -162,7 +162,14 @@ func validRequestOrigin(r *http.Request) bool {
 		return true // non-browser clients; SameSite=Lax still protects the session cookie
 	}
 	u, err := url.Parse(origin)
-	return err == nil && strings.EqualFold(u.Host, r.Host)
+	if err != nil {
+		return false
+	}
+	requestHost := r.Host
+	if forwarded := firstForwarded(r.Header.Get("X-Forwarded-Host")); forwarded != "" {
+		requestHost = forwarded
+	}
+	return strings.EqualFold(u.Host, requestHost)
 }
 
 func (s *Server) authed(r *http.Request) bool {
@@ -176,6 +183,7 @@ func (s *Server) authed(r *http.Request) bool {
 // ---------- handlers ----------
 
 func (s *Server) loginForm(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	if s.app.Cfg.Auth.Enabled {
 		if needs, _ := s.app.NeedsAdminSetup(r.Context()); needs {
 			http.Redirect(w, r, "/ui/setup", http.StatusSeeOther)
@@ -192,6 +200,7 @@ func (s *Server) loginForm(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) loginSubmit(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	if s.app.Cfg.Auth.Enabled {
 		u, err := s.app.AuthenticateLocal(application.WithActor(r.Context(), "webui"), r.FormValue("login_id"), r.FormValue("password"))
 		if err != nil {
@@ -222,7 +231,7 @@ func (s *Server) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	// sent and login would break. HttpOnly + SameSite=Strict are the baseline;
 	// terminate TLS at a reverse proxy when exposing to untrusted networks.
 	http.SetCookie(w, &http.Cookie{
-		Name: cookieName, Value: s.apiToken, Path: "/ui/",
+		Name: cookieName, Value: s.apiToken, Path: "/",
 		HttpOnly: true, SameSite: http.SameSiteStrictMode,
 	})
 	http.Redirect(w, r, "/ui/", http.StatusSeeOther)
@@ -246,7 +255,7 @@ func (s *Server) oidcStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// #nosec G124 -- Secure is enabled for TLS/proxied HTTPS; loopback HTTP is intentionally supported.
-	http.SetCookie(w, &http.Cookie{Name: "postra_oidc_flow", Value: signed, Path: "/ui/auth/oidc/",
+	http.SetCookie(w, &http.Cookie{Name: "postra_oidc_flow", Value: signed, Path: "/",
 		HttpOnly: true, Secure: secureRequest(r), SameSite: http.SameSiteLaxMode, MaxAge: 600})
 	http.Redirect(w, r, authURL, http.StatusSeeOther)
 }
@@ -280,35 +289,43 @@ func (s *Server) oidcCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// #nosec G124 -- Secure follows the transport so loopback HTTP remains usable.
-	http.SetCookie(w, &http.Cookie{Name: "postra_oidc_flow", Value: "", Path: "/ui/auth/oidc/", MaxAge: -1,
+	http.SetCookie(w, &http.Cookie{Name: "postra_oidc_flow", Value: "", Path: "/", MaxAge: -1,
 		HttpOnly: true, Secure: secureRequest(r), SameSite: http.SameSiteLaxMode})
 	s.setAuthCookies(w, r, raw, csrf)
 	http.Redirect(w, r, "/ui/", http.StatusSeeOther)
 }
 
 func secureRequest(r *http.Request) bool {
-	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+	return r.TLS != nil || strings.EqualFold(firstForwarded(r.Header.Get("X-Forwarded-Proto")), "https")
+}
+
+func firstForwarded(value string) string {
+	if value, _, ok := strings.Cut(value, ","); ok {
+		return strings.TrimSpace(value)
+	}
+	return strings.TrimSpace(value)
 }
 
 func (s *Server) setAuthCookies(w http.ResponseWriter, r *http.Request, session, csrf string) {
 	secure := secureRequest(r)
 	// #nosec G124 -- Secure is enabled for TLS/proxied HTTPS; loopback HTTP is intentionally supported.
-	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: session, Path: "/ui/",
+	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: session, Path: "/",
 		HttpOnly: true, Secure: secure, SameSite: http.SameSiteLaxMode})
 	// #nosec G124 -- readable anti-CSRF cookie; SameSite and dynamic Secure are explicitly set.
-	http.SetCookie(w, &http.Cookie{Name: csrfCookie, Value: csrf, Path: "/ui/",
+	http.SetCookie(w, &http.Cookie{Name: csrfCookie, Value: csrf, Path: "/",
 		HttpOnly: false, Secure: secure, SameSite: http.SameSiteLaxMode})
 }
 
 func (s *Server) clearAuthCookies(w http.ResponseWriter, r *http.Request) {
 	for _, name := range []string{cookieName, csrfCookie} {
 		// #nosec G124 -- deletion cookie mirrors the dynamically secure original cookie.
-		http.SetCookie(w, &http.Cookie{Name: name, Value: "", Path: "/ui/", MaxAge: -1,
+		http.SetCookie(w, &http.Cookie{Name: name, Value: "", Path: "/", MaxAge: -1,
 			HttpOnly: name == cookieName, Secure: secureRequest(r), SameSite: http.SameSiteLaxMode})
 	}
 }
 
 func (s *Server) setupForm(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	if !s.app.Cfg.Auth.Enabled {
 		http.Redirect(w, r, "/ui/", http.StatusSeeOther)
 		return
@@ -326,6 +343,7 @@ func (s *Server) setupForm(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) setupSubmit(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	if !s.app.Cfg.Auth.Enabled {
 		http.NotFound(w, r)
 		return
@@ -803,6 +821,9 @@ func (s *Server) render(w http.ResponseWriter, page string, code int, data map[s
 	if !ok {
 		http.Error(w, "unknown page", http.StatusInternalServerError)
 		return
+	}
+	if page == "login" || page == "setup" {
+		data["AuthPage"] = true
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(code)

@@ -1,18 +1,32 @@
 {{define "title"}}로그인{{end}}
 {{define "content"}}
-<h1>Postra 로그인</h1>
-<div class="card" style="max-width:420px">
-  {{if .Error}}<p class="err">{{.Error}}</p>{{end}}
-  <form method="post" action="/ui/login">
+<div class="auth-shell">
+<section class="auth-panel">
+  <div class="auth-brand"><span class="brand-mark">P</span>Postra</div>
+  <div class="auth-card">
+  <h1>다시 만나 반갑습니다</h1>
+  <p class="muted">조직의 안전한 메일 워크스페이스에 로그인하세요.</p>
+  {{if .Error}}<div class="warn">{{.Error}}</div>{{end}}
+  <form method="post" action="/ui/login" autocomplete="on">
     {{if .LocalAuth}}
-    <div class="field"><label>로그인 ID</label><input type="text" name="login_id" required autofocus autocomplete="username"></div>
+    <div class="field"><label>로그인 ID</label><input type="text" name="login_id" placeholder="아이디를 입력하세요" required autofocus autocomplete="username"></div>
     <div class="field"><label>비밀번호</label><input type="password" name="password" required autocomplete="current-password"></div>
     {{else}}
-    <p class="small muted">API 토큰을 입력하세요.</p>
-    <p><input type="password" name="token" placeholder="API 토큰" autofocus style="width:100%"></p>
+    <div class="field"><label>API 토큰</label><input type="password" name="token" placeholder="API 토큰을 입력하세요" autofocus style="width:100%"></div>
     {{end}}
-    <button type="submit">로그인</button>
+    <button type="submit" class="auth-submit">로그인</button>
   </form>
-  {{if .OIDCEnabled}}<hr><a class="btn ghost" href="/ui/auth/oidc/start">Keycloak SSO로 로그인</a>{{end}}
+  {{if .OIDCEnabled}}<div class="auth-divider">또는</div><a class="btn ghost sso-button" href="/ui/auth/oidc/start">Keycloak SSO로 계속하기</a>{{end}}
+  <p class="small muted" style="margin-top:1.5rem">접속 기록은 보안 감사 목적으로 기록됩니다.</p>
+  </div>
+</section>
+<aside class="auth-visual">
+  <div class="auth-message">
+    <div class="eyebrow">Secure Mail Intelligence</div>
+    <h2>메일 업무를<br>더 안전하고 명확하게.</h2>
+    <p>수집부터 검색, AI 분석, 승인 발송까지. 조직의 데이터 경계를 지키는 하나의 업무 공간입니다.</p>
+    <div class="auth-features"><span class="auth-feature">사용자별 데이터 격리</span><span class="auth-feature">Keycloak SSO</span><span class="auth-feature">감사 가능한 발송</span></div>
+  </div>
+</aside>
 </div>
 {{end}}

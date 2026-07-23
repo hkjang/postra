@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
@@ -151,7 +152,8 @@ func TestLocalLoginSessionAndLogout(t *testing.T) {
 			sessionCookie = c
 		}
 	}
-	if sessionCookie == nil || !sessionCookie.HttpOnly || sessionCookie.SameSite != http.SameSiteLaxMode {
+	if sessionCookie == nil || !sessionCookie.HttpOnly || sessionCookie.SameSite != http.SameSiteLaxMode ||
+		sessionCookie.Path != "/" {
 		t.Fatalf("secure session cookie was not issued: %+v", sessionCookie)
 	}
 	rec = do(t, h, http.MethodGet, "/ui/", nil, sessionCookie)
@@ -170,6 +172,36 @@ func TestLocalLoginSessionAndLogout(t *testing.T) {
 	rec = do(t, h, http.MethodGet, "/ui/", nil, sessionCookie)
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("logged-out cookie remained valid: code=%d", rec.Code)
+	}
+}
+
+func TestLoginRedirectWithRealCookieJar(t *testing.T) {
+	app, _ := newTestApp(t)
+	app.Cfg.Auth.Enabled = true
+	if _, err := app.SetupInitialAdmin(context.Background(), "admin", "Administrator", "a-secure-password"); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(New(app, "").Handler())
+	defer server.Close()
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := server.Client()
+	client.Jar = jar
+	resp, err := client.PostForm(server.URL+"/ui/login", url.Values{
+		"login_id": {"admin"}, "password": {"a-secure-password"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK || resp.Request.URL.Path != "/ui/" {
+		t.Fatalf("login redirect ended at %s with %d: %s", resp.Request.URL.Path, resp.StatusCode, body)
+	}
+	if strings.Contains(string(body), "Postra 로그인") {
+		t.Fatal("successful login redirected back to the login page")
 	}
 }
 
