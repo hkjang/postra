@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"postra/internal/adapters/persistence"
@@ -191,5 +192,126 @@ func (a *App) SemanticSearch(ctx context.Context, query, accountID string, limit
 		})
 	}
 	a.audit(ctx, "semantic_search", "query", "ok", fmt.Sprintf("hits=%d", len(out)))
+	return out, nil
+}
+
+type HybridSearchOptions struct {
+	Query         string
+	AccountID     string
+	Limit         int
+	RRFKConstant  float64 // default 60.0
+	FTSWeight     float64 // default 1.0
+	VectorWeight  float64 // default 1.0
+	GroupByThread bool
+}
+
+// HybridSearch combines Full-Text Search (FTS) and Vector Semantic Search using
+// Reciprocal Rank Fusion (RRF) (§P1 하이브리드 검색 고도화).
+func (a *App) HybridSearch(ctx context.Context, opts HybridSearchOptions) ([]MessageView, error) {
+	if strings.TrimSpace(opts.Query) == "" {
+		return nil, userErrf("query is empty")
+	}
+	if opts.Limit <= 0 {
+		opts.Limit = 20
+	}
+	if opts.RRFKConstant <= 0 {
+		opts.RRFKConstant = 60.0
+	}
+	if opts.FTSWeight <= 0 {
+		opts.FTSWeight = 1.0
+	}
+	if opts.VectorWeight <= 0 {
+		opts.VectorWeight = 1.0
+	}
+
+	userID := userIDFrom(ctx)
+
+	// 1. Fetch FTS keyword search results
+	ftsResult, ftsErr := a.Store.Search(ctx, domain.SearchQuery{
+		UserID:    userID,
+		AccountID: opts.AccountID,
+		Text:      opts.Query,
+		Limit:     opts.Limit * 2,
+	})
+
+	// 2. Fetch Semantic Vector search results
+	var semViews []MessageView
+	var semErr error
+	if a.checkAIPolicy(ctx) == nil {
+		semViews, semErr = a.SemanticSearch(ctx, opts.Query, opts.AccountID, opts.Limit*2)
+	}
+
+	if ftsErr != nil && semErr != nil {
+		return nil, fmt.Errorf("hybrid search failed: fts err: %v, sem err: %v", ftsErr, semErr)
+	}
+
+	// 3. Compute Reciprocal Rank Fusion (RRF) scores
+	scores := make(map[string]float64)
+	reasons := make(map[string]string)
+	messages := make(map[string]domain.Message)
+
+	if ftsErr == nil && ftsResult != nil {
+		for rank, msg := range ftsResult.Messages {
+			mID := msg.ID
+			messages[mID] = msg
+			rrf := opts.FTSWeight / (opts.RRFKConstant + float64(rank+1))
+			scores[mID] += rrf
+			reasons[mID] = fmt.Sprintf("FTS rank #%d (rrf: %.4f)", rank+1, rrf)
+		}
+	}
+
+	if semErr == nil {
+		for rank, v := range semViews {
+			mID := v.Message.ID
+			messages[mID] = v.Message
+			rrf := opts.VectorWeight / (opts.RRFKConstant + float64(rank+1))
+			scores[mID] += rrf
+
+			if existing, ok := reasons[mID]; ok {
+				reasons[mID] = fmt.Sprintf("%s + Vector rank #%d (total rrf: %.4f)", existing, rank+1, scores[mID])
+			} else {
+				reasons[mID] = fmt.Sprintf("Vector rank #%d (rrf: %.4f)", rank+1, rrf)
+			}
+		}
+	}
+
+	// 4. Sort by combined RRF score
+	type rrfHit struct {
+		mID   string
+		score float64
+	}
+	var hitList []rrfHit
+	for mID, sc := range scores {
+		hitList = append(hitList, rrfHit{mID: mID, score: sc})
+	}
+	sort.Slice(hitList, func(i, j int) bool {
+		return hitList[i].score > hitList[j].score
+	})
+
+	// 5. Build output, optionally grouping by ThreadID
+	var out []MessageView
+	seenThreads := make(map[string]bool)
+
+	for _, hit := range hitList {
+		msg := messages[hit.mID]
+		if opts.GroupByThread && msg.ThreadID != "" {
+			if seenThreads[msg.ThreadID] {
+				continue
+			}
+			seenThreads[msg.ThreadID] = true
+		}
+
+		out = append(out, MessageView{
+			Message: msg,
+			Score:   hit.score,
+			Reason:  reasons[hit.mID],
+		})
+
+		if len(out) >= opts.Limit {
+			break
+		}
+	}
+
+	a.audit(ctx, "hybrid_search", "query:"+opts.Query, "ok", fmt.Sprintf("hits=%d", len(out)))
 	return out, nil
 }

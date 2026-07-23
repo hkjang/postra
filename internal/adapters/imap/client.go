@@ -285,6 +285,115 @@ func (s *session) Quit(ctx context.Context) error {
 
 func (s *session) Close() error { return s.conn.Close() }
 
+// ListMailboxes returns the list of IMAP folder names available (§P1 IMAP 폴더 동기화).
+func (s *session) ListMailboxes(ctx context.Context) ([]string, error) {
+	lines, err := s.exec(`LIST "" "*"`)
+	if err != nil {
+		return nil, fmt.Errorf("LIST mailboxes: %w", err)
+	}
+	var mailboxes []string
+	reList := regexp.MustCompile(`^\* LIST \(.*\) ".*" "?([^"]+)"?`)
+	for _, l := range lines {
+		if m := reList.FindStringSubmatch(l); m != nil {
+			mailboxes = append(mailboxes, m[1])
+		}
+	}
+	return mailboxes, nil
+}
+
+// SelectMailbox selects a specific folder/mailbox (e.g., "INBOX", "Sent", "Drafts").
+func (s *session) SelectMailbox(name string) error {
+	lines, err := s.exec("SELECT %s", quote(name))
+	if err != nil {
+		return fmt.Errorf("SELECT %s: %w", name, err)
+	}
+	s.exists = 0
+	s.index = nil
+	s.indexed = false
+	for _, l := range lines {
+		if m := reExist.FindStringSubmatch(l); m != nil {
+			s.exists, _ = strconv.Atoi(m[1])
+		}
+		if m := reValid.FindStringSubmatch(l); m != nil {
+			s.uidValidity = m[1]
+		}
+	}
+	return nil
+}
+
+// FetchFlags fetches IMAP flags (e.g. \Seen, \Flagged, \Draft) for a sequence number.
+func (s *session) FetchFlags(ctx context.Context, number int) ([]string, error) {
+	lines, err := s.exec("FETCH %d (FLAGS)", number)
+	if err != nil {
+		return nil, err
+	}
+	reFlags := regexp.MustCompile(`FLAGS \(([^)]*)\)`)
+	var flags []string
+	for _, l := range lines {
+		if m := reFlags.FindStringSubmatch(l); m != nil {
+			for _, f := range strings.Fields(m[1]) {
+				flags = append(flags, f)
+			}
+		}
+	}
+	return flags, nil
+}
+
+// Idle issues RFC 2177 IMAP IDLE command and waits for new events or context cancellation (§P1 IMAP IDLE).
+func (s *session) Idle(ctx context.Context) error {
+	s.tagN++
+	tag := fmt.Sprintf("a%d", s.tagN)
+	
+	s.conn.SetDeadline(time.Now().Add(28 * time.Minute))
+	if _, err := fmt.Fprintf(s.conn, "%s IDLE\r\n", tag); err != nil {
+		return err
+	}
+
+	line, err := s.readLine()
+	if err != nil {
+		return err
+	}
+
+	if !strings.HasPrefix(line, "+") {
+		return fmt.Errorf("IDLE rejected: %s", line)
+	}
+
+	lineChan := make(chan string, 1)
+	errChan := make(chan error, 1)
+
+	go func() {
+		for {
+			l, err := s.readLine()
+			if err != nil {
+				errChan <- err
+				return
+			}
+			lineChan <- l
+		}
+	}()
+
+	defer func() {
+		s.conn.SetDeadline(time.Now().Add(10 * time.Second))
+		_, _ = fmt.Fprintf(s.conn, "DONE\r\n")
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case err := <-errChan:
+			return err
+		case l := <-lineChan:
+			if strings.HasPrefix(l, tag+" ") {
+				return nil
+			}
+			if strings.Contains(l, "EXISTS") || strings.Contains(l, "RECENT") || strings.Contains(l, "FETCH") {
+				return nil
+			}
+		}
+	}
+}
+
 // quote wraps an IMAP astring in double quotes, escaping backslash and quote.
 func quote(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
