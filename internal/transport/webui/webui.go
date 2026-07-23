@@ -13,6 +13,7 @@ import (
 	"io"
 	"log/slog"
 	"mime"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -27,9 +28,10 @@ import (
 //go:embed templates/*.html
 var files embed.FS
 
-// cookieName carries the API token for UI sessions. SameSite=Strict is the
-// CSRF baseline for the state-changing (send) forms.
-const cookieName = "postra_ui"
+const (
+	cookieName = "postra_session"
+	csrfCookie = "postra_csrf"
+)
 
 type Server struct {
 	app      *application.App
@@ -60,7 +62,8 @@ var funcs = template.FuncMap{
 // page's {{define "content"}} stays isolated.
 func parseTemplates() map[string]*template.Template {
 	pages := []string{"search", "message", "draft", "send", "sent", "login", "error",
-		"accounts", "account_new", "account", "compose", "analysis", "job"}
+		"accounts", "account_new", "account", "compose", "analysis", "job",
+		"setup", "admin_users", "admin_settings"}
 	out := make(map[string]*template.Template, len(pages))
 	for _, p := range pages {
 		t := template.Must(template.New("layout").Funcs(funcs).
@@ -72,8 +75,19 @@ func parseTemplates() map[string]*template.Template {
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /ui/setup", s.setupForm)
+	mux.HandleFunc("POST /ui/setup", s.setupSubmit)
 	mux.HandleFunc("GET /ui/login", s.loginForm)
 	mux.HandleFunc("POST /ui/login", s.loginSubmit)
+	mux.HandleFunc("GET /ui/auth/oidc/start", s.oidcStart)
+	mux.HandleFunc("GET /ui/auth/oidc/callback", s.oidcCallback)
+	mux.HandleFunc("POST /ui/logout", s.gate(s.logout))
+	mux.HandleFunc("GET /ui/admin/users", s.gate(s.adminUsers))
+	mux.HandleFunc("POST /ui/admin/users", s.gate(s.adminUserCreate))
+	mux.HandleFunc("POST /ui/admin/users/{id}", s.gate(s.adminUserUpdate))
+	mux.HandleFunc("POST /ui/admin/users/{id}/password", s.gate(s.adminPasswordReset))
+	mux.HandleFunc("GET /ui/admin/settings", s.gate(s.adminSettings))
+	mux.HandleFunc("POST /ui/admin/settings", s.gate(s.adminSettingsSave))
 	mux.HandleFunc("GET /ui/", s.gate(s.search))
 	mux.HandleFunc("GET /ui/accounts", s.gate(s.accounts))
 	mux.HandleFunc("GET /ui/accounts/new", s.gate(s.accountNew))
@@ -100,12 +114,55 @@ func (s *Server) Handler() http.Handler {
 // token (offline default) the UI is open, matching the REST API's posture.
 func (s *Server) gate(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if s.app.Cfg.Auth.Enabled {
+			needsSetup, err := s.app.NeedsAdminSetup(r.Context())
+			if err != nil {
+				s.fail(w, err)
+				return
+			}
+			if needsSetup {
+				http.Redirect(w, r, "/ui/setup", http.StatusSeeOther)
+				return
+			}
+			c, err := r.Cookie(cookieName)
+			if err != nil {
+				http.Redirect(w, r, "/ui/login", http.StatusSeeOther)
+				return
+			}
+			_, principal, err := s.app.AuthenticateSession(r.Context(), c.Value)
+			if err != nil {
+				s.clearAuthCookies(w, r)
+				http.Redirect(w, r, "/ui/login", http.StatusSeeOther)
+				return
+			}
+			if r.Method != http.MethodGet && r.Method != http.MethodHead {
+				if !validRequestOrigin(r) {
+					s.render(w, "error", http.StatusForbidden, map[string]any{"Message": "요청 검증에 실패했습니다. 페이지를 새로고침하세요."})
+					return
+				}
+			}
+			ctx := application.WithPrincipal(application.WithActor(r.Context(), "webui"), principal)
+			h(w, r.WithContext(ctx))
+			return
+		}
 		if s.apiToken != "" && !s.authed(r) {
 			http.Redirect(w, r, "/ui/login", http.StatusSeeOther)
 			return
 		}
 		h(w, r.WithContext(application.WithActor(r.Context(), "webui")))
 	}
+}
+
+func validRequestOrigin(r *http.Request) bool {
+	if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" && site != "none" {
+		return false
+	}
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true // non-browser clients; SameSite=Lax still protects the session cookie
+	}
+	u, err := url.Parse(origin)
+	return err == nil && strings.EqualFold(u.Host, r.Host)
 }
 
 func (s *Server) authed(r *http.Request) bool {
@@ -119,6 +176,14 @@ func (s *Server) authed(r *http.Request) bool {
 // ---------- handlers ----------
 
 func (s *Server) loginForm(w http.ResponseWriter, r *http.Request) {
+	if s.app.Cfg.Auth.Enabled {
+		if needs, _ := s.app.NeedsAdminSetup(r.Context()); needs {
+			http.Redirect(w, r, "/ui/setup", http.StatusSeeOther)
+			return
+		}
+		s.render(w, "login", http.StatusOK, map[string]any{"LocalAuth": true, "OIDCEnabled": s.app.OIDCConfigured(r.Context())})
+		return
+	}
 	if s.apiToken == "" {
 		http.Redirect(w, r, "/ui/", http.StatusSeeOther)
 		return
@@ -127,6 +192,23 @@ func (s *Server) loginForm(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) loginSubmit(w http.ResponseWriter, r *http.Request) {
+	if s.app.Cfg.Auth.Enabled {
+		u, err := s.app.AuthenticateLocal(application.WithActor(r.Context(), "webui"), r.FormValue("login_id"), r.FormValue("password"))
+		if err != nil {
+			s.render(w, "login", http.StatusUnauthorized, map[string]any{
+				"Error": err.Error(), "LocalAuth": true, "OIDCEnabled": s.app.OIDCConfigured(r.Context()),
+			})
+			return
+		}
+		raw, csrf, _, err := s.app.CreateSession(r.Context(), u, r.UserAgent(), application.ClientIP(r.RemoteAddr))
+		if err != nil {
+			s.fail(w, err)
+			return
+		}
+		s.setAuthCookies(w, r, raw, csrf)
+		http.Redirect(w, r, "/ui/", http.StatusSeeOther)
+		return
+	}
 	if s.apiToken == "" {
 		http.Redirect(w, r, "/ui/", http.StatusSeeOther)
 		return
@@ -144,6 +226,234 @@ func (s *Server) loginSubmit(w http.ResponseWriter, r *http.Request) {
 		HttpOnly: true, SameSite: http.SameSiteStrictMode,
 	})
 	http.Redirect(w, r, "/ui/", http.StatusSeeOther)
+}
+
+func (s *Server) oidcStart(w http.ResponseWriter, r *http.Request) {
+	if !s.app.Cfg.Auth.Enabled {
+		http.NotFound(w, r)
+		return
+	}
+	authURL, flow, err := s.app.BeginOIDC(r.Context())
+	if err != nil {
+		s.render(w, "login", http.StatusBadGateway, map[string]any{
+			"Error": err.Error(), "LocalAuth": true, "OIDCEnabled": true,
+		})
+		return
+	}
+	signed, err := s.app.SignOIDCFlow(flow)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	// #nosec G124 -- Secure is enabled for TLS/proxied HTTPS; loopback HTTP is intentionally supported.
+	http.SetCookie(w, &http.Cookie{Name: "postra_oidc_flow", Value: signed, Path: "/ui/auth/oidc/",
+		HttpOnly: true, Secure: secureRequest(r), SameSite: http.SameSiteLaxMode, MaxAge: 600})
+	http.Redirect(w, r, authURL, http.StatusSeeOther)
+}
+
+func (s *Server) oidcCallback(w http.ResponseWriter, r *http.Request) {
+	if oidcErr := r.URL.Query().Get("error"); oidcErr != "" {
+		s.render(w, "login", http.StatusUnauthorized, map[string]any{
+			"Error":     "Keycloak 로그인이 취소되었거나 실패했습니다: " + oidcErr,
+			"LocalAuth": true, "OIDCEnabled": true,
+		})
+		return
+	}
+	c, err := r.Cookie("postra_oidc_flow")
+	if err != nil {
+		s.render(w, "login", http.StatusBadRequest, map[string]any{"Error": "OIDC 로그인 상태가 없습니다.", "LocalAuth": true, "OIDCEnabled": true})
+		return
+	}
+	flow, err := s.app.VerifyOIDCFlow(c.Value)
+	if err != nil || subtle.ConstantTimeCompare([]byte(flow.State), []byte(r.URL.Query().Get("state"))) != 1 {
+		s.render(w, "login", http.StatusBadRequest, map[string]any{"Error": "OIDC state 검증에 실패했습니다.", "LocalAuth": true, "OIDCEnabled": true})
+		return
+	}
+	u, err := s.app.CompleteOIDC(application.WithActor(r.Context(), "oidc"), r.URL.Query().Get("code"), flow)
+	if err != nil {
+		s.render(w, "login", http.StatusUnauthorized, map[string]any{"Error": err.Error(), "LocalAuth": true, "OIDCEnabled": true})
+		return
+	}
+	raw, csrf, _, err := s.app.CreateSession(r.Context(), u, r.UserAgent(), application.ClientIP(r.RemoteAddr))
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	// #nosec G124 -- Secure follows the transport so loopback HTTP remains usable.
+	http.SetCookie(w, &http.Cookie{Name: "postra_oidc_flow", Value: "", Path: "/ui/auth/oidc/", MaxAge: -1,
+		HttpOnly: true, Secure: secureRequest(r), SameSite: http.SameSiteLaxMode})
+	s.setAuthCookies(w, r, raw, csrf)
+	http.Redirect(w, r, "/ui/", http.StatusSeeOther)
+}
+
+func secureRequest(r *http.Request) bool {
+	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+}
+
+func (s *Server) setAuthCookies(w http.ResponseWriter, r *http.Request, session, csrf string) {
+	secure := secureRequest(r)
+	// #nosec G124 -- Secure is enabled for TLS/proxied HTTPS; loopback HTTP is intentionally supported.
+	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: session, Path: "/ui/",
+		HttpOnly: true, Secure: secure, SameSite: http.SameSiteLaxMode})
+	// #nosec G124 -- readable anti-CSRF cookie; SameSite and dynamic Secure are explicitly set.
+	http.SetCookie(w, &http.Cookie{Name: csrfCookie, Value: csrf, Path: "/ui/",
+		HttpOnly: false, Secure: secure, SameSite: http.SameSiteLaxMode})
+}
+
+func (s *Server) clearAuthCookies(w http.ResponseWriter, r *http.Request) {
+	for _, name := range []string{cookieName, csrfCookie} {
+		// #nosec G124 -- deletion cookie mirrors the dynamically secure original cookie.
+		http.SetCookie(w, &http.Cookie{Name: name, Value: "", Path: "/ui/", MaxAge: -1,
+			HttpOnly: name == cookieName, Secure: secureRequest(r), SameSite: http.SameSiteLaxMode})
+	}
+}
+
+func (s *Server) setupForm(w http.ResponseWriter, r *http.Request) {
+	if !s.app.Cfg.Auth.Enabled {
+		http.Redirect(w, r, "/ui/", http.StatusSeeOther)
+		return
+	}
+	needs, err := s.app.NeedsAdminSetup(r.Context())
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if !needs {
+		http.Redirect(w, r, "/ui/login", http.StatusSeeOther)
+		return
+	}
+	s.render(w, "setup", http.StatusOK, map[string]any{})
+}
+
+func (s *Server) setupSubmit(w http.ResponseWriter, r *http.Request) {
+	if !s.app.Cfg.Auth.Enabled {
+		http.NotFound(w, r)
+		return
+	}
+	needs, err := s.app.NeedsAdminSetup(r.Context())
+	if err != nil || !needs {
+		http.Error(w, "setup unavailable", http.StatusForbidden)
+		return
+	}
+	if !isLoopbackRequest(r) && s.app.Cfg.Auth.BootstrapPassword == "" {
+		s.render(w, "setup", http.StatusForbidden, map[string]any{
+			"Error": "원격 초기 설정은 POSTRA_BOOTSTRAP_ADMIN_PASSWORD 환경변수가 필요합니다.",
+		})
+		return
+	}
+	u, err := s.app.SetupInitialAdmin(application.WithActor(r.Context(), "setup"),
+		r.FormValue("login_id"), r.FormValue("display_name"), r.FormValue("password"))
+	if err != nil {
+		s.render(w, "setup", http.StatusBadRequest, map[string]any{"Error": err.Error()})
+		return
+	}
+	raw, csrf, _, err := s.app.CreateSession(r.Context(), u, r.UserAgent(), application.ClientIP(r.RemoteAddr))
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	s.setAuthCookies(w, r, raw, csrf)
+	http.Redirect(w, r, "/ui/admin/settings", http.StatusSeeOther)
+}
+
+func isLoopbackRequest(r *http.Request) bool {
+	ip := net.ParseIP(application.ClientIP(r.RemoteAddr))
+	return ip != nil && ip.IsLoopback()
+}
+
+func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
+	if c, err := r.Cookie(cookieName); err == nil {
+		if ss, _, err := s.app.AuthenticateSession(r.Context(), c.Value); err == nil {
+			_ = s.app.Logout(r.Context(), ss.ID)
+		}
+	}
+	s.clearAuthCookies(w, r)
+	http.Redirect(w, r, "/ui/login", http.StatusSeeOther)
+}
+
+func csrfFromRequest(r *http.Request) string {
+	if c, err := r.Cookie(csrfCookie); err == nil {
+		return c.Value
+	}
+	return ""
+}
+
+func (s *Server) adminUsers(w http.ResponseWriter, r *http.Request) {
+	users, err := s.app.AdminListUsers(r.Context())
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	s.render(w, "admin_users", http.StatusOK, map[string]any{"Users": users, "CSRF": csrfFromRequest(r)})
+}
+
+func (s *Server) adminUserCreate(w http.ResponseWriter, r *http.Request) {
+	_, err := s.app.AdminCreateUser(r.Context(), application.CreateUserInput{
+		LoginID: r.FormValue("login_id"), DisplayName: r.FormValue("display_name"),
+		Email: r.FormValue("email"), Role: domain.UserRole(r.FormValue("role")), Password: r.FormValue("password"),
+	})
+	if err != nil {
+		users, _ := s.app.AdminListUsers(r.Context())
+		s.render(w, "admin_users", http.StatusBadRequest, map[string]any{"Users": users, "CSRF": csrfFromRequest(r), "Error": err.Error()})
+		return
+	}
+	http.Redirect(w, r, "/ui/admin/users", http.StatusSeeOther)
+}
+
+func (s *Server) adminUserUpdate(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.app.AdminUpdateUser(r.Context(), r.PathValue("id"), domain.UserRole(r.FormValue("role")),
+		domain.UserStatus(r.FormValue("status"))); err != nil {
+		s.fail(w, err)
+		return
+	}
+	http.Redirect(w, r, "/ui/admin/users", http.StatusSeeOther)
+}
+
+func (s *Server) adminPasswordReset(w http.ResponseWriter, r *http.Request) {
+	if err := s.app.AdminResetPassword(r.Context(), r.PathValue("id"), r.FormValue("password")); err != nil {
+		s.fail(w, err)
+		return
+	}
+	http.Redirect(w, r, "/ui/admin/users", http.StatusSeeOther)
+}
+
+func (s *Server) adminSettings(w http.ResponseWriter, r *http.Request) {
+	if p, ok := application.PrincipalFrom(r.Context()); !ok || !p.IsAdmin() {
+		s.render(w, "error", http.StatusForbidden, map[string]any{"Message": "관리자 권한이 필요합니다."})
+		return
+	}
+	settings, err := s.app.SystemSettings(r.Context())
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	s.render(w, "admin_settings", http.StatusOK, map[string]any{"Settings": settings})
+}
+
+func (s *Server) adminSettingsSave(w http.ResponseWriter, r *http.Request) {
+	_ = r.ParseForm()
+	values := map[string]string{}
+	for key := range r.Form {
+		if strings.HasPrefix(key, "auth.") || strings.HasPrefix(key, "sync.") ||
+			strings.HasPrefix(key, "ai.") || strings.HasPrefix(key, "send.") ||
+			strings.HasPrefix(key, "security.") || strings.HasPrefix(key, "attachments.") {
+			values[key] = r.FormValue(key)
+		}
+	}
+	// Unchecked checkboxes are absent from form encoding.
+	for _, key := range []string{application.SettingOIDCAutoProvision, application.SettingAIAllowExternal,
+		application.SettingAIMaskExternalPII, application.SettingAllowInsecureMail,
+		application.SettingAllowPrivateHosts, application.SettingEncryptAtRest} {
+		if _, ok := values[key]; !ok {
+			values[key] = "false"
+		}
+	}
+	if err := s.app.AdminSaveSettings(r.Context(), values, r.FormValue("oidc_client_secret")); err != nil {
+		settings, _ := s.app.SystemSettings(r.Context())
+		s.render(w, "admin_settings", http.StatusBadRequest, map[string]any{"Settings": settings, "Error": err.Error()})
+		return
+	}
+	http.Redirect(w, r, "/ui/admin/settings?saved=1", http.StatusSeeOther)
 }
 
 const searchPageSize = 50

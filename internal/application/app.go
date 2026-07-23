@@ -33,15 +33,19 @@ type App struct {
 	AI      domain.AIProvider
 	Scanner domain.AttachmentScanner
 
-	syncLocks   sync.Map // accountID -> struct{} (best-effort single-session lock, POP-003)
-	jobCancels  sync.Map // jobID -> context.CancelFunc
-	background  context.Context
-	cancelAll   context.CancelFunc
-	workerGroup sync.WaitGroup
+	syncLocks    sync.Map // accountID -> struct{} (best-effort single-session lock, POP-003)
+	jobCancels   sync.Map // jobID -> context.CancelFunc
+	background   context.Context
+	cancelAll    context.CancelFunc
+	workerGroup  sync.WaitGroup
+	oidcStateKey [32]byte
 }
 
 func New(cfg config.Config, store Storage, objects objectstore.Store,
 	secrets domain.SecretStore, pop3 domain.POP3Dialer, smtp domain.SMTPClient, ai domain.AIProvider) (*App, error) {
+	if stored, err := store.GetSettings(context.Background()); err == nil {
+		applyStoredSettings(&cfg, stored)
+	}
 	bg, cancel := context.WithCancel(context.Background())
 	a := &App{
 		Cfg: cfg, Store: store, Objects: objects, Secrets: secrets,
@@ -49,7 +53,14 @@ func New(cfg config.Config, store Storage, objects objectstore.Store,
 		Scanner:    malware.NewHeuristic(cfg.Attachments),
 		background: bg, cancelAll: cancel,
 	}
+	if _, err := rand.Read(a.oidcStateKey[:]); err != nil {
+		cancel()
+		return nil, err
+	}
 	if err := store.EnsureUser(context.Background(), DefaultUserID, "local"); err != nil {
+		return nil, err
+	}
+	if err := a.bootstrapAdmin(context.Background()); err != nil {
 		return nil, err
 	}
 	return a, nil
@@ -71,7 +82,10 @@ func (a *App) Shutdown() {
 
 type ctxKey int
 
-const actorKey ctxKey = 1
+const (
+	actorKey     ctxKey = 1
+	principalKey ctxKey = 2
+)
 
 // WithActor tags a context with the calling transport ("rest", "mcp", "cli",
 // "worker") for audit records.
@@ -86,9 +100,25 @@ func actorFrom(ctx context.Context) string {
 	return "unknown"
 }
 
+func WithPrincipal(ctx context.Context, p domain.Principal) context.Context {
+	return context.WithValue(ctx, principalKey, p)
+}
+
+func PrincipalFrom(ctx context.Context) (domain.Principal, bool) {
+	p, ok := ctx.Value(principalKey).(domain.Principal)
+	return p, ok
+}
+
+func userIDFrom(ctx context.Context) string {
+	if p, ok := PrincipalFrom(ctx); ok && p.UserID != "" {
+		return p.UserID
+	}
+	return DefaultUserID
+}
+
 func (a *App) audit(ctx context.Context, action, resource, result, detail string) {
 	_ = a.Store.AppendAudit(ctx, domain.AuditEvent{
-		UserID: DefaultUserID, Actor: actorFrom(ctx),
+		UserID: userIDFrom(ctx), Actor: actorFrom(ctx),
 		Action: action, Resource: resource, Result: result, Detail: detail,
 	})
 }

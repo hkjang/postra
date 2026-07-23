@@ -57,6 +57,7 @@ func normSecurity(s string, def domain.Security) (domain.Security, error) {
 }
 
 func (a *App) CreateAccount(ctx context.Context, in CreateAccountInput) (*domain.MailAccount, error) {
+	userID := userIDFrom(ctx)
 	pop3Sec, err := normSecurity(in.POP3Security, domain.SecurityTLS)
 	if err != nil {
 		return nil, err
@@ -81,7 +82,7 @@ func (a *App) CreateAccount(ctx context.Context, in CreateAccountInput) (*domain
 		tlsPort, plainPort = 993, 143
 	}
 	acc := &domain.MailAccount{
-		ID: persistence.NewID("acc"), UserID: DefaultUserID,
+		ID: persistence.NewID("acc"), UserID: userID,
 		Name: in.Name, Email: in.Email, Status: domain.AccountActive,
 		InboundProtocol: protocol,
 		POP3Host:        in.POP3Host, POP3Port: portOr(in.POP3Port, pop3Sec, tlsPort, plainPort),
@@ -122,11 +123,11 @@ func portOr(p int, sec domain.Security, tlsDefault, plainDefault int) int {
 }
 
 func (a *App) ListAccounts(ctx context.Context) ([]domain.MailAccount, error) {
-	return a.Store.ListAccounts(ctx, DefaultUserID)
+	return a.Store.ListAccounts(ctx, userIDFrom(ctx))
 }
 
 func (a *App) GetAccount(ctx context.Context, id string) (*domain.MailAccount, error) {
-	return a.Store.GetAccount(ctx, DefaultUserID, id)
+	return a.Store.GetAccount(ctx, userIDFrom(ctx), id)
 }
 
 type UpdateAccountInput struct {
@@ -146,7 +147,7 @@ type UpdateAccountInput struct {
 // UpdateAccount changes non-secret settings only (mail_account_update).
 // Secret rotation goes through RotateSecret.
 func (a *App) UpdateAccount(ctx context.Context, in UpdateAccountInput) (*domain.MailAccount, error) {
-	acc, err := a.Store.GetAccount(ctx, DefaultUserID, in.AccountID)
+	acc, err := a.Store.GetAccount(ctx, userIDFrom(ctx), in.AccountID)
 	if err != nil {
 		return nil, err
 	}
@@ -199,10 +200,10 @@ func (a *App) UpdateAccount(ctx context.Context, in UpdateAccountInput) (*domain
 }
 
 func (a *App) DisableAccount(ctx context.Context, id string) error {
-	if _, err := a.Store.GetAccount(ctx, DefaultUserID, id); err != nil {
+	if _, err := a.Store.GetAccount(ctx, userIDFrom(ctx), id); err != nil {
 		return err
 	}
-	if err := a.Store.SetAccountStatus(ctx, DefaultUserID, id, domain.AccountDisabled); err != nil {
+	if err := a.Store.SetAccountStatus(ctx, userIDFrom(ctx), id, domain.AccountDisabled); err != nil {
 		return err
 	}
 	a.audit(ctx, "account_disable", "account:"+id, "ok", "")
@@ -211,7 +212,7 @@ func (a *App) DisableAccount(ctx context.Context, id string) error {
 
 // TestAccount runs the staged diagnostics of ACC-006/007 for both protocols.
 func (a *App) TestAccount(ctx context.Context, id string) ([]domain.ConnDiagnostics, error) {
-	acc, err := a.Store.GetAccount(ctx, DefaultUserID, id)
+	acc, err := a.Store.GetAccount(ctx, userIDFrom(ctx), id)
 	if err != nil {
 		return nil, err
 	}
@@ -309,14 +310,14 @@ func (a *App) RegisterSecret(ctx context.Context, secretType domain.SecretType, 
 		return "", userErrf("secret value is empty")
 	}
 	ref, err := a.Secrets.Put(ctx, domain.PutSecretRequest{
-		OwnerUserID: DefaultUserID, Type: secretType, Provider: "local", Value: value, Label: label,
+		OwnerUserID: userIDFrom(ctx), Type: secretType, Provider: "local", Value: value, Label: label,
 	})
 	if err != nil {
 		a.audit(ctx, "secret_register", "", "error", err.Error())
 		return "", err
 	}
 	_ = a.Store.PutCredentialRef(ctx, domain.CredentialRef{
-		Ref: ref, OwnerID: DefaultUserID, Type: secretType, Provider: "local",
+		Ref: ref, OwnerID: userIDFrom(ctx), Type: secretType, Provider: "local",
 		Label: label, Status: "active", Version: 1,
 	})
 	a.audit(ctx, "secret_register", "secret:"+string(ref), "ok", label)

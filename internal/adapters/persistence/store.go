@@ -158,7 +158,24 @@ func (s *Store) migrate() error {
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY, login_id TEXT UNIQUE NOT NULL,
   status TEXT NOT NULL DEFAULT 'active', timezone TEXT DEFAULT 'UTC',
-  created_at INTEGER NOT NULL);
+  display_name TEXT NOT NULL DEFAULT '', email TEXT NOT NULL DEFAULT '',
+  role TEXT NOT NULL DEFAULT 'user', auth_provider TEXT NOT NULL DEFAULT 'local',
+  password_hash TEXT NOT NULL DEFAULT '', oidc_issuer TEXT NOT NULL DEFAULT '',
+  oidc_subject TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL DEFAULT 0,
+  last_login_at INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_oidc ON users(oidc_issuer, oidc_subject)
+  WHERE oidc_subject != '';
+
+CREATE TABLE IF NOT EXISTS auth_sessions (
+  id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash TEXT UNIQUE NOT NULL, csrf_hash TEXT NOT NULL, expires_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL, last_seen INTEGER NOT NULL,
+  user_agent TEXT NOT NULL DEFAULT '', ip_address TEXT NOT NULL DEFAULT '');
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_expiry ON auth_sessions(expires_at);
+
+CREATE TABLE IF NOT EXISTS system_settings (
+  key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL,
+  updated_by TEXT NOT NULL DEFAULT '');
 
 CREATE TABLE IF NOT EXISTS mail_accounts (
   id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL,
@@ -266,10 +283,22 @@ CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_events(at DESC);
 		`ALTER TABLE attachments ADD COLUMN scan_detail TEXT`,
 		`ALTER TABLE outbound_messages ADD COLUMN next_attempt_at INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE mail_accounts ADD COLUMN inbound_protocol TEXT NOT NULL DEFAULT 'pop3'`,
+		`ALTER TABLE users ADD COLUMN display_name TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'`,
+		`ALTER TABLE users ADD COLUMN auth_provider TEXT NOT NULL DEFAULT 'local'`,
+		`ALTER TABLE users ADD COLUMN password_hash TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE users ADD COLUMN oidc_issuer TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE users ADD COLUMN oidc_subject TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE users ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE users ADD COLUMN last_login_at INTEGER NOT NULL DEFAULT 0`,
 	} {
 		if _, err := s.db.Exec(alt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return fmt.Errorf("migrate attachments: %w", err)
 		}
+	}
+	if _, err := s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_oidc ON users(oidc_issuer, oidc_subject) WHERE oidc_subject != ''`); err != nil {
+		return fmt.Errorf("migrate users oidc index: %w", err)
 	}
 
 	// Full-text index; fall back to LIKE search when FTS5 is unavailable.
@@ -295,9 +324,177 @@ var ErrNotFound = domain.ErrNotFound
 
 func (s *Store) EnsureUser(ctx context.Context, id, loginID string) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO users (id, login_id, created_at) VALUES (?,?,?)
-		 ON CONFLICT(login_id) DO NOTHING`, id, loginID, now())
+		`INSERT INTO users (id, login_id, display_name, role, status, auth_provider, created_at, updated_at)
+		 VALUES (?,?,?,?,?,?,?,?)
+		 ON CONFLICT(login_id) DO NOTHING`,
+		id, loginID, loginID, domain.RoleUser, domain.UserActive, "local", now(), now())
 	return err
+}
+
+const userCols = `id,login_id,display_name,email,role,status,auth_provider,
+ oidc_issuer,oidc_subject,created_at,updated_at,last_login_at`
+
+func scanUser(row interface{ Scan(...any) error }) (*domain.User, error) {
+	var u domain.User
+	if err := row.Scan(&u.ID, &u.LoginID, &u.DisplayName, &u.Email, &u.Role, &u.Status,
+		&u.AuthProvider, &u.OIDCIssuer, &u.OIDCSubject, &u.CreatedAt, &u.UpdatedAt, &u.LastLoginAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &u, nil
+}
+
+func (s *Store) CreateUser(ctx context.Context, u *domain.User, passwordHash string) error {
+	u.CreatedAt, u.UpdatedAt = now(), now()
+	_, err := s.db.ExecContext(ctx, `INSERT INTO users
+	 (id,login_id,display_name,email,role,status,auth_provider,password_hash,oidc_issuer,oidc_subject,created_at,updated_at,last_login_at)
+	 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		u.ID, u.LoginID, u.DisplayName, u.Email, u.Role, u.Status, u.AuthProvider,
+		passwordHash, u.OIDCIssuer, u.OIDCSubject, u.CreatedAt, u.UpdatedAt, u.LastLoginAt)
+	return err
+}
+
+func (s *Store) GetUser(ctx context.Context, id string) (*domain.User, error) {
+	return scanUser(s.db.QueryRowContext(ctx, `SELECT `+userCols+` FROM users WHERE id=?`, id))
+}
+
+func (s *Store) GetUserByLogin(ctx context.Context, loginID string) (*domain.User, string, error) {
+	var u domain.User
+	var passwordHash string
+	err := s.db.QueryRowContext(ctx, `SELECT `+userCols+`,password_hash FROM users WHERE lower(login_id)=lower(?)`, loginID).
+		Scan(&u.ID, &u.LoginID, &u.DisplayName, &u.Email, &u.Role, &u.Status, &u.AuthProvider,
+			&u.OIDCIssuer, &u.OIDCSubject, &u.CreatedAt, &u.UpdatedAt, &u.LastLoginAt, &passwordHash)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, "", ErrNotFound
+	}
+	return &u, passwordHash, err
+}
+
+func (s *Store) GetUserByOIDC(ctx context.Context, issuer, subject string) (*domain.User, error) {
+	return scanUser(s.db.QueryRowContext(ctx, `SELECT `+userCols+` FROM users WHERE oidc_issuer=? AND oidc_subject=?`, issuer, subject))
+}
+
+func (s *Store) ListUsers(ctx context.Context) ([]domain.User, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+userCols+` FROM users ORDER BY login_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.User
+	for rows.Next() {
+		u, err := scanUser(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *u)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) UpdateUser(ctx context.Context, u *domain.User) error {
+	u.UpdatedAt = now()
+	res, err := s.db.ExecContext(ctx, `UPDATE users SET login_id=?,display_name=?,email=?,role=?,status=?,
+	 auth_provider=?,oidc_issuer=?,oidc_subject=?,updated_at=?,last_login_at=? WHERE id=?`,
+		u.LoginID, u.DisplayName, u.Email, u.Role, u.Status, u.AuthProvider,
+		u.OIDCIssuer, u.OIDCSubject, u.UpdatedAt, u.LastLoginAt, u.ID)
+	if err == nil {
+		if n, _ := res.RowsAffected(); n == 0 {
+			return ErrNotFound
+		}
+	}
+	return err
+}
+
+func (s *Store) SetUserPassword(ctx context.Context, userID, passwordHash string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE users SET password_hash=?,auth_provider='local',updated_at=? WHERE id=?`,
+		passwordHash, now(), userID)
+	if err == nil {
+		if n, _ := res.RowsAffected(); n == 0 {
+			return ErrNotFound
+		}
+	}
+	return err
+}
+
+func (s *Store) CountAdmins(ctx context.Context) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM users WHERE role='admin' AND status='active'`).Scan(&n)
+	return n, err
+}
+
+func (s *Store) CreateSession(ctx context.Context, ss *domain.Session) error {
+	ss.CreatedAt, ss.LastSeen = now(), now()
+	_, err := s.db.ExecContext(ctx, `INSERT INTO auth_sessions
+	 (id,user_id,token_hash,csrf_hash,expires_at,created_at,last_seen,user_agent,ip_address)
+	 VALUES (?,?,?,?,?,?,?,?,?)`, ss.ID, ss.UserID, ss.TokenHash, ss.CSRFHash,
+		ss.ExpiresAt, ss.CreatedAt, ss.LastSeen, ss.UserAgent, ss.IPAddress)
+	return err
+}
+
+func (s *Store) GetSessionByTokenHash(ctx context.Context, tokenHash string) (*domain.Session, *domain.User, error) {
+	var ss domain.Session
+	var u domain.User
+	err := s.db.QueryRowContext(ctx, `SELECT s.id,s.user_id,s.token_hash,s.csrf_hash,s.expires_at,s.created_at,s.last_seen,
+	 s.user_agent,s.ip_address,`+prefixCols(userCols, "u.")+`
+	 FROM auth_sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>?`,
+		tokenHash, now()).Scan(&ss.ID, &ss.UserID, &ss.TokenHash, &ss.CSRFHash, &ss.ExpiresAt,
+		&ss.CreatedAt, &ss.LastSeen, &ss.UserAgent, &ss.IPAddress,
+		&u.ID, &u.LoginID, &u.DisplayName, &u.Email, &u.Role, &u.Status, &u.AuthProvider,
+		&u.OIDCIssuer, &u.OIDCSubject, &u.CreatedAt, &u.UpdatedAt, &u.LastLoginAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil, ErrNotFound
+	}
+	return &ss, &u, err
+}
+
+func (s *Store) TouchSession(ctx context.Context, id string, lastSeen int64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE auth_sessions SET last_seen=? WHERE id=?`, lastSeen, id)
+	return err
+}
+
+func (s *Store) DeleteSession(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM auth_sessions WHERE id=?`, id)
+	return err
+}
+
+func (s *Store) DeleteUserSessions(ctx context.Context, userID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM auth_sessions WHERE user_id=?`, userID)
+	return err
+}
+
+func (s *Store) GetSettings(ctx context.Context) (map[string]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT key,value FROM system_settings`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var key, value string
+		if err := rows.Scan(&key, &value); err != nil {
+			return nil, err
+		}
+		out[key] = value
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) UpsertSettings(ctx context.Context, values map[string]string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	for key, value := range values {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO system_settings(key,value,updated_at)
+		 VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`,
+			key, value, now()); err != nil {
+			tx.Rollback()
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // ---------- accounts ----------

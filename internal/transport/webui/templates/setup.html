@@ -1,0 +1,15 @@
+{{define "title"}}초기 관리자 설정{{end}}
+{{define "content"}}
+<h1>초기 관리자 설정</h1>
+<div class="card" style="max-width:520px">
+  {{if .Error}}<p class="err">{{.Error}}</p>{{end}}
+  <p class="muted">첫 관리자 계정을 만듭니다. 기존 로컬 메일 데이터는 이 관리자에게 안전하게 귀속됩니다.</p>
+  <form method="post" action="/ui/setup">
+    <div class="field"><label>로그인 ID</label><input type="text" name="login_id" required autocomplete="username"></div>
+    <div class="field"><label>표시 이름</label><input type="text" name="display_name" required></div>
+    <div class="field"><label>비밀번호</label><input type="password" name="password" minlength="12" required autocomplete="new-password"></div>
+    <p class="small muted">12자 이상을 사용하세요. 비밀번호는 Argon2id로 해시됩니다.</p>
+    <button type="submit">관리자 만들기</button>
+  </form>
+</div>
+{{end}}

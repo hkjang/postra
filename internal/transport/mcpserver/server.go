@@ -171,14 +171,30 @@ func HTTPHandler(app *application.App, apiToken string) http.Handler {
 		return NewServer(app)
 	}, nil)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if apiToken != "" {
-			got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-			if subtle.ConstantTimeCompare([]byte(got), []byte(apiToken)) != 1 {
+		ctx := application.WithActor(r.Context(), "mcp")
+		if app.Cfg.Auth.Enabled || apiToken != "" {
+			raw := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+			var principal domain.Principal
+			ok := false
+			if apiToken != "" && subtle.ConstantTimeCompare([]byte(raw), []byte(apiToken)) == 1 {
+				if u, err := app.Store.GetUser(r.Context(), application.DefaultUserID); err == nil {
+					principal = domain.Principal{UserID: u.ID, LoginID: u.LoginID, DisplayName: u.DisplayName,
+						Role: domain.RoleAdmin, AuthMethod: "api_token"}
+					ok = true
+				}
+			}
+			if !ok && raw != "" {
+				if p, err := app.AuthenticateOIDCAccessToken(r.Context(), raw); err == nil {
+					principal, ok = p, true
+				}
+			}
+			if !ok {
 				http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 				return
 			}
+			ctx = application.WithPrincipal(ctx, principal)
 		}
-		inner.ServeHTTP(w, r.WithContext(application.WithActor(r.Context(), "mcp")))
+		inner.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 

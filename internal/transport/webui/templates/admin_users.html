@@ -1,0 +1,29 @@
+{{define "title"}}사용자 관리{{end}}
+{{define "content"}}
+<div class="actions" style="justify-content:space-between"><h1>사용자 관리</h1><a class="btn ghost" href="/ui/admin/settings">시스템 설정</a></div>
+{{if .Error}}<div class="warn">{{.Error}}</div>{{end}}
+<div class="card"><table>
+<thead><tr><th>사용자</th><th>인증</th><th>역할·상태</th><th>변경</th></tr></thead>
+<tbody>{{range .Users}}<tr>
+  <td><b>{{.DisplayName}}</b><br><span class="small muted">{{.LoginID}} · {{.Email}}</span></td>
+  <td>{{.AuthProvider}}{{if .OIDCSubject}}<br><span class="small muted">OIDC 연결됨</span>{{end}}</td>
+  <td>{{.Role}} · {{.Status}}</td>
+  <td><form method="post" action="/ui/admin/users/{{.ID}}" class="actions">
+    <select name="role"><option value="user" {{if eq .Role "user"}}selected{{end}}>user</option><option value="admin" {{if eq .Role "admin"}}selected{{end}}>admin</option></select>
+    <select name="status"><option value="active" {{if eq .Status "active"}}selected{{end}}>active</option><option value="disabled" {{if eq .Status "disabled"}}selected{{end}}>disabled</option></select>
+    <button class="ghost" type="submit">저장</button>
+  </form>{{if eq .AuthProvider "local"}}<form method="post" action="/ui/admin/users/{{.ID}}/password" class="actions">
+    <input type="password" name="password" minlength="12" placeholder="새 비밀번호" required autocomplete="new-password">
+    <button class="ghost" type="submit">재설정</button>
+  </form>{{end}}</td>
+</tr>{{end}}</tbody></table></div>
+<h2>로컬 사용자 추가</h2>
+<form method="post" action="/ui/admin/users"><div class="card grid">
+  <div class="field"><label>로그인 ID</label><input type="text" name="login_id" required></div>
+  <div class="field"><label>표시 이름</label><input type="text" name="display_name" required></div>
+  <div class="field"><label>이메일</label><input type="email" name="email"></div>
+  <div class="field"><label>역할</label><select name="role"><option value="user">user</option><option value="admin">admin</option></select></div>
+  <div class="field"><label>초기 비밀번호</label><input type="password" name="password" minlength="12" required autocomplete="new-password"></div>
+  <div class="actions"><button type="submit">사용자 추가</button></div>
+</div></form>
+{{end}}

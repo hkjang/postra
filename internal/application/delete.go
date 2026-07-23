@@ -13,7 +13,7 @@ import (
 // LocalDelete removes a message from local storage (DB rows + object blobs).
 // It does not touch the mail server (§5.2 기본 정책: 서버 보존).
 func (a *App) LocalDelete(ctx context.Context, messageID string) error {
-	uris, err := a.Store.DeleteMessage(ctx, DefaultUserID, messageID)
+	uris, err := a.Store.DeleteMessage(ctx, userIDFrom(ctx), messageID)
 	if err != nil {
 		return err
 	}
@@ -58,7 +58,8 @@ func serverDeletePayloadHash(accountID string, uidls []string) string {
 // are eligible for deletion — only those already stored locally, so nothing
 // unsaved is ever removed (§5.2 삭제 조건). It deletes nothing.
 func (a *App) ServerDeletePreview(ctx context.Context, accountID string) (*ServerDeletePreview, error) {
-	acc, err := a.Store.GetAccount(ctx, DefaultUserID, accountID)
+	userID := userIDFrom(ctx)
+	acc, err := a.Store.GetAccount(ctx, userID, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -104,7 +105,7 @@ func (a *App) RequestServerDeleteApproval(ctx context.Context, accountID, approv
 		return pv, nil, userErrf("no locally-stored messages are eligible for server deletion")
 	}
 	tok, err := a.Issue(ctx, domain.ApprovalRequest{
-		UserID: DefaultUserID, ActionType: "server_delete",
+		UserID: userIDFrom(ctx), ActionType: "server_delete",
 		PayloadHash: pv.PayloadHash, TTLSeconds: ttlSeconds, Approver: approver,
 	})
 	if err != nil {
@@ -125,7 +126,7 @@ type ServerDeleteResult struct {
 // If QUIT is uncertain, affected UIDLs are reported as uncertain rather than
 // assumed deleted (delete_uncertain, §5.2 장애 처리).
 func (a *App) ServerDelete(ctx context.Context, accountID string, uidls []string, approvalToken string) (*ServerDeleteResult, error) {
-	acc, err := a.Store.GetAccount(ctx, DefaultUserID, accountID)
+	acc, err := a.Store.GetAccount(ctx, userIDFrom(ctx), accountID)
 	if err != nil {
 		return nil, err
 	}

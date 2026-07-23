@@ -102,18 +102,30 @@ func (a *App) ProcessRetries(ctx context.Context) int {
 
 func (a *App) syncAllActive(ctx context.Context) {
 	sctx := WithActor(ctx, "scheduler")
-	accts, err := a.Store.ListAccounts(sctx, DefaultUserID)
+	users, err := a.Store.ListUsers(sctx)
 	if err != nil {
-		slog.Error("scheduler: list accounts failed", "err", err)
+		slog.Error("scheduler: list users failed", "err", err)
 		return
 	}
-	for _, acc := range accts {
-		if acc.Status != domain.AccountActive || acc.POP3Host == "" {
+	for _, user := range users {
+		if user.Status != domain.UserActive {
 			continue
 		}
-		if _, err := a.StartSync(sctx, acc.ID, SyncOptions{}); err != nil {
-			// A "already running" skip is expected and benign.
-			slog.Debug("scheduler: sync skipped", "account", acc.ID, "reason", err)
+		uctx := WithPrincipal(sctx, domain.Principal{
+			UserID: user.ID, LoginID: user.LoginID, Role: user.Role, AuthMethod: "scheduler",
+		})
+		accts, err := a.Store.ListAccounts(uctx, user.ID)
+		if err != nil {
+			slog.Error("scheduler: list accounts failed", "user", user.ID, "err", err)
+			continue
+		}
+		for _, acc := range accts {
+			if acc.Status != domain.AccountActive || acc.POP3Host == "" {
+				continue
+			}
+			if _, err := a.StartSync(uctx, acc.ID, SyncOptions{}); err != nil {
+				slog.Debug("scheduler: sync skipped", "account", acc.ID, "reason", err)
+			}
 		}
 	}
 }

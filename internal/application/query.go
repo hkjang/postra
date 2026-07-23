@@ -10,7 +10,7 @@ import (
 )
 
 func (a *App) Search(ctx context.Context, q domain.SearchQuery) (*domain.SearchResult, error) {
-	q.UserID = DefaultUserID
+	q.UserID = userIDFrom(ctx)
 	return a.Store.Search(ctx, q)
 }
 
@@ -34,7 +34,8 @@ func (a *App) GetMessageMasked(ctx context.Context, id string, includeBody bool)
 }
 
 func (a *App) getMessage(ctx context.Context, id string, includeBody, doMask bool) (*MessageView, error) {
-	m, err := a.Store.GetMessage(ctx, DefaultUserID, id)
+	userID := userIDFrom(ctx)
+	m, err := a.Store.GetMessage(ctx, userID, id)
 	if err != nil {
 		return nil, err
 	}
@@ -43,14 +44,14 @@ func (a *App) getMessage(ctx context.Context, id string, includeBody, doMask boo
 	}
 	v := &MessageView{Message: *m}
 	if includeBody {
-		if b, err := a.Store.GetBody(ctx, DefaultUserID, id); err == nil {
+		if b, err := a.Store.GetBody(ctx, userID, id); err == nil {
 			if doMask {
 				b.TextBody, _ = mask.Mask(b.TextBody)
 				b.HTMLSanitized, _ = mask.Mask(b.HTMLSanitized)
 			}
 			v.Body = b
 		}
-		if atts, err := a.Store.ListAttachments(ctx, DefaultUserID, id); err == nil {
+		if atts, err := a.Store.ListAttachments(ctx, userID, id); err == nil {
 			v.Attachments = atts
 		}
 	}
@@ -60,7 +61,7 @@ func (a *App) getMessage(ctx context.Context, id string, includeBody, doMask boo
 // GetRawMessage streams the original RFC822 bytes; every access is audited
 // (§18.3 "메일 원문 조회").
 func (a *App) GetRawMessage(ctx context.Context, id string) (io.ReadCloser, error) {
-	m, err := a.Store.GetMessage(ctx, DefaultUserID, id)
+	m, err := a.Store.GetMessage(ctx, userIDFrom(ctx), id)
 	if err != nil {
 		return nil, err
 	}
@@ -74,7 +75,8 @@ type ThreadView struct {
 }
 
 func (a *App) GetThread(ctx context.Context, threadID string, includeBodies bool) (*ThreadView, error) {
-	msgs, err := a.Store.GetThreadMessages(ctx, DefaultUserID, threadID)
+	userID := userIDFrom(ctx)
+	msgs, err := a.Store.GetThreadMessages(ctx, userID, threadID)
 	if err != nil {
 		return nil, err
 	}
@@ -85,7 +87,7 @@ func (a *App) GetThread(ctx context.Context, threadID string, includeBodies bool
 	for _, m := range msgs {
 		mv := MessageView{Message: m}
 		if includeBodies {
-			if b, err := a.Store.GetBody(ctx, DefaultUserID, m.ID); err == nil {
+			if b, err := a.Store.GetBody(ctx, userID, m.ID); err == nil {
 				mv.Body = b
 			}
 		}
@@ -95,10 +97,10 @@ func (a *App) GetThread(ctx context.Context, threadID string, includeBodies bool
 }
 
 func (a *App) ListAttachments(ctx context.Context, messageID string) ([]domain.Attachment, error) {
-	if _, err := a.Store.GetMessage(ctx, DefaultUserID, messageID); err != nil {
+	if _, err := a.Store.GetMessage(ctx, userIDFrom(ctx), messageID); err != nil {
 		return nil, err
 	}
-	return a.Store.ListAttachments(ctx, DefaultUserID, messageID)
+	return a.Store.ListAttachments(ctx, userIDFrom(ctx), messageID)
 }
 
 // GetAttachment streams an attachment. ack must be true to download a
@@ -134,7 +136,7 @@ func (a *App) GetAttachment(ctx context.Context, messageID, attachmentID string,
 }
 
 func (a *App) SearchAudit(ctx context.Context, limit int) ([]domain.AuditEvent, error) {
-	return a.Store.SearchAudit(ctx, DefaultUserID, limit)
+	return a.Store.SearchAudit(ctx, userIDFrom(ctx), limit)
 }
 
 // PolicySnapshot returns the currently applied, non-sensitive policy for the

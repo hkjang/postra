@@ -39,6 +39,47 @@ go build -o postra ./cmd/postra
 ./postra mcp                           # 로컬 MCP 클라이언트용 stdio 서버
 ```
 
+처음 `/ui`에 접속하면 로컬 관리자 계정을 생성합니다. 서버를 원격에서 최초 기동할 때는
+`POSTRA_BOOTSTRAP_ADMIN`과 `POSTRA_BOOTSTRAP_ADMIN_PASSWORD`로 관리자를 미리 생성하세요.
+
+## 로그인·사용자 관리·Keycloak SSO
+
+인증은 기본 활성화됩니다. 로컬 계정은 Argon2id로 해시하며, 세션 원문은 저장하지 않고
+`HttpOnly`·`SameSite=Lax` 쿠키와 요청 Origin 검증을 사용합니다. 관리자는
+`/ui/admin/users`에서 로컬 사용자를 생성하고 역할(`admin`/`user`), 활성 상태, 비밀번호를
+관리할 수 있습니다. 마지막 활성 관리자는 비활성화하거나 강등할 수 없습니다. 사용자별
+메일 계정·메시지·초안·검색·잡·감사 데이터는 애플리케이션과 저장소 양쪽에서 격리됩니다.
+
+`/ui/admin/settings`에서는 세션, Keycloak OIDC, 메일 동기화, AI, 발송, 첨부 및 저장 보안
+정책을 관리합니다. OIDC client secret은 설정 DB가 아니라 암호화 SecretStore에 저장됩니다.
+환경변수는 최초 부트스트랩과 비밀 주입에 계속 사용할 수 있습니다.
+
+Keycloak 클라이언트 설정:
+
+1. Keycloak realm에 confidential OIDC client를 만들고 Standard Flow를 활성화합니다.
+2. Valid Redirect URI를 `https://postra.example/ui/auth/oidc/callback`처럼 정확히 등록합니다.
+3. `groups` claim에 그룹 경로를 포함하는 Group Membership mapper를 추가합니다.
+4. Postra 관리 화면에서 issuer(`https://keycloak.example/realms/<realm>`), client ID,
+   client secret, redirect URL, 관리자 그룹(기본 `postra-admins`)을 저장합니다.
+
+Postra는 OIDC Discovery, Authorization Code Flow, S256 PKCE, state/nonce 검증, 서명·issuer·
+audience 검증을 수행합니다. 최초 SSO 로그인 자동 생성 여부와 관리자 그룹 매핑도 관리
+화면에서 제어합니다. REST와 원격 MCP는 같은 Keycloak access token을
+`Authorization: Bearer <token>`으로 받을 수 있습니다.
+
+```bash
+POSTRA_BOOTSTRAP_ADMIN=admin \
+POSTRA_BOOTSTRAP_ADMIN_PASSWORD='replace-with-a-long-secret' \
+POSTRA_OIDC_ISSUER='https://keycloak.example/realms/postra' \
+POSTRA_OIDC_CLIENT_ID='postra' \
+POSTRA_OIDC_CLIENT_SECRET='replace-me' \
+POSTRA_OIDC_REDIRECT_URL='https://postra.example/ui/auth/oidc/callback' \
+./postra serve
+```
+
+공식 참고: [Keycloak OIDC endpoints](https://www.keycloak.org/securing-apps/oidc-layers),
+[Keycloak application security guide](https://www.keycloak.org/securing-apps/overview).
+
 ## 주기 동기화
 
 `config.json` 의 `sync.auto_sync_minutes` 를 0보다 크게 두면 `serve` 실행 시 백그라운드 스케줄러가 활성 POP3 계정을 해당 주기로 자동 동기화합니다(계정별 최소 간격 겸용). 또한 기동 시 재기동으로 중단된 `running`/`queued` job을 `failed` 로 정리해 유령 작업을 남기지 않습니다. 0이면 수동 동기화만 사용합니다.
@@ -109,7 +150,10 @@ POSTRA_ALLOW_INSECURE_MAIL=true ./postra serve
 - **새 메일·초안** (`/ui/compose`, `/ui/drafts/{id}`) — 직접 또는 AI로 초안 작성, 수신자·제목·본문 편집, AI 문체 재작성
 - **발송 승인** (`/ui/drafts/{id}/send`) — 미리보기·경고(외부 도메인/다수 수신자) → **승인 요청** → **발송 확정** 2단계. 초안이 바뀌면 토큰 무효화, 동일 버전 재전송은 멱등(이중 발송 없음)
 
-`APIToken` 이 설정되면 UI는 해당 토큰으로 쿠키 로그인(`/ui/login`)을 요구합니다(HttpOnly·SameSite=Strict). 서버는 평문 HTTP로 서빙하므로 인터넷 노출 시 리버스 프록시에서 TLS를 종단하세요.
+UI는 로컬 계정 또는 Keycloak SSO 로그인(`/ui/login`)을 요구합니다. 기존 `APIToken`은 자동화·
+복구용 REST/MCP bearer credential과 인증 비활성화 호환 모드에서만 사용합니다. 서버는 평문
+HTTP로 서빙하므로 인터넷 노출 시 신뢰하는 리버스 프록시에서 TLS를 종단하고 정확한 OIDC
+redirect URI를 사용하세요.
 
 ## 관측성 · 메트릭 (§18.1)
 

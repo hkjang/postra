@@ -1,0 +1,57 @@
+{{define "title"}}시스템 설정{{end}}
+{{define "content"}}
+{{$s := .Settings}}
+<div class="actions" style="justify-content:space-between"><h1>시스템 설정</h1><a class="btn ghost" href="/ui/admin/users">사용자 관리</a></div>
+{{if .Error}}<div class="warn">{{.Error}}</div>{{end}}
+<form method="post" action="/ui/admin/settings">
+<div class="card"><h2>Keycloak OIDC SSO</h2><div class="grid">
+  <div class="field"><label>Issuer URL</label><input type="text" name="auth.oidc.issuer" value="{{index $s "auth.oidc.issuer"}}" placeholder="https://keycloak.example/realms/postra"></div>
+  <div class="field"><label>Client ID</label><input type="text" name="auth.oidc.client_id" value="{{index $s "auth.oidc.client_id"}}"></div>
+  <div class="field"><label>Client secret</label><input type="password" name="oidc_client_secret" placeholder="변경할 때만 입력" autocomplete="new-password"></div>
+  <div class="field"><label>Redirect URL</label><input type="text" name="auth.oidc.redirect_url" value="{{index $s "auth.oidc.redirect_url"}}" placeholder="https://postra.example/ui/auth/oidc/callback"></div>
+  <div class="field"><label>관리자 그룹</label><input type="text" name="auth.oidc.admin_group" value="{{index $s "auth.oidc.admin_group"}}"></div>
+  <label><input type="checkbox" name="auth.oidc.auto_provision" value="true" {{if eq (index $s "auth.oidc.auto_provision") "true"}}checked{{end}}> 최초 SSO 로그인 시 사용자 자동 생성</label>
+</div></div>
+<div class="card"><h2>로그인·세션</h2><div class="field"><label>세션 유효 시간</label><input type="number" min="1" max="720" name="auth.session_hours" value="{{index $s "auth.session_hours"}}"></div></div>
+<div class="card"><h2>메일 동기화</h2><div class="grid">
+  <div class="field"><label>자동 동기화(분, 0=끔)</label><input type="number" min="0" name="sync.auto_sync_minutes" value="{{index $s "sync.auto_sync_minutes"}}"></div>
+  <div class="field"><label>첫 동기화 범위(일, 0=전체)</label><input type="number" min="0" name="sync.initial_window_days" value="{{index $s "sync.initial_window_days"}}"></div>
+  <div class="field"><label>메시지 최대 크기(bytes)</label><input type="number" min="1" name="sync.max_message_bytes" value="{{index $s "sync.max_message_bytes"}}"></div>
+  <div class="field"><label>1회 최대 메시지 수</label><input type="number" min="1" name="sync.max_per_sync" value="{{index $s "sync.max_per_sync"}}"></div>
+  <div class="field"><label>연결 타임아웃(초)</label><input type="number" min="1" name="sync.connect_timeout_sec" value="{{index $s "sync.connect_timeout_sec"}}"></div>
+  <div class="field"><label>명령 타임아웃(초)</label><input type="number" min="1" name="sync.command_timeout_sec" value="{{index $s "sync.command_timeout_sec"}}"></div>
+</div></div>
+<div class="card"><h2>AI</h2><div class="grid">
+  <div class="field"><label>Base URL</label><input type="text" name="ai.base_url" value="{{index $s "ai.base_url"}}"></div>
+  <div class="field"><label>모델</label><input type="text" name="ai.model" value="{{index $s "ai.model"}}"></div>
+  <div class="field"><label>임베딩 모델</label><input type="text" name="ai.embed_model" value="{{index $s "ai.embed_model"}}"></div>
+  <div class="field"><label>API 키 Secret Ref</label><input type="text" name="ai.api_key_ref" value="{{index $s "ai.api_key_ref"}}"></div>
+  <div class="field"><label>타임아웃(초)</label><input type="number" min="1" name="ai.timeout_sec" value="{{index $s "ai.timeout_sec"}}"></div>
+  <div class="field"><label>최대 출력 토큰</label><input type="number" min="1" name="ai.max_tokens" value="{{index $s "ai.max_tokens"}}"></div>
+  <label><input type="checkbox" name="ai.allow_external" value="true" {{if eq (index $s "ai.allow_external") "true"}}checked{{end}}> 외부 AI로 메일 전송 허용</label>
+  <label><input type="checkbox" name="ai.mask_external_pii" value="true" {{if eq (index $s "ai.mask_external_pii") "true"}}checked{{end}}> 외부 AI 전송 전 개인정보 마스킹</label>
+</div></div>
+<div class="card"><h2>발송 정책</h2><div class="grid">
+  <div class="field"><label>분당 한도</label><input type="number" min="0" name="send.max_per_minute" value="{{index $s "send.max_per_minute"}}"></div>
+  <div class="field"><label>시간당 한도</label><input type="number" min="0" name="send.max_per_hour" value="{{index $s "send.max_per_hour"}}"></div>
+  <div class="field"><label>다수 수신자 경고 기준</label><input type="number" min="0" name="send.warn_recipients" value="{{index $s "send.warn_recipients"}}"></div>
+  <div class="field"><label>최대 재시도 횟수</label><input type="number" min="1" name="send.max_retries" value="{{index $s "send.max_retries"}}"></div>
+  <div class="field"><label>재시도 기본 간격(초)</label><input type="number" min="1" name="send.retry_base_seconds" value="{{index $s "send.retry_base_seconds"}}"></div>
+  <div class="field"><label>재시도 최대 간격(초)</label><input type="number" min="1" name="send.retry_max_seconds" value="{{index $s "send.retry_max_seconds"}}"></div>
+</div></div>
+<div class="card"><h2>첨부파일 보안</h2><div class="grid">
+  <div class="field"><label>차단 확장자(쉼표 구분)</label><input type="text" name="attachments.block_extensions" value="{{index $s "attachments.block_extensions"}}"></div>
+  <div class="field"><label>격리 확장자(쉼표 구분)</label><input type="text" name="attachments.quarantine_extensions" value="{{index $s "attachments.quarantine_extensions"}}"></div>
+  <div class="field"><label>압축파일 최대 항목 수</label><input type="number" min="1" name="attachments.archive_max_entries" value="{{index $s "attachments.archive_max_entries"}}"></div>
+  <div class="field"><label>압축 해제 최대 크기(bytes)</label><input type="number" min="1" name="attachments.archive_max_total_bytes" value="{{index $s "attachments.archive_max_total_bytes"}}"></div>
+  <div class="field"><label>최대 압축률</label><input type="number" min="1" step="0.1" name="attachments.archive_max_ratio" value="{{index $s "attachments.archive_max_ratio"}}"></div>
+</div></div>
+<div class="card"><h2>보안·저장</h2>
+  <p><label><input type="checkbox" name="security.allow_insecure_mail" value="true" {{if eq (index $s "security.allow_insecure_mail") "true"}}checked{{end}}> 격리망 평문 메일 허용</label></p>
+  <p><label><input type="checkbox" name="security.allow_private_hosts" value="true" {{if eq (index $s "security.allow_private_hosts") "true"}}checked{{end}}> 사설망 메일 서버 허용</label></p>
+  <p><label><input type="checkbox" name="security.encrypt_at_rest" value="true" {{if eq (index $s "security.encrypt_at_rest") "true"}}checked{{end}}> 저장 콘텐츠 암호화</label></p>
+  <p class="small muted">OIDC·세션 설정은 즉시 적용됩니다. 메일·AI·발송·첨부 정책은 저장 후 재시작 시 적용됩니다. 데이터 경로, 스토리지 드라이버, 바인드 주소처럼 프로세스 시작 전에 필요한 인프라 설정은 환경변수/설정 파일로 관리합니다. 비밀값은 암호화 SecretStore에 저장됩니다.</p>
+</div>
+<button type="submit">설정 저장</button>
+</form>
+{{end}}

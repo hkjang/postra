@@ -11,8 +11,16 @@ services:
     environment:
       POSTRA_DATA_DIR: /data
       POSTRA_HTTP_ADDR: "0.0.0.0:8480"
-      # Require a bearer token whenever bound to a non-loopback interface.
+      # Automation/recovery bearer token. Interactive users use local login or OIDC.
       POSTRA_API_TOKEN: "${POSTRA_API_TOKEN:?set POSTRA_API_TOKEN}"
+      # Bootstrap the first administrator non-interactively:
+      # POSTRA_BOOTSTRAP_ADMIN: "${POSTRA_BOOTSTRAP_ADMIN:-admin}"
+      # POSTRA_BOOTSTRAP_ADMIN_PASSWORD: "${POSTRA_BOOTSTRAP_ADMIN_PASSWORD}"
+      # Keycloak can instead be configured later at /ui/admin/settings:
+      # POSTRA_OIDC_ISSUER: "https://keycloak.example/realms/postra"
+      # POSTRA_OIDC_CLIENT_ID: "postra"
+      # POSTRA_OIDC_CLIENT_SECRET: "${POSTRA_OIDC_CLIENT_SECRET}"
+      # POSTRA_OIDC_REDIRECT_URL: "https://postra.example/ui/auth/oidc/callback"
       # In production inject the KEK from a secret manager, not the on-disk file:
       # POSTRA_KEK: "${POSTRA_KEK}"
       # OpenAI-compatible endpoint (local vLLM/Ollama by default):

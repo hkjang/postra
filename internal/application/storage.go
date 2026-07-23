@@ -15,6 +15,21 @@ type Storage interface {
 	Ping(ctx context.Context) error
 
 	EnsureUser(ctx context.Context, id, loginID string) error
+	CreateUser(ctx context.Context, user *domain.User, passwordHash string) error
+	GetUser(ctx context.Context, id string) (*domain.User, error)
+	GetUserByLogin(ctx context.Context, loginID string) (*domain.User, string, error)
+	GetUserByOIDC(ctx context.Context, issuer, subject string) (*domain.User, error)
+	ListUsers(ctx context.Context) ([]domain.User, error)
+	UpdateUser(ctx context.Context, user *domain.User) error
+	SetUserPassword(ctx context.Context, userID, passwordHash string) error
+	CountAdmins(ctx context.Context) (int, error)
+	CreateSession(ctx context.Context, session *domain.Session) error
+	GetSessionByTokenHash(ctx context.Context, tokenHash string) (*domain.Session, *domain.User, error)
+	TouchSession(ctx context.Context, id string, lastSeen int64) error
+	DeleteSession(ctx context.Context, id string) error
+	DeleteUserSessions(ctx context.Context, userID string) error
+	GetSettings(ctx context.Context) (map[string]string, error)
+	UpsertSettings(ctx context.Context, values map[string]string) error
 
 	CreateAccount(ctx context.Context, a *domain.MailAccount) error
 	GetAccount(ctx context.Context, userID, id string) (*domain.MailAccount, error)

@@ -60,9 +60,24 @@ type Config struct {
 	WebUIEnabled bool `json:"web_ui_enabled"`
 
 	AI          AIConfig         `json:"ai"`
+	Auth        AuthConfig       `json:"auth"`
 	Sync        SyncConfig       `json:"sync"`
 	Send        SendConfig       `json:"send"`
 	Attachments AttachmentConfig `json:"attachments"`
+}
+
+type AuthConfig struct {
+	Enabled           bool   `json:"enabled"`
+	SessionHours      int    `json:"session_hours"`
+	BootstrapAdmin    string `json:"bootstrap_admin"`
+	BootstrapPassword string `json:"-"`
+	OIDCIssuer        string `json:"oidc_issuer"`
+	OIDCClientID      string `json:"oidc_client_id"`
+	OIDCClientSecret  string `json:"-"`
+	OIDCSecretRef     string `json:"oidc_secret_ref"`
+	OIDCRedirectURL   string `json:"oidc_redirect_url"`
+	OIDCAutoProvision bool   `json:"oidc_auto_provision"`
+	OIDCAdminGroup    string `json:"oidc_admin_group"`
 }
 
 // AttachmentConfig drives the heuristic attachment scanner (MIME-011/012).
@@ -140,6 +155,13 @@ func Default() Config {
 		EncryptAtRest:     true,
 		MetricsEnabled:    true,
 		WebUIEnabled:      true,
+		Auth: AuthConfig{
+			Enabled:           true,
+			SessionHours:      12,
+			BootstrapAdmin:    "admin",
+			OIDCAutoProvision: true,
+			OIDCAdminGroup:    "postra-admins",
+		},
 		AI: AIConfig{
 			BaseURL:         "http://127.0.0.1:11434/v1",
 			Model:           "llama3.1",
@@ -218,6 +240,15 @@ func applyEnv(cfg *Config) {
 	set("POSTRA_AI_MODEL", &cfg.AI.Model)
 	set("POSTRA_AI_API_KEY_REF", &cfg.AI.APIKeyRef)
 	setBool("POSTRA_AI_ALLOW_EXTERNAL", &cfg.AI.AllowExternal)
+	setBool("POSTRA_AUTH_ENABLED", &cfg.Auth.Enabled)
+	set("POSTRA_BOOTSTRAP_ADMIN", &cfg.Auth.BootstrapAdmin)
+	set("POSTRA_BOOTSTRAP_ADMIN_PASSWORD", &cfg.Auth.BootstrapPassword)
+	set("POSTRA_OIDC_ISSUER", &cfg.Auth.OIDCIssuer)
+	set("POSTRA_OIDC_CLIENT_ID", &cfg.Auth.OIDCClientID)
+	set("POSTRA_OIDC_CLIENT_SECRET", &cfg.Auth.OIDCClientSecret)
+	set("POSTRA_OIDC_REDIRECT_URL", &cfg.Auth.OIDCRedirectURL)
+	setBool("POSTRA_OIDC_AUTO_PROVISION", &cfg.Auth.OIDCAutoProvision)
+	set("POSTRA_OIDC_ADMIN_GROUP", &cfg.Auth.OIDCAdminGroup)
 }
 
 // Save writes the config to path with restrictive permissions.

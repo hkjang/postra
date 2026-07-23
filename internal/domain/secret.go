@@ -23,6 +23,7 @@ const (
 	PurposeSMTPAuth SecretPurpose = "smtp_auth"
 	PurposeAIKey    SecretPurpose = "ai_api_key"
 	PurposeTest     SecretPurpose = "connection_test"
+	PurposeOIDC     SecretPurpose = "oidc_client_secret"
 )
 
 type SecretType string

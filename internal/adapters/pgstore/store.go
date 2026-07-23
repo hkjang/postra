@@ -69,7 +69,31 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE EXTENSION IF NOT EXISTS vector`,
 		`CREATE TABLE IF NOT EXISTS users (
 			id TEXT PRIMARY KEY, login_id TEXT UNIQUE NOT NULL,
-			status TEXT NOT NULL DEFAULT 'active', timezone TEXT DEFAULT 'UTC', created_at BIGINT NOT NULL)`,
+			status TEXT NOT NULL DEFAULT 'active', timezone TEXT DEFAULT 'UTC',
+			display_name TEXT NOT NULL DEFAULT '', email TEXT NOT NULL DEFAULT '',
+			role TEXT NOT NULL DEFAULT 'user', auth_provider TEXT NOT NULL DEFAULT 'local',
+			password_hash TEXT NOT NULL DEFAULT '', oidc_issuer TEXT NOT NULL DEFAULT '',
+			oidc_subject TEXT NOT NULL DEFAULT '', updated_at BIGINT NOT NULL DEFAULT 0,
+			last_login_at BIGINT NOT NULL DEFAULT 0, created_at BIGINT NOT NULL)`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'user'`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_provider TEXT NOT NULL DEFAULT 'local'`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS oidc_issuer TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS oidc_subject TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at BIGINT NOT NULL DEFAULT 0`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at BIGINT NOT NULL DEFAULT 0`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_oidc ON users(oidc_issuer,oidc_subject) WHERE oidc_subject != ''`,
+		`CREATE TABLE IF NOT EXISTS auth_sessions (
+			id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			token_hash TEXT UNIQUE NOT NULL, csrf_hash TEXT NOT NULL, expires_at BIGINT NOT NULL,
+			created_at BIGINT NOT NULL, last_seen BIGINT NOT NULL,
+			user_agent TEXT NOT NULL DEFAULT '', ip_address TEXT NOT NULL DEFAULT '')`,
+		`CREATE INDEX IF NOT EXISTS idx_auth_sessions_expiry ON auth_sessions(expires_at)`,
+		`CREATE TABLE IF NOT EXISTS system_settings (
+			key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at BIGINT NOT NULL,
+			updated_by TEXT NOT NULL DEFAULT '')`,
 		`CREATE TABLE IF NOT EXISTS mail_accounts (
 			id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL, email TEXT NOT NULL, status TEXT NOT NULL,
 			inbound_protocol TEXT NOT NULL DEFAULT 'pop3',
@@ -182,9 +206,166 @@ func vectorLiteral(v []float32) string {
 
 func (s *Store) EnsureUser(ctx context.Context, id, loginID string) error {
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO users (id, login_id, created_at) VALUES ($1,$2,$3) ON CONFLICT (login_id) DO NOTHING`,
-		id, loginID, now())
+		`INSERT INTO users (id,login_id,display_name,role,status,auth_provider,created_at,updated_at)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (login_id) DO NOTHING`,
+		id, loginID, loginID, domain.RoleUser, domain.UserActive, "local", now(), now())
 	return err
+}
+
+const userCols = `id,login_id,display_name,email,role,status,auth_provider,
+ oidc_issuer,oidc_subject,created_at,updated_at,last_login_at`
+
+func scanUser(row pgx.Row) (*domain.User, error) {
+	var u domain.User
+	err := row.Scan(&u.ID, &u.LoginID, &u.DisplayName, &u.Email, &u.Role, &u.Status,
+		&u.AuthProvider, &u.OIDCIssuer, &u.OIDCSubject, &u.CreatedAt, &u.UpdatedAt, &u.LastLoginAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return &u, err
+}
+
+func (s *Store) CreateUser(ctx context.Context, u *domain.User, passwordHash string) error {
+	u.CreatedAt, u.UpdatedAt = now(), now()
+	_, err := s.pool.Exec(ctx, `INSERT INTO users
+	 (id,login_id,display_name,email,role,status,auth_provider,password_hash,oidc_issuer,oidc_subject,created_at,updated_at,last_login_at)
+	 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+		u.ID, u.LoginID, u.DisplayName, u.Email, u.Role, u.Status, u.AuthProvider,
+		passwordHash, u.OIDCIssuer, u.OIDCSubject, u.CreatedAt, u.UpdatedAt, u.LastLoginAt)
+	return err
+}
+
+func (s *Store) GetUser(ctx context.Context, id string) (*domain.User, error) {
+	return scanUser(s.pool.QueryRow(ctx, `SELECT `+userCols+` FROM users WHERE id=$1`, id))
+}
+
+func (s *Store) GetUserByLogin(ctx context.Context, loginID string) (*domain.User, string, error) {
+	var u domain.User
+	var passwordHash string
+	err := s.pool.QueryRow(ctx, `SELECT `+userCols+`,password_hash FROM users WHERE lower(login_id)=lower($1)`, loginID).
+		Scan(&u.ID, &u.LoginID, &u.DisplayName, &u.Email, &u.Role, &u.Status, &u.AuthProvider,
+			&u.OIDCIssuer, &u.OIDCSubject, &u.CreatedAt, &u.UpdatedAt, &u.LastLoginAt, &passwordHash)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, "", ErrNotFound
+	}
+	return &u, passwordHash, err
+}
+
+func (s *Store) GetUserByOIDC(ctx context.Context, issuer, subject string) (*domain.User, error) {
+	return scanUser(s.pool.QueryRow(ctx, `SELECT `+userCols+` FROM users WHERE oidc_issuer=$1 AND oidc_subject=$2`, issuer, subject))
+}
+
+func (s *Store) ListUsers(ctx context.Context) ([]domain.User, error) {
+	rows, err := s.pool.Query(ctx, `SELECT `+userCols+` FROM users ORDER BY login_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.User
+	for rows.Next() {
+		var u domain.User
+		if err := rows.Scan(&u.ID, &u.LoginID, &u.DisplayName, &u.Email, &u.Role, &u.Status,
+			&u.AuthProvider, &u.OIDCIssuer, &u.OIDCSubject, &u.CreatedAt, &u.UpdatedAt, &u.LastLoginAt); err != nil {
+			return nil, err
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) UpdateUser(ctx context.Context, u *domain.User) error {
+	u.UpdatedAt = now()
+	ct, err := s.pool.Exec(ctx, `UPDATE users SET login_id=$1,display_name=$2,email=$3,role=$4,status=$5,
+	 auth_provider=$6,oidc_issuer=$7,oidc_subject=$8,updated_at=$9,last_login_at=$10 WHERE id=$11`,
+		u.LoginID, u.DisplayName, u.Email, u.Role, u.Status, u.AuthProvider,
+		u.OIDCIssuer, u.OIDCSubject, u.UpdatedAt, u.LastLoginAt, u.ID)
+	if err == nil && ct.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return err
+}
+
+func (s *Store) SetUserPassword(ctx context.Context, userID, passwordHash string) error {
+	ct, err := s.pool.Exec(ctx, `UPDATE users SET password_hash=$1,auth_provider='local',updated_at=$2 WHERE id=$3`,
+		passwordHash, now(), userID)
+	if err == nil && ct.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return err
+}
+
+func (s *Store) CountAdmins(ctx context.Context) (int, error) {
+	var n int
+	err := s.pool.QueryRow(ctx, `SELECT count(*) FROM users WHERE role='admin' AND status='active'`).Scan(&n)
+	return n, err
+}
+
+func (s *Store) CreateSession(ctx context.Context, ss *domain.Session) error {
+	ss.CreatedAt, ss.LastSeen = now(), now()
+	_, err := s.pool.Exec(ctx, `INSERT INTO auth_sessions
+	 (id,user_id,token_hash,csrf_hash,expires_at,created_at,last_seen,user_agent,ip_address)
+	 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, ss.ID, ss.UserID, ss.TokenHash, ss.CSRFHash,
+		ss.ExpiresAt, ss.CreatedAt, ss.LastSeen, ss.UserAgent, ss.IPAddress)
+	return err
+}
+
+func (s *Store) GetSessionByTokenHash(ctx context.Context, tokenHash string) (*domain.Session, *domain.User, error) {
+	var ss domain.Session
+	var u domain.User
+	err := s.pool.QueryRow(ctx, `SELECT s.id,s.user_id,s.token_hash,s.csrf_hash,s.expires_at,s.created_at,s.last_seen,
+	 s.user_agent,s.ip_address,`+prefixCols(userCols, "u.")+`
+	 FROM auth_sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.expires_at>$2`,
+		tokenHash, now()).Scan(&ss.ID, &ss.UserID, &ss.TokenHash, &ss.CSRFHash, &ss.ExpiresAt,
+		&ss.CreatedAt, &ss.LastSeen, &ss.UserAgent, &ss.IPAddress,
+		&u.ID, &u.LoginID, &u.DisplayName, &u.Email, &u.Role, &u.Status, &u.AuthProvider,
+		&u.OIDCIssuer, &u.OIDCSubject, &u.CreatedAt, &u.UpdatedAt, &u.LastLoginAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil, ErrNotFound
+	}
+	return &ss, &u, err
+}
+
+func (s *Store) TouchSession(ctx context.Context, id string, lastSeen int64) error {
+	_, err := s.pool.Exec(ctx, `UPDATE auth_sessions SET last_seen=$1 WHERE id=$2`, lastSeen, id)
+	return err
+}
+func (s *Store) DeleteSession(ctx context.Context, id string) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM auth_sessions WHERE id=$1`, id)
+	return err
+}
+func (s *Store) DeleteUserSessions(ctx context.Context, userID string) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM auth_sessions WHERE user_id=$1`, userID)
+	return err
+}
+func (s *Store) GetSettings(ctx context.Context) (map[string]string, error) {
+	rows, err := s.pool.Query(ctx, `SELECT key,value FROM system_settings`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var key, value string
+		if err := rows.Scan(&key, &value); err != nil {
+			return nil, err
+		}
+		out[key] = value
+	}
+	return out, rows.Err()
+}
+func (s *Store) UpsertSettings(ctx context.Context, values map[string]string) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	for key, value := range values {
+		if _, err := tx.Exec(ctx, `INSERT INTO system_settings(key,value,updated_at) VALUES($1,$2,$3)
+		 ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`, key, value, now()); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
 }
 
 // ---------- accounts ----------

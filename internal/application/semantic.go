@@ -21,13 +21,16 @@ func (a *App) BuildEmbeddings(ctx context.Context, accountID string, max int) (*
 	if err := a.checkAIPolicy(ctx); err != nil {
 		return nil, err
 	}
-	job := &domain.Job{ID: persistence.NewID("job"), UserID: DefaultUserID, Type: "embed", AccountID: accountID, Status: domain.JobQueued}
+	job := &domain.Job{ID: persistence.NewID("job"), UserID: userIDFrom(ctx), Type: "embed", AccountID: accountID, Status: domain.JobQueued}
 	if err := a.Store.CreateJob(ctx, job); err != nil {
 		return nil, err
 	}
 	a.audit(ctx, "embed_start", "account:"+accountID, "ok", "job:"+job.ID)
 
 	jobCtx, cancel := context.WithCancel(a.background)
+	if p, ok := PrincipalFrom(ctx); ok {
+		jobCtx = WithPrincipal(jobCtx, p)
+	}
 	a.jobCancels.Store(job.ID, cancel)
 	a.workerGroup.Add(1)
 	go func() {
@@ -42,7 +45,7 @@ func (a *App) runBuildEmbeddings(ctx context.Context, job *domain.Job, accountID
 	job.Status = domain.JobRunning
 	_ = a.Store.UpdateJob(ctx, job)
 
-	ids, err := a.Store.MessagesMissingEmbeddings(ctx, DefaultUserID, accountID, max)
+	ids, err := a.Store.MessagesMissingEmbeddings(ctx, job.UserID, accountID, max)
 	if err != nil {
 		job.Status, job.Error = domain.JobFailed, err.Error()
 		_ = a.Store.UpdateJob(context.Background(), job)
@@ -76,11 +79,12 @@ func (a *App) runBuildEmbeddings(ctx context.Context, job *domain.Job, accountID
 }
 
 func (a *App) embedMessage(ctx context.Context, accountID, messageID string) error {
-	m, err := a.Store.GetMessage(ctx, DefaultUserID, messageID)
+	userID := userIDFrom(ctx)
+	m, err := a.Store.GetMessage(ctx, userID, messageID)
 	if err != nil {
 		return err
 	}
-	body, _ := a.Store.GetBody(ctx, DefaultUserID, messageID)
+	body, _ := a.Store.GetBody(ctx, userID, messageID)
 	text := m.Subject
 	if body != nil {
 		text += "\n" + body.TextBody
@@ -100,7 +104,7 @@ func (a *App) embedMessage(ctx context.Context, accountID, messageID string) err
 	if acc == "" {
 		acc = m.AccountID
 	}
-	return a.Store.SaveEmbedding(ctx, DefaultUserID, acc, messageID, 0, res.Vectors[0], res.Model)
+	return a.Store.SaveEmbedding(ctx, userID, acc, messageID, 0, res.Vectors[0], res.Model)
 }
 
 // SemanticSearch embeds the query and returns the most similar stored
@@ -119,13 +123,14 @@ func (a *App) SemanticSearch(ctx context.Context, query, accountID string, limit
 	if len(res.Vectors) == 0 {
 		return nil, userErrf("embedder returned no vector for the query")
 	}
-	hits, err := a.Store.SemanticSearch(ctx, DefaultUserID, accountID, res.Vectors[0], limit)
+	userID := userIDFrom(ctx)
+	hits, err := a.Store.SemanticSearch(ctx, userID, accountID, res.Vectors[0], limit)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]MessageView, 0, len(hits))
 	for _, h := range hits {
-		m, err := a.Store.GetMessage(ctx, DefaultUserID, h.MessageID)
+		m, err := a.Store.GetMessage(ctx, userID, h.MessageID)
 		if err != nil {
 			continue // message may have been deleted since indexing
 		}

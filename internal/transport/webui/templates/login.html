@@ -4,9 +4,15 @@
 <div class="card" style="max-width:420px">
   {{if .Error}}<p class="err">{{.Error}}</p>{{end}}
   <form method="post" action="/ui/login">
+    {{if .LocalAuth}}
+    <div class="field"><label>로그인 ID</label><input type="text" name="login_id" required autofocus autocomplete="username"></div>
+    <div class="field"><label>비밀번호</label><input type="password" name="password" required autocomplete="current-password"></div>
+    {{else}}
     <p class="small muted">API 토큰을 입력하세요.</p>
     <p><input type="password" name="token" placeholder="API 토큰" autofocus style="width:100%"></p>
+    {{end}}
     <button type="submit">로그인</button>
   </form>
+  {{if .OIDCEnabled}}<hr><a class="btn ghost" href="/ui/auth/oidc/start">Keycloak SSO로 로그인</a>{{end}}
 </div>
 {{end}}

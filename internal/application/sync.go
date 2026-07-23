@@ -24,7 +24,8 @@ type SyncOptions struct {
 
 // StartSync launches an asynchronous POP3 sync job and returns its job ID.
 func (a *App) StartSync(ctx context.Context, accountID string, opts SyncOptions) (*domain.Job, error) {
-	acc, err := a.Store.GetAccount(ctx, DefaultUserID, accountID)
+	userID := userIDFrom(ctx)
+	acc, err := a.Store.GetAccount(ctx, userID, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -39,7 +40,7 @@ func (a *App) StartSync(ctx context.Context, accountID string, opts SyncOptions)
 	}
 
 	job := &domain.Job{
-		ID: persistence.NewID("job"), UserID: DefaultUserID,
+		ID: persistence.NewID("job"), UserID: userID,
 		Type: "sync", AccountID: accountID, Status: domain.JobQueued,
 	}
 	if err := a.Store.CreateJob(ctx, job); err != nil {
@@ -49,6 +50,9 @@ func (a *App) StartSync(ctx context.Context, accountID string, opts SyncOptions)
 	a.audit(ctx, "sync_start", "account:"+accountID, "ok", "job:"+job.ID)
 
 	jobCtx, cancel := context.WithCancel(a.background)
+	if p, ok := PrincipalFrom(ctx); ok {
+		jobCtx = WithPrincipal(jobCtx, p)
+	}
 	a.jobCancels.Store(job.ID, cancel)
 	a.workerGroup.Add(1)
 	go func() {
@@ -61,7 +65,7 @@ func (a *App) StartSync(ctx context.Context, accountID string, opts SyncOptions)
 }
 
 func (a *App) CancelJob(ctx context.Context, jobID string) error {
-	if _, err := a.Store.GetJob(ctx, DefaultUserID, jobID); err != nil {
+	if _, err := a.Store.GetJob(ctx, userIDFrom(ctx), jobID); err != nil {
 		return err
 	}
 	if c, ok := a.jobCancels.Load(jobID); ok {
@@ -73,7 +77,7 @@ func (a *App) CancelJob(ctx context.Context, jobID string) error {
 }
 
 func (a *App) GetJob(ctx context.Context, jobID string) (*domain.Job, error) {
-	return a.Store.GetJob(ctx, DefaultUserID, jobID)
+	return a.Store.GetJob(ctx, userIDFrom(ctx), jobID)
 }
 
 func (a *App) runSync(ctx context.Context, job *domain.Job, acc *domain.MailAccount, opts SyncOptions) {
@@ -100,7 +104,7 @@ func (a *App) runSync(ctx context.Context, job *domain.Job, acc *domain.MailAcco
 		var authErr *domain.AuthError
 		if errors.As(err, &authErr) {
 			// POP-011: no endless retries on bad credentials.
-			_ = a.Store.SetAccountStatus(context.Background(), DefaultUserID, acc.ID, domain.AccountCredentialError)
+			_ = a.Store.SetAccountStatus(context.Background(), acc.UserID, acc.ID, domain.AccountCredentialError)
 			finish(domain.JobFailed, "authentication failed; account moved to credential_error")
 			return
 		}
@@ -224,13 +228,13 @@ func (a *App) ingestOne(ctx context.Context, sess domain.POP3Session, acc *domai
 
 	subjectKey := mailparse.SubjectKey(parsed.Subject)
 	refs := mailparse.ReferenceIDs(parsed.References, parsed.InReplyTo)
-	threadID, err := a.Store.ResolveThread(ctx, DefaultUserID, acc.ID, refs, subjectKey, parsed.Date.Unix())
+	threadID, err := a.Store.ResolveThread(ctx, acc.UserID, acc.ID, refs, subjectKey, parsed.Date.Unix())
 	if err != nil {
 		threadID = ""
 	}
 
 	msg := &domain.Message{
-		ID: persistence.NewID("msg"), UserID: DefaultUserID, AccountID: acc.ID,
+		ID: persistence.NewID("msg"), UserID: acc.UserID, AccountID: acc.ID,
 		UIDL: uidl, MessageID: parsed.MessageID, Subject: parsed.Subject,
 		From: parsed.From, To: parsed.To, Cc: parsed.Cc, ReplyTo: parsed.ReplyTo,
 		Date: parsed.Date.Unix(), Size: int64(len(raw)),

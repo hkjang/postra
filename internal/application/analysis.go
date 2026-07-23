@@ -168,6 +168,7 @@ func truncateRunes(s string, n int) string {
 }
 
 func (a *App) runAnalysis(ctx context.Context, analysisType, targetType, targetID, userTask, untrusted string) (*domain.Analysis, error) {
+	userID := userIDFrom(ctx)
 	pv, spec, ok := a.activePrompt(analysisType)
 	if !ok {
 		return nil, userErrf("unknown analysis type %q", analysisType)
@@ -177,7 +178,7 @@ func (a *App) runAnalysis(ctx context.Context, analysisType, targetType, targetI
 	}
 	sum := sha256.Sum256([]byte(analysisType + "|" + pv + "|" + a.Cfg.AI.Model + "|" + userTask + "|" + untrusted))
 	inputHash := hex.EncodeToString(sum[:])
-	if cached, err := a.Store.FindCachedAnalysis(ctx, DefaultUserID, analysisType, inputHash, a.Cfg.AI.Model); err == nil {
+	if cached, err := a.Store.FindCachedAnalysis(ctx, userID, analysisType, inputHash, a.Cfg.AI.Model); err == nil {
 		return cached, nil // AI-008 cache
 	}
 
@@ -210,7 +211,7 @@ func (a *App) runAnalysis(ctx context.Context, analysisType, targetType, targetI
 		return nil, fmt.Errorf("AI returned non-JSON output (AI-005 validation failed): %w", err)
 	}
 	an := &domain.Analysis{
-		ID: persistence.NewID("ana"), UserID: DefaultUserID,
+		ID: persistence.NewID("ana"), UserID: userID,
 		TargetType: targetType, TargetID: targetID, AnalysisType: analysisType,
 		ResultJSON: resultJSON, Model: res.Model, PromptVersion: pv, InputHash: inputHash,
 	}
@@ -300,7 +301,7 @@ func (a *App) AnswerQuestion(ctx context.Context, question, accountID string) (*
 	}
 	var sb strings.Builder
 	for _, m := range res.Messages {
-		body, _ := a.Store.GetBody(ctx, DefaultUserID, m.ID)
+		body, _ := a.Store.GetBody(ctx, userIDFrom(ctx), m.ID)
 		text := ""
 		if body != nil {
 			text = truncateRunes(body.TextBody, 2500)

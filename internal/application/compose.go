@@ -47,7 +47,8 @@ func parseAddressStrings(in []string) ([]domain.Address, error) {
 }
 
 func (a *App) CreateDraft(ctx context.Context, in CreateDraftInput) (*DraftView, error) {
-	acc, err := a.Store.GetAccount(ctx, DefaultUserID, in.AccountID)
+	userID := userIDFrom(ctx)
+	acc, err := a.Store.GetAccount(ctx, userID, in.AccountID)
 	if err != nil {
 		return nil, err
 	}
@@ -121,7 +122,7 @@ func (a *App) CreateDraft(ctx context.Context, in CreateDraftInput) (*DraftView,
 	}
 
 	d := &domain.Draft{
-		ID: persistence.NewID("drf"), UserID: DefaultUserID, AccountID: in.AccountID,
+		ID: persistence.NewID("drf"), UserID: userID, AccountID: in.AccountID,
 		Kind: kind, ReplyToMessageID: in.ReplyToMessageID, Status: domain.DraftOpen,
 	}
 	if err := a.Store.CreateDraft(ctx, d, &v); err != nil {
@@ -170,7 +171,8 @@ type UpdateDraftInput struct {
 // UpdateDraft records a user-authored version on top of the current one
 // (DRAFT-002/003); approvals issued for earlier versions stop matching.
 func (a *App) UpdateDraft(ctx context.Context, in UpdateDraftInput) (*DraftView, error) {
-	d, cur, err := a.Store.GetDraft(ctx, DefaultUserID, in.DraftID)
+	userID := userIDFrom(ctx)
+	d, cur, err := a.Store.GetDraft(ctx, userID, in.DraftID)
 	if err != nil {
 		return nil, err
 	}
@@ -200,7 +202,7 @@ func (a *App) UpdateDraft(ctx context.Context, in UpdateDraftInput) (*DraftView,
 			return nil, err
 		}
 	}
-	newVer, err := a.Store.AddDraftVersion(ctx, DefaultUserID, d.ID, &v)
+	newVer, err := a.Store.AddDraftVersion(ctx, userID, d.ID, &v)
 	if err != nil {
 		return nil, err
 	}
@@ -211,7 +213,8 @@ func (a *App) UpdateDraft(ctx context.Context, in UpdateDraftInput) (*DraftView,
 
 // RewriteDraft produces an AI-restyled version (mail_draft_rewrite).
 func (a *App) RewriteDraft(ctx context.Context, draftID, style string) (*DraftView, error) {
-	d, cur, err := a.Store.GetDraft(ctx, DefaultUserID, draftID)
+	userID := userIDFrom(ctx)
+	d, cur, err := a.Store.GetDraft(ctx, userID, draftID)
 	if err != nil {
 		return nil, err
 	}
@@ -235,7 +238,7 @@ func (a *App) RewriteDraft(ctx context.Context, draftID, style string) (*DraftVi
 	if strings.TrimSpace(g.Body) != "" {
 		v.BodyText = g.Body
 	}
-	newVer, err := a.Store.AddDraftVersion(ctx, DefaultUserID, d.ID, &v)
+	newVer, err := a.Store.AddDraftVersion(ctx, userID, d.ID, &v)
 	if err != nil {
 		return nil, err
 	}
@@ -245,7 +248,7 @@ func (a *App) RewriteDraft(ctx context.Context, draftID, style string) (*DraftVi
 }
 
 func (a *App) GetDraft(ctx context.Context, draftID string) (*DraftView, error) {
-	d, v, err := a.Store.GetDraft(ctx, DefaultUserID, draftID)
+	d, v, err := a.Store.GetDraft(ctx, userIDFrom(ctx), draftID)
 	if err != nil {
 		return nil, err
 	}

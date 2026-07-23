@@ -28,12 +28,12 @@ func (f *fakeInbound) Dial(context.Context, domain.InboundDialOptions) (domain.I
 	return s, nil
 }
 
-func (s *fakeInboundSess) List(context.Context) ([]domain.RemoteMessage, error)  { return s.msgs, nil }
-func (s *fakeInboundSess) UIDL(context.Context) ([]domain.RemoteMessage, error)  { return s.msgs, nil }
-func (s *fakeInboundSess) Top(context.Context, int, int) (io.ReadCloser, error)  { return nil, nil }
-func (s *fakeInboundSess) Delete(context.Context, int) error                     { return nil }
-func (s *fakeInboundSess) Quit(context.Context) error                            { return nil }
-func (s *fakeInboundSess) Close() error                                          { return nil }
+func (s *fakeInboundSess) List(context.Context) ([]domain.RemoteMessage, error) { return s.msgs, nil }
+func (s *fakeInboundSess) UIDL(context.Context) ([]domain.RemoteMessage, error) { return s.msgs, nil }
+func (s *fakeInboundSess) Top(context.Context, int, int) (io.ReadCloser, error) { return nil, nil }
+func (s *fakeInboundSess) Delete(context.Context, int) error                    { return nil }
+func (s *fakeInboundSess) Quit(context.Context) error                           { return nil }
+func (s *fakeInboundSess) Close() error                                         { return nil }
 func (s *fakeInboundSess) Retrieve(_ context.Context, n int) (io.ReadCloser, error) {
 	return io.NopCloser(strings.NewReader(s.d.raw[s.msgs[n-1].UIDL])), nil
 }

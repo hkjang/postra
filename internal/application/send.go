@@ -119,11 +119,12 @@ type SendPreview struct {
 }
 
 func (a *App) PreviewSend(ctx context.Context, draftID string) (*SendPreview, error) {
-	d, v, err := a.Store.GetDraft(ctx, DefaultUserID, draftID)
+	userID := userIDFrom(ctx)
+	d, v, err := a.Store.GetDraft(ctx, userID, draftID)
 	if err != nil {
 		return nil, err
 	}
-	acc, err := a.Store.GetAccount(ctx, DefaultUserID, d.AccountID)
+	acc, err := a.Store.GetAccount(ctx, userID, d.AccountID)
 	if err != nil {
 		return nil, err
 	}
@@ -167,7 +168,7 @@ func (a *App) RequestSendApproval(ctx context.Context, draftID, approver string,
 		return nil, nil, err
 	}
 	tok, err := a.Issue(ctx, domain.ApprovalRequest{
-		UserID: DefaultUserID, ActionType: "mail_send",
+		UserID: userIDFrom(ctx), ActionType: "mail_send",
 		DraftID: draftID, DraftVersion: preview.DraftVersion,
 		PayloadHash: preview.PayloadHash, TTLSeconds: ttlSeconds, Approver: approver,
 	})
@@ -188,11 +189,12 @@ type SendInput struct {
 }
 
 func (a *App) Send(ctx context.Context, in SendInput) (*domain.OutboundMessage, error) {
-	d, v, err := a.Store.GetDraft(ctx, DefaultUserID, in.DraftID)
+	userID := userIDFrom(ctx)
+	d, v, err := a.Store.GetDraft(ctx, userID, in.DraftID)
 	if err != nil {
 		return nil, err
 	}
-	acc, err := a.Store.GetAccount(ctx, DefaultUserID, d.AccountID)
+	acc, err := a.Store.GetAccount(ctx, userID, d.AccountID)
 	if err != nil {
 		return nil, err
 	}
@@ -209,7 +211,7 @@ func (a *App) Send(ctx context.Context, in SendInput) (*domain.OutboundMessage, 
 	if idemKey == "" {
 		idemKey = fmt.Sprintf("draft:%s:v%d", d.ID, v.Version)
 	}
-	if existing, err := a.Store.GetOutboundByIdemKey(ctx, DefaultUserID, idemKey); err == nil {
+	if existing, err := a.Store.GetOutboundByIdemKey(ctx, userID, idemKey); err == nil {
 		return existing, nil
 	}
 
@@ -230,7 +232,7 @@ func (a *App) Send(ctx context.Context, in SendInput) (*domain.OutboundMessage, 
 
 	msgID := fmt.Sprintf("<%s@postra.local>", randomToken(16))
 	out := &domain.OutboundMessage{
-		ID: persistence.NewID("out"), UserID: DefaultUserID,
+		ID: persistence.NewID("out"), UserID: userID,
 		DraftID: d.ID, DraftVersion: v.Version, IdempotencyKey: idemKey,
 		MessageID: msgID, Status: domain.OutboundQueued,
 	}
@@ -273,11 +275,11 @@ func (a *App) deliver(ctx context.Context, out *domain.OutboundMessage, acc *dom
 }
 
 func (a *App) replyContext(ctx context.Context, draftID string) (*domain.Message, error) {
-	d, _, err := a.Store.GetDraft(ctx, DefaultUserID, draftID)
+	d, _, err := a.Store.GetDraft(ctx, userIDFrom(ctx), draftID)
 	if err != nil || d.ReplyToMessageID == "" {
 		return nil, err
 	}
-	return a.Store.GetMessage(ctx, DefaultUserID, d.ReplyToMessageID)
+	return a.Store.GetMessage(ctx, userIDFrom(ctx), d.ReplyToMessageID)
 }
 
 // applySendResult records the outcome of a delivery attempt and, for
@@ -312,7 +314,7 @@ func (a *App) applySendResult(ctx context.Context, out *domain.OutboundMessage, 
 		a.audit(ctx, "mail_send", "draft:"+draftID, "uncertain", "response lost after DATA")
 	default:
 		_ = a.Store.UpdateOutbound(ctx, out.ID, domain.OutboundSent, receipt.ServerResponse, attempts)
-		_ = a.Store.SetDraftStatus(ctx, DefaultUserID, draftID, domain.DraftSent)
+		_ = a.Store.SetDraftStatus(ctx, userIDFrom(ctx), draftID, domain.DraftSent)
 		out.Status, out.SMTPResponse = domain.OutboundSent, receipt.ServerResponse
 		a.audit(ctx, "mail_send", "draft:"+draftID, "ok", "outbound="+out.ID)
 	}
@@ -356,7 +358,7 @@ func isTemporary(err error) bool {
 }
 
 func (a *App) GetOutbound(ctx context.Context, id string) (*domain.OutboundMessage, error) {
-	return a.Store.GetOutbound(ctx, DefaultUserID, id)
+	return a.Store.GetOutbound(ctx, userIDFrom(ctx), id)
 }
 
 // checkSendRate enforces per-account per-minute and per-hour send quotas
@@ -364,7 +366,7 @@ func (a *App) GetOutbound(ctx context.Context, id string) (*domain.OutboundMessa
 func (a *App) checkSendRate(ctx context.Context, accountID string) error {
 	now := time.Now()
 	if lim := a.Cfg.Send.MaxPerMinute; lim > 0 {
-		n, err := a.Store.CountSentSince(ctx, DefaultUserID, accountID, now.Add(-time.Minute).Unix())
+		n, err := a.Store.CountSentSince(ctx, userIDFrom(ctx), accountID, now.Add(-time.Minute).Unix())
 		if err != nil {
 			return err
 		}
@@ -373,7 +375,7 @@ func (a *App) checkSendRate(ctx context.Context, accountID string) error {
 		}
 	}
 	if lim := a.Cfg.Send.MaxPerHour; lim > 0 {
-		n, err := a.Store.CountSentSince(ctx, DefaultUserID, accountID, now.Add(-time.Hour).Unix())
+		n, err := a.Store.CountSentSince(ctx, userIDFrom(ctx), accountID, now.Add(-time.Hour).Unix())
 		if err != nil {
 			return err
 		}

@@ -65,6 +65,7 @@ func newTestApp(t *testing.T) (*application.App, *fakeSMTP) {
 	cfg.DataDir = dir
 	cfg.AllowInsecureMail = true
 	cfg.AllowPrivateHosts = true
+	cfg.Auth.Enabled = false
 
 	kek, err := crypto.LoadOrCreateKEK(dir)
 	if err != nil {
@@ -123,6 +124,52 @@ func TestSearchAndMessage(t *testing.T) {
 	rec = do(t, h, "GET", "/ui/messages/msg_missing", nil, nil)
 	if rec.Code == 200 {
 		t.Fatalf("unknown message should not render 200, got %d", rec.Code)
+	}
+}
+
+func TestLocalLoginSessionAndLogout(t *testing.T) {
+	app, _ := newTestApp(t)
+	app.Cfg.Auth.Enabled = true
+	if _, err := app.SetupInitialAdmin(context.Background(), "admin", "Administrator", "a-secure-password"); err != nil {
+		t.Fatal(err)
+	}
+	h := New(app, "").Handler()
+
+	rec := do(t, h, http.MethodGet, "/ui/", nil, nil)
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/ui/login" {
+		t.Fatalf("anonymous request: code=%d location=%q", rec.Code, rec.Header().Get("Location"))
+	}
+	rec = do(t, h, http.MethodPost, "/ui/login", url.Values{
+		"login_id": {"admin"}, "password": {"a-secure-password"},
+	}, nil)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("login: code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var sessionCookie *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == cookieName {
+			sessionCookie = c
+		}
+	}
+	if sessionCookie == nil || !sessionCookie.HttpOnly || sessionCookie.SameSite != http.SameSiteLaxMode {
+		t.Fatalf("secure session cookie was not issued: %+v", sessionCookie)
+	}
+	rec = do(t, h, http.MethodGet, "/ui/", nil, sessionCookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("authenticated request: code=%d", rec.Code)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/ui/logout", nil)
+	req.AddCookie(sessionCookie)
+	req.Header.Set("Origin", "http://example.com")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("logout: code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	rec = do(t, h, http.MethodGet, "/ui/", nil, sessionCookie)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("logged-out cookie remained valid: code=%d", rec.Code)
 	}
 }
 

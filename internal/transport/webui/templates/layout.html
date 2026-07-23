@@ -57,7 +57,11 @@ button.ghost{background:transparent;color:var(--accent);border:1px solid var(--l
     <a href="/ui/">받은편지함</a>
     <a href="/ui/compose">새 메일</a>
     <a href="/ui/accounts">계정</a>
+    <a href="/ui/admin/users">관리</a>
   </nav>
+  <form method="post" action="/ui/logout" style="margin-left:auto">
+    <button type="submit" class="ghost">로그아웃</button>
+  </form>
 </header>
 <main>
 {{block "content" .}}{{end}}

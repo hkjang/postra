@@ -31,6 +31,14 @@ func New(app *application.App, apiToken string) *Server {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
+	mux.HandleFunc("GET /api/me", s.me)
+	mux.HandleFunc("GET /api/admin/users", s.adminListUsers)
+	mux.HandleFunc("POST /api/admin/users", s.adminCreateUser)
+	mux.HandleFunc("PATCH /api/admin/users/{id}", s.adminUpdateUser)
+	mux.HandleFunc("POST /api/admin/users/{id}/password", s.adminResetPassword)
+	mux.HandleFunc("GET /api/admin/settings", s.adminGetSettings)
+	mux.HandleFunc("PATCH /api/admin/settings", s.adminSaveSettings)
+
 	mux.HandleFunc("POST /api/secrets", s.postSecret)
 	mux.HandleFunc("POST /api/secrets/{ref}/rotate", s.rotateSecret)
 	mux.HandleFunc("DELETE /api/secrets/{ref}", s.revokeSecret)
@@ -91,6 +99,106 @@ func (s *Server) Handler() http.Handler {
 	return s.middleware(mux)
 }
 
+// ---------- identity and administration ----------
+
+func (s *Server) me(w http.ResponseWriter, r *http.Request) {
+	p, ok := application.PrincipalFrom(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "not authenticated"})
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
+}
+
+func (s *Server) adminListUsers(w http.ResponseWriter, r *http.Request) {
+	users, err := s.app.AdminListUsers(r.Context())
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, users)
+}
+
+func (s *Server) adminCreateUser(w http.ResponseWriter, r *http.Request) {
+	var in application.CreateUserInput
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&in); err != nil {
+		writeErr(w, err)
+		return
+	}
+	u, err := s.app.AdminCreateUser(r.Context(), in)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, u)
+}
+
+func (s *Server) adminUpdateUser(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Role   domain.UserRole   `json:"role"`
+		Status domain.UserStatus `json:"status"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&in); err != nil {
+		writeErr(w, err)
+		return
+	}
+	u, err := s.app.AdminUpdateUser(r.Context(), r.PathValue("id"), in.Role, in.Status)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, u)
+}
+
+func (s *Server) adminResetPassword(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&in); err != nil {
+		writeErr(w, err)
+		return
+	}
+	if err := s.app.AdminResetPassword(r.Context(), r.PathValue("id"), in.Password); err != nil {
+		writeErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) adminGetSettings(w http.ResponseWriter, r *http.Request) {
+	if p, ok := application.PrincipalFrom(r.Context()); !ok || !p.IsAdmin() {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "administrator permission required"})
+		return
+	}
+	settings, err := s.app.SystemSettings(r.Context())
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, settings)
+}
+
+func (s *Server) adminSaveSettings(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Values           map[string]string `json:"values"`
+		OIDCClientSecret string            `json:"oidc_client_secret"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&in); err != nil {
+		writeErr(w, err)
+		return
+	}
+	if err := s.app.AdminSaveSettings(r.Context(), in.Values, in.OIDCClientSecret); err != nil {
+		writeErr(w, err)
+		return
+	}
+	settings, err := s.app.SystemSettings(r.Context())
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, settings)
+}
+
 // statusRecorder captures the response status code for request metrics.
 type statusRecorder struct {
 	http.ResponseWriter
@@ -139,19 +247,42 @@ func (s *Server) middleware(mux *http.ServeMux) http.Handler {
 		rec := &statusRecorder{ResponseWriter: w, code: http.StatusOK}
 		start := time.Now()
 		func() {
-			if s.apiToken != "" && !publicPath(r.URL.Path) {
-				got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-				if subtle.ConstantTimeCompare([]byte(got), []byte(s.apiToken)) != 1 {
+			ctx := application.WithActor(r.Context(), "rest")
+			if !publicPath(r.URL.Path) && (s.app.Cfg.Auth.Enabled || s.apiToken != "") {
+				principal, ok := s.authenticate(r)
+				if !ok {
 					writeJSON(rec, http.StatusUnauthorized, map[string]string{"error": "invalid or missing bearer token"})
 					return
 				}
+				ctx = application.WithPrincipal(ctx, principal)
 			}
-			ctx := application.WithActor(r.Context(), "rest")
 			mux.ServeHTTP(rec, r.WithContext(ctx))
 		}()
 		metrics.HTTPRequests.WithLabelValues(route, r.Method, strconv.Itoa(rec.code)).Inc()
 		metrics.HTTPLatency.WithLabelValues(route).Observe(time.Since(start).Seconds())
 	})
+}
+
+func (s *Server) authenticate(r *http.Request) (domain.Principal, bool) {
+	raw := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if s.apiToken != "" && subtle.ConstantTimeCompare([]byte(raw), []byte(s.apiToken)) == 1 {
+		u, err := s.app.Store.GetUser(r.Context(), application.DefaultUserID)
+		if err == nil {
+			return domain.Principal{UserID: u.ID, LoginID: u.LoginID, DisplayName: u.DisplayName,
+				Role: domain.RoleAdmin, AuthMethod: "api_token"}, true
+		}
+	}
+	if raw != "" {
+		if p, err := s.app.AuthenticateOIDCAccessToken(r.Context(), raw); err == nil {
+			return p, true
+		}
+	}
+	if c, err := r.Cookie("postra_session"); err == nil {
+		if _, p, err := s.app.AuthenticateSession(r.Context(), c.Value); err == nil {
+			return p, true
+		}
+	}
+	return domain.Principal{}, false
 }
 
 // ---------- helpers ----------
