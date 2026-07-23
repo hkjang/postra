@@ -98,4 +98,5 @@ type Storage interface {
 	SaveEmbedding(ctx context.Context, userID, accountID, messageID string, chunkID int, vec []float32, model string) error
 	MessagesMissingEmbeddings(ctx context.Context, userID, accountID string, limit int) ([]string, error)
 	SemanticSearch(ctx context.Context, userID, accountID string, queryVec []float32, limit int) ([]domain.SemanticHit, error)
+	TryAcquireLease(ctx context.Context, key, nodeID string, durationSec int) (bool, error)
 }

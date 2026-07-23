@@ -227,6 +227,10 @@ func (a *App) AdminSaveSettings(ctx context.Context, values map[string]string, o
 		a.initVectorStore(ctx)
 	}
 
+	if notifier, ok := a.Store.(interface{ NotifySettingsChange(ctx context.Context) }); ok {
+		notifier.NotifySettingsChange(ctx)
+	}
+
 	a.audit(ctx, "settings_update", "system", "ok", "keys="+strconv.Itoa(len(clean)))
 	return nil
 }
@@ -276,6 +280,11 @@ func (a *App) AdminSaveAISettings(ctx context.Context, values map[string]string,
 		_ = a.RevokeSecret(ctx, domain.SecretRef(oldKeyRef))
 	}
 	a.applyAISettings(clean)
+
+	if notifier, ok := a.Store.(interface{ NotifySettingsChange(ctx context.Context) }); ok {
+		notifier.NotifySettingsChange(ctx)
+	}
+
 	cfg := a.currentAIConfig()
 	a.audit(ctx, "ai_settings_update", "system:ai", "ok", "model="+cfg.Model)
 	return nil

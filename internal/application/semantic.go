@@ -51,21 +51,35 @@ func (a *App) runBuildEmbeddings(ctx context.Context, job *domain.Job, accountID
 		_ = a.Store.UpdateJob(context.Background(), job)
 		return
 	}
+	
+	const batchSize = 20
 	var done, failed int64
-	for _, id := range ids {
+
+	for i := 0; i < len(ids); i += batchSize {
 		if ctx.Err() != nil {
 			job.Status = domain.JobCancelled
 			_ = a.Store.UpdateJob(context.Background(), job)
 			return
 		}
-		if err := a.embedMessage(ctx, accountID, id); err != nil {
-			failed++
-			continue
+		
+		end := i + batchSize
+		if end > len(ids) {
+			end = len(ids)
 		}
-		done++
-		job.Progress = fmt.Sprintf("%d/%d", done, len(ids))
+		batchIds := ids[i:end]
+		
+		err := a.embedMessagesBatch(ctx, accountID, batchIds)
+		if err != nil {
+			failed += int64(len(batchIds))
+			a.audit(ctx, "embed_batch_failed", "account:"+accountID, "error", err.Error())
+		} else {
+			done += int64(len(batchIds))
+		}
+
+		job.Progress = fmt.Sprintf("%d/%d", done+failed, len(ids))
 		_ = a.Store.UpdateJob(ctx, job)
 	}
+
 	job.Stats = map[string]int64{"embedded": done, "failed": failed}
 	job.Status = domain.JobSucceeded
 	if failed > 0 && done == 0 {
@@ -78,33 +92,69 @@ func (a *App) runBuildEmbeddings(ctx context.Context, job *domain.Job, accountID
 		fmt.Sprintf("embedded=%d failed=%d", done, failed))
 }
 
-func (a *App) embedMessage(ctx context.Context, accountID, messageID string) error {
+func (a *App) embedMessagesBatch(ctx context.Context, accountID string, messageIDs []string) error {
 	userID := userIDFrom(ctx)
-	m, err := a.Store.GetMessage(ctx, userID, messageID)
-	if err != nil {
-		return err
+	
+	var texts []string
+	var validIDs []string
+	var accs []string
+
+	for _, mID := range messageIDs {
+		m, err := a.Store.GetMessage(ctx, userID, mID)
+		if err != nil {
+			continue
+		}
+		body, _ := a.Store.GetBody(ctx, userID, mID)
+		text := m.Subject
+		if body != nil {
+			text += "\n" + body.TextBody
+		}
+		text = truncateRunes(strings.TrimSpace(text), embedChunkChars)
+		if text == "" {
+			// Mark as embedded with dummy none model to avoid re-scanning empty emails
+			_ = a.VectorStore().SaveEmbedding(ctx, userID, m.AccountID, mID, 0, nil, "none")
+			continue
+		}
+		texts = append(texts, text)
+		validIDs = append(validIDs, mID)
+		acc := accountID
+		if acc == "" {
+			acc = m.AccountID
+		}
+		accs = append(accs, acc)
 	}
-	body, _ := a.Store.GetBody(ctx, userID, messageID)
-	text := m.Subject
-	if body != nil {
-		text += "\n" + body.TextBody
-	}
-	text = truncateRunes(strings.TrimSpace(text), embedChunkChars)
-	if text == "" {
+
+	if len(texts) == 0 {
 		return nil
 	}
-	res, err := a.AI.Embed(ctx, domain.EmbeddingRequest{Input: []string{text}})
+
+	res, err := a.AI.Embed(ctx, domain.EmbeddingRequest{Input: texts})
 	if err != nil {
 		return err
 	}
 	if len(res.Vectors) == 0 {
-		return fmt.Errorf("embedder returned no vector")
+		return fmt.Errorf("embedder returned no vectors")
 	}
-	acc := accountID
-	if acc == "" {
-		acc = m.AccountID
+
+	var items []EmbeddingItem
+	for idx, mID := range validIDs {
+		if idx >= len(res.Vectors) {
+			break
+		}
+		items = append(items, EmbeddingItem{
+			MessageID: mID,
+			ChunkID:   0,
+			Vector:    res.Vectors[idx],
+			Model:     res.Model,
+		})
 	}
-	return a.VectorStore().SaveEmbedding(ctx, userID, acc, messageID, 0, res.Vectors[0], res.Model)
+
+	targetAcc := accountID
+	if targetAcc == "" && len(accs) > 0 {
+		targetAcc = accs[0]
+	}
+
+	return a.VectorStore().SaveEmbeddingsBatch(ctx, userID, targetAcc, items)
 }
 
 // SemanticSearch embeds the query and returns the most similar stored

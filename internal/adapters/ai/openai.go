@@ -242,16 +242,33 @@ func injectExtraHeaders(h http.Header, extra string) {
 	if extra == "" {
 		return
 	}
+	forbiddenHeaders := map[string]bool{
+		"authorization":  true,
+		"content-type":   true,
+		"host":           true,
+		"content-length": true,
+		"connection":     true,
+		"accept":         true,
+	}
 	var headers map[string]string
 	if err := json.Unmarshal([]byte(extra), &headers); err == nil {
 		for k, v := range headers {
+			normalized := strings.ToLower(strings.TrimSpace(k))
+			if forbiddenHeaders[normalized] {
+				continue
+			}
 			h.Set(k, v)
 		}
 	} else {
 		for _, part := range strings.Split(extra, ";") {
 			kv := strings.SplitN(part, ":", 2)
 			if len(kv) == 2 {
-				h.Set(strings.TrimSpace(kv[0]), strings.TrimSpace(kv[1]))
+				k := strings.TrimSpace(kv[0])
+				normalized := strings.ToLower(k)
+				if forbiddenHeaders[normalized] {
+					continue
+				}
+				h.Set(k, strings.TrimSpace(kv[1]))
 			}
 		}
 	}

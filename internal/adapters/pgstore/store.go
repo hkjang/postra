@@ -1225,8 +1225,8 @@ func (s *Store) SaveEmbedding(ctx context.Context, userID, accountID, messageID 
 		return err
 	}
 
-	// Conditionally insert into embeddings table if pgvector is enabled
-	if s.hasPgVector {
+	// Conditionally insert into embeddings table if pgvector is enabled and vector is not empty
+	if s.hasPgVector && len(vec) > 0 {
 		_, err = tx.Exec(ctx, `INSERT INTO embeddings (message_id,chunk_id,user_id,account_id,model,dim,vec)
 		 VALUES ($1,$2,$3,$4,$5,$6,$7::vector) ON CONFLICT (message_id,chunk_id) DO UPDATE SET model=excluded.model, dim=excluded.dim, vec=excluded.vec`,
 			messageID, chunkID, userID, accountID, model, len(vec), vectorLiteral(vec))
@@ -1386,6 +1386,116 @@ func (s *Store) RevokeMCPKey(ctx context.Context, userID, keyID string) error {
 func (s *Store) TouchMCPKey(ctx context.Context, keyID string, lastUsedAt int64) error {
 	_, err := s.pool.Exec(ctx, `UPDATE mcp_keys SET last_used_at = $1 WHERE id = $2`, lastUsedAt, keyID)
 	return err
+}
+
+func (s *Store) NotifySettingsChange(ctx context.Context) {
+	_, err := s.pool.Exec(ctx, `NOTIFY postra_settings_changed`)
+	if err != nil {
+		slog.Error("pgstore: failed to send settings change notification", "error", err)
+	}
+}
+
+func (s *Store) ListenSettingsChange(ctx context.Context, cb func()) {
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
+			conn, err := s.pool.Acquire(ctx)
+			if err != nil {
+				slog.Error("pgstore: listen failed to acquire connection, retrying in 5s", "error", err)
+				time.Sleep(5 * time.Second)
+				continue
+			}
+
+			_, err = conn.Exec(ctx, "LISTEN postra_settings_changed")
+			if err != nil {
+				conn.Release()
+				slog.Error("pgstore: listen query failed, retrying in 5s", "error", err)
+				time.Sleep(5 * time.Second)
+				continue
+			}
+
+			slog.Info("pgstore: listening for postra_settings_changed notifications")
+			
+			// We define a loop to handle notifications
+			for {
+				notification, err := conn.Conn().WaitForNotification(ctx)
+				if err != nil {
+					conn.Release()
+					slog.Warn("pgstore: listen connection lost, reconnecting", "error", err)
+					break
+				}
+				
+				slog.Info("pgstore: received settings changed notification", "payload", notification.Payload)
+				cb()
+			}
+			
+			time.Sleep(2 * time.Second)
+		}
+	}()
+}
+
+func (s *Store) TryAcquireLease(ctx context.Context, key, nodeID string, durationSec int) (bool, error) {
+	nowTS := time.Now().Unix()
+	expiresTS := nowTS + int64(durationSec)
+	
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+	
+	var value string
+	var updatedAt int64
+	err = tx.QueryRow(ctx, `SELECT value, updated_at FROM system_settings WHERE key = $1 FOR UPDATE`, key).Scan(&value, &updatedAt)
+	
+	type Lease struct {
+		NodeID    string `json:"node_id"`
+		ExpiresAt int64  `json:"expires_at"`
+	}
+	
+	var current Lease
+	isFree := false
+	hasRow := true
+	if errors.Is(err, pgx.ErrNoRows) {
+		isFree = true
+		hasRow = false
+	} else if err != nil {
+		return false, err
+	} else {
+		_ = json.Unmarshal([]byte(value), &current)
+		if current.ExpiresAt < nowTS || current.NodeID == nodeID {
+			isFree = true
+		}
+	}
+	
+	if !isFree {
+		return false, nil
+	}
+	
+	newLease := Lease{NodeID: nodeID, ExpiresAt: expiresTS}
+	newVal, _ := json.Marshal(newLease)
+	
+	if hasRow {
+		_, err = tx.Exec(ctx, `UPDATE system_settings SET value = $1, updated_at = $2, updated_by = $3 WHERE key = $4`,
+			string(newVal), nowTS, nodeID, key)
+	} else {
+		_, err = tx.Exec(ctx, `INSERT INTO system_settings (key, value, updated_at, updated_by) VALUES ($1, $2, $3, $4)`,
+			key, string(newVal), nowTS, nodeID)
+	}
+	if err != nil {
+		return false, err
+	}
+	
+	err = tx.Commit(ctx)
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 var _ application.Storage = (*Store)(nil)

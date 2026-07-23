@@ -8,14 +8,23 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"postra/internal/domain"
 )
 
+type EmbeddingItem struct {
+	MessageID string
+	ChunkID   int
+	Vector    []float32
+	Model     string
+}
+
 // VectorStore abstraction supports swapping implementations at runtime (§24).
 type VectorStore interface {
 	SaveEmbedding(ctx context.Context, userID, accountID, messageID string, chunkID int, vec []float32, model string) error
+	SaveEmbeddingsBatch(ctx context.Context, userID, accountID string, items []EmbeddingItem) error
 	MessagesMissingEmbeddings(ctx context.Context, userID, accountID string, limit int) ([]string, error)
 	SemanticSearch(ctx context.Context, userID, accountID string, queryVec []float32, limit int) ([]domain.SemanticHit, error)
 	Ping(ctx context.Context) error
@@ -30,8 +39,12 @@ func (d *DisabledVectorStore) SaveEmbedding(ctx context.Context, userID, account
 	return errors.New("vector search is disabled. Please configure a vector provider in admin settings")
 }
 
+func (d *DisabledVectorStore) SaveEmbeddingsBatch(ctx context.Context, userID, accountID string, items []EmbeddingItem) error {
+	return errors.New("vector search is disabled. Please configure a vector provider in admin settings")
+}
+
 func (d *DisabledVectorStore) MessagesMissingEmbeddings(ctx context.Context, userID, accountID string, limit int) ([]string, error) {
-	return nil, nil // no missing, nothing to embed
+	return nil, nil
 }
 
 func (d *DisabledVectorStore) SemanticSearch(ctx context.Context, userID, accountID string, queryVec []float32, limit int) ([]domain.SemanticHit, error) {
@@ -45,13 +58,22 @@ func (d *DisabledVectorStore) Ping(ctx context.Context) error {
 func (d *DisabledVectorStore) Close() error { return nil }
 
 // ---------- StorageVectorStore ----------
-// StorageVectorStore delegates to the primary Relational storage (Postgres/SQLite).
 type StorageVectorStore struct {
 	store Storage
 }
 
 func (s *StorageVectorStore) SaveEmbedding(ctx context.Context, userID, accountID, messageID string, chunkID int, vec []float32, model string) error {
 	return s.store.SaveEmbedding(ctx, userID, accountID, messageID, chunkID, vec, model)
+}
+
+func (s *StorageVectorStore) SaveEmbeddingsBatch(ctx context.Context, userID, accountID string, items []EmbeddingItem) error {
+	for _, item := range items {
+		err := s.store.SaveEmbedding(ctx, userID, accountID, item.MessageID, item.ChunkID, item.Vector, item.Model)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *StorageVectorStore) MessagesMissingEmbeddings(ctx context.Context, userID, accountID string, limit int) ([]string, error) {
@@ -74,13 +96,12 @@ func (s *StorageVectorStore) Ping(ctx context.Context) error {
 func (s *StorageVectorStore) Close() error { return nil }
 
 // ---------- MilvusVectorStore ----------
-// MilvusVectorStore interacts with Milvus via HTTP v2 REST API.
 type MilvusVectorStore struct {
 	url        string
 	token      string
 	collection string
 	client     *http.Client
-	store      Storage // to query MessagesMissingEmbeddings when needed (or local mock list)
+	store      Storage
 }
 
 func NewMilvusVectorStore(url, token, collection string, store Storage) *MilvusVectorStore {
@@ -92,34 +113,45 @@ func NewMilvusVectorStore(url, token, collection string, store Storage) *MilvusV
 		token:      token,
 		collection: collection,
 		client: &http.Client{
-			Timeout: 10 * time.Second,
+			Timeout: 15 * time.Second,
 		},
 		store: store,
 	}
 }
 
 type milvusInsertReq struct {
-	CollectionName string `json:"collectionName"`
+	CollectionName string           `json:"collectionName"`
 	Data           []map[string]any `json:"data"`
 }
 
 func (m *MilvusVectorStore) SaveEmbedding(ctx context.Context, userID, accountID, messageID string, chunkID int, vec []float32, model string) error {
+	return m.SaveEmbeddingsBatch(ctx, userID, accountID, []EmbeddingItem{
+		{MessageID: messageID, ChunkID: chunkID, Vector: vec, Model: model},
+	})
+}
+
+func (m *MilvusVectorStore) SaveEmbeddingsBatch(ctx context.Context, userID, accountID string, items []EmbeddingItem) error {
+	if len(items) == 0 {
+		return nil
+	}
 	endpoint := fmt.Sprintf("%s/v2/vectordb/entities/insert", m.url)
 	
-	// Milvus expects vector as a float array. We serialize meta fields as well.
-	data := map[string]any{
-		"id":         fmt.Sprintf("%s_%d", messageID, chunkID), // Primary key in Milvus
-		"message_id": messageID,
-		"chunk_id":   chunkID,
-		"user_id":    userID,
-		"account_id": accountID,
-		"model":      model,
-		"vector":     vec,
+	var data []map[string]any
+	for _, item := range items {
+		data = append(data, map[string]any{
+			"id":         fmt.Sprintf("%s_%d", item.MessageID, item.ChunkID),
+			"message_id": item.MessageID,
+			"chunk_id":   item.ChunkID,
+			"user_id":    userID,
+			"account_id": accountID,
+			"model":      item.Model,
+			"vector":     item.Vector,
+		})
 	}
 
 	reqBody, err := json.Marshal(milvusInsertReq{
 		CollectionName: m.collection,
-		Data:           []map[string]any{data},
+		Data:           data,
 	})
 	if err != nil {
 		return err
@@ -145,45 +177,27 @@ func (m *MilvusVectorStore) SaveEmbedding(ctx context.Context, userID, accountID
 		return fmt.Errorf("milvus insert returned HTTP %d: %s", resp.StatusCode, string(body))
 	}
 
-	// We also optionally record a record in the primary store (if available) to know it has been embedded,
-	// or we can rely on primary DB embeddings metadata if we use a hybrid model.
-	// But to avoid requiring the local `embeddings` table, we can save the fact in a dummy/fallback way or
-	// we can try to save it to primary DB if pgvector is enabled, but if not, we can just save it to Milvus.
-	// However, MessagesMissingEmbeddings depends on knowing which messages are NOT embedded.
-	// How does MessagesMissingEmbeddings check if Milvus has the embedding?
-	// It's much easier if we track embedded message IDs in primary database or if we query Milvus.
-	// If we track it in the primary database without requiring the `vector` type column (which fails on non-pgvector Postgres),
-	// we can add a simple `embedded_messages` table to Postgres that doesn't have the `vector` column but just tracks metadata!
-	// That is brilliant!
-	// Let's create an `embedding_metadata` table in SQL migrate that doesn't have the `vec vector` type, or
-	// we can just catch errors if `SaveEmbedding` on store fails, or we can use a dedicated table.
-	// Since we want `MessagesMissingEmbeddings` to still work (which queries the primary database),
-	// we need a way to track which message has embeddings.
-	// Let's define a schema migration for a metadata table if pgvector is not available, or we can just save it.
-	// Wait, if pgvector is not available, calling s.store.SaveEmbedding will fail because the `embeddings` table doesn't exist.
-	// Let's see: `MessagesMissingEmbeddings` in SQLite works because it has the table. In Postgres, if there's no pgvector,
-	// `embeddings` table is not created.
-	// To solve this, we can write a fallback table `embedding_meta (message_id, chunk_id, user_id, account_id, model, dim, PRIMARY KEY)`
-	// which doesn't have the vector data itself, and uses it to keep track of missing embeddings!
-	// Let's implement that!
+	// Save embedding meta to primary DB to mark as embedded.
+	for _, item := range items {
+		err := m.store.SaveEmbedding(ctx, userID, accountID, item.MessageID, item.ChunkID, nil, item.Model)
+		if err != nil {
+			return fmt.Errorf("failed to save embedding metadata to primary database: %w", err)
+		}
+	}
 
 	return nil
 }
 
 func (m *MilvusVectorStore) MessagesMissingEmbeddings(ctx context.Context, userID, accountID string, limit int) ([]string, error) {
-	// We can delegate to primary store if it's SQLite or if PostgreSQL has the metadata table.
-	// If the primary store does not have the embeddings or embedding_meta table,
-	// we can just return missing messages by checking which messages exist but are not tracked.
-	// To make this robust, we can implement the missing check dynamically or delegate to the DB.
 	return m.store.MessagesMissingEmbeddings(ctx, userID, accountID, limit)
 }
 
 type milvusSearchReq struct {
-	CollectionName string      `json:"collectionName"`
-	Vector         []float32   `json:"vector"`
-	Filter         string      `json:"filter,omitempty"`
-	Limit          int         `json:"limit"`
-	OutputFields   []string    `json:"outputFields"`
+	CollectionName string    `json:"collectionName"`
+	Vector         []float32 `json:"vector"`
+	Filter         string    `json:"filter,omitempty"`
+	Limit          int       `json:"limit"`
+	OutputFields   []string  `json:"outputFields"`
 }
 
 type milvusSearchResp struct {
@@ -198,9 +212,9 @@ type milvusSearchResp struct {
 func (m *MilvusVectorStore) SemanticSearch(ctx context.Context, userID, accountID string, queryVec []float32, limit int) ([]domain.SemanticHit, error) {
 	endpoint := fmt.Sprintf("%s/v2/vectordb/entities/search", m.url)
 
-	filter := fmt.Sprintf("user_id == '%s'", userID)
+	filter := fmt.Sprintf("user_id == '%s'", escapeMilvusString(userID))
 	if accountID != "" {
-		filter += fmt.Sprintf(" && account_id == '%s'", accountID)
+		filter += fmt.Sprintf(" && account_id == '%s'", escapeMilvusString(accountID))
 	}
 
 	reqBody, err := json.Marshal(milvusSearchReq{
@@ -245,8 +259,6 @@ func (m *MilvusVectorStore) SemanticSearch(ctx context.Context, userID, accountI
 		if msgID == "" {
 			msgID = d.ID
 		}
-		// Milvus returns L2 distance or Cosine similarity.
-		// Cosine similarity in Milvus v2 HTTP returns score directly. We can normalize/use it.
 		hits = append(hits, domain.SemanticHit{
 			MessageID: msgID,
 			Score:     d.Distance,
@@ -284,4 +296,10 @@ func (m *MilvusVectorStore) Ping(ctx context.Context) error {
 func (m *MilvusVectorStore) Close() error {
 	m.client.CloseIdleConnections()
 	return nil
+}
+
+func escapeMilvusString(s string) string {
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	s = strings.ReplaceAll(s, "'", "\\'")
+	return s
 }

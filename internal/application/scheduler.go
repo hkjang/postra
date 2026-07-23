@@ -28,8 +28,6 @@ func (a *App) RecoverStaleJobs(ctx context.Context) {
 // cancelled. The per-account syncLocks in StartSync prevent overlap, so a
 // slow account is simply skipped on the next tick instead of stacking.
 func (a *App) RunScheduler(ctx context.Context) {
-	a.RecoverStaleJobs(ctx)
-
 	interval := time.Duration(a.Cfg.Sync.AutoSyncMinutes) * time.Minute
 	if interval <= 0 {
 		slog.Info("auto-sync disabled (sync.auto_sync_minutes = 0)")
@@ -39,13 +37,20 @@ func (a *App) RunScheduler(ctx context.Context) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	a.syncAllActive(ctx) // run once at startup
+	// Run RecoverStaleJobs and initial sync if we are the leader
+	if a.IsLeader() {
+		a.RecoverStaleJobs(ctx)
+		a.syncAllActive(ctx)
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			a.syncAllActive(ctx)
+			if a.IsLeader() {
+				a.syncAllActive(ctx)
+			}
 		}
 	}
 }
@@ -60,8 +65,10 @@ func (a *App) RunRetryWorker(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if n := a.ProcessRetries(ctx); n > 0 {
-				slog.Info("outbox retries processed", "count", n)
+			if a.IsLeader() {
+				if n := a.ProcessRetries(ctx); n > 0 {
+					slog.Info("outbox retries processed", "count", n)
+				}
 			}
 		}
 	}

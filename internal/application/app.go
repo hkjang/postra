@@ -8,11 +8,13 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
 	"strings"
 	"sync"
+	"time"
 
 	"postra/internal/adapters/malware"
 	"postra/internal/adapters/objectstore"
@@ -45,6 +47,9 @@ type App struct {
 	aiRaw        domain.AIProvider
 	vectorStore  VectorStore
 	vectorMu     sync.RWMutex
+	nodeID       string
+	leaderMu     sync.RWMutex
+	isLeader     bool
 }
 
 func New(cfg config.Config, store Storage, objects objectstore.Store,
@@ -83,6 +88,23 @@ func New(cfg config.Config, store Storage, objects objectstore.Store,
 		return nil, err
 	}
 	a.initVectorStore(context.Background())
+
+	// Start listening for settings changes if supported by the store (multi-node sync)
+	if notifier, ok := store.(interface {
+		ListenSettingsChange(ctx context.Context, cb func())
+	}); ok {
+		notifier.ListenSettingsChange(a.background, func() {
+			slog.Info("app: settings change notification received, re-initializing configuration and vector store")
+			if stored, err := a.Store.GetSettings(context.Background()); err == nil {
+				a.applyAISettings(stored)
+			}
+			a.initVectorStore(context.Background())
+		})
+	}
+
+	a.nodeID = "node_" + randomToken(10)
+	a.startLeaderElectionLoop()
+
 	return a, nil
 }
 
@@ -315,4 +337,81 @@ func (a *App) VectorStore() VectorStore {
 	a.vectorMu.RLock()
 	defer a.vectorMu.RUnlock()
 	return a.vectorStore
+}
+
+func (a *App) IsLeader() bool {
+	a.leaderMu.RLock()
+	defer a.leaderMu.RUnlock()
+	return a.isLeader
+}
+
+func (a *App) setLeaderState(state bool) {
+	a.leaderMu.Lock()
+	defer a.leaderMu.Unlock()
+	if a.isLeader != state {
+		a.isLeader = state
+		if state {
+			slog.Info("app: this node has been elected as LEADER. Running background tasks.", "node_id", a.nodeID)
+		} else {
+			slog.Info("app: this node is now STANDBY. Pausing background tasks.", "node_id", a.nodeID)
+		}
+	}
+}
+
+func (a *App) startLeaderElectionLoop() {
+	a.workerGroup.Add(1)
+	go func() {
+		defer a.workerGroup.Done()
+		
+		a.electLeader(context.Background())
+		
+		ticker := time.NewTicker(8 * time.Second)
+		defer ticker.Stop()
+		
+		for {
+			select {
+			case <-a.background.Done():
+				a.releaseLease(context.Background())
+				return
+			case <-ticker.C:
+				a.electLeader(context.Background())
+			}
+		}
+	}()
+}
+
+func (a *App) electLeader(ctx context.Context) {
+	const leaseKey = "internal.leader_lease"
+	const leaseSec = 15
+
+	acquired, err := a.Store.TryAcquireLease(ctx, leaseKey, a.nodeID, leaseSec)
+	if err != nil {
+		slog.Error("app: leader election check failed", "error", err, "node_id", a.nodeID)
+		a.setLeaderState(false)
+		return
+	}
+	a.setLeaderState(acquired)
+}
+
+func (a *App) releaseLease(ctx context.Context) {
+	a.leaderMu.RLock()
+	isL := a.isLeader
+	a.leaderMu.RUnlock()
+	if !isL {
+		return
+	}
+
+	const leaseKey = "internal.leader_lease"
+	
+	type Lease struct {
+		NodeID    string `json:"node_id"`
+		ExpiresAt int64  `json:"expires_at"`
+	}
+	newLease := Lease{NodeID: a.nodeID, ExpiresAt: time.Now().Unix() - 1}
+	newVal, _ := json.Marshal(newLease)
+	
+	slog.Info("app: releasing leader lease on shutdown", "node_id", a.nodeID)
+	_ = a.Store.UpsertSettings(ctx, map[string]string{
+		leaseKey: string(newVal),
+	})
 }

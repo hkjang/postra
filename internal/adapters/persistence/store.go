@@ -1533,3 +1533,62 @@ func (s *Store) TouchMCPKey(ctx context.Context, keyID string, lastUsedAt int64)
 	return err
 }
 
+func (s *Store) TryAcquireLease(ctx context.Context, key, nodeID string, durationSec int) (bool, error) {
+	nowTS := time.Now().Unix()
+	expiresTS := nowTS + int64(durationSec)
+	
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	
+	var value string
+	var updatedAt int64
+	err = tx.QueryRowContext(ctx, `SELECT value, updated_at FROM system_settings WHERE key = ?`, key).Scan(&value, &updatedAt)
+	
+	type Lease struct {
+		NodeID    string `json:"node_id"`
+		ExpiresAt int64  `json:"expires_at"`
+	}
+	
+	var current Lease
+	isFree := false
+	hasRow := true
+	if errors.Is(err, sql.ErrNoRows) {
+		isFree = true
+		hasRow = false
+	} else if err != nil {
+		return false, err
+	} else {
+		_ = json.Unmarshal([]byte(value), &current)
+		if current.ExpiresAt < nowTS || current.NodeID == nodeID {
+			isFree = true
+		}
+	}
+	
+	if !isFree {
+		return false, nil
+	}
+	
+	newLease := Lease{NodeID: nodeID, ExpiresAt: expiresTS}
+	newVal, _ := json.Marshal(newLease)
+	
+	if hasRow {
+		_, err = tx.ExecContext(ctx, `UPDATE system_settings SET value = ?, updated_at = ?, updated_by = ? WHERE key = ?`,
+			string(newVal), nowTS, nodeID, key)
+	} else {
+		_, err = tx.ExecContext(ctx, `INSERT INTO system_settings (key, value, updated_at, updated_by) VALUES (?, ?, ?, ?)`,
+			key, string(newVal), nowTS, nodeID)
+	}
+	if err != nil {
+		return false, err
+	}
+	
+	err = tx.Commit()
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
