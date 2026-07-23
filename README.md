@@ -182,7 +182,19 @@ REST·CLI·MCP 세 채널은 동일 기능을 제공합니다. CLI: `postra sear
 - **액션 실행 카드** — `mail_action_cards_extract`(`POST /api/messages/{id}/action-cards`)로 회의·할 일·결재·문의를 카드로 추출하고, 승인 후 `mail_action_card_export`가 캘린더·Jira·ITSM 연동용 구조화 페이로드를 반환합니다(외부 쓰기는 연동 측이 수행).
 - **공유 메일함(협업)** — 메일별 담당자 배정·상태(open/pending/resolved)·SLA·내부 메모를 지원하고 `mail_team_inbox`(`GET /api/team-inbox`)로 팀 관점 목록을 제공합니다.
 - **첨부 문서 지능** — `mail_attachment_extract_text`/`mail_attachment_summarize`가 텍스트 기반 첨부(text/*, JSON, CSV, HTML)를 추출·요약합니다(PDF·이미지 OCR은 범위 외).
-- **MCP 정책 게이트웨이** — `mcp.policy`(JSON)로 도구별·역할별 allow/deny를 중앙 관리합니다. 로컬 stdio 호출은 신뢰 주체로 통과합니다.
+- **MCP 역할 기반 접근제어(RBAC)** — 모든 MCP 도구를 위험도(read/write/send/delete/admin)로 분류하고 역할별 기본 상한을 강제합니다. **관리자는 전 도구**, **개인 MCP 키 사용자는 read·write·send**(검색·조회·분석·초안·조직화·승인 발송)까지 허용되고 **로컬 삭제·서버 삭제·계정/자격증명 관리(delete·admin 등급)는 차단**됩니다. 그 외 역할은 읽기 전용입니다. 분류되지 않은 신규 도구는 관리자 전용으로 fail-safe 처리되며, 카탈로그 드리프트 테스트로 누락을 방지합니다. REST API 토큰 호출자는 관리자 권한, OIDC·개인 키 호출자는 각자의 역할을 따릅니다. 로컬 stdio 호출은 신뢰 주체로 통과합니다. 기본값은 `mcp.policy`(JSON)로 재정의할 수 있습니다:
+
+  ```json
+  {
+    "role_max_level": {"user": "write"},
+    "role_allow": {"support": ["mail_search", "mail_message_get", "mail_summarize"]},
+    "role_deny": {"user": ["mail_send"]},
+    "allow_tools": ["mail_local_delete"],
+    "deny_tools": ["mail_server_delete"]
+  }
+  ```
+
+  적용 순서: `deny_tools`(전역 차단) → `role_deny` → `role_allow`(해당 역할 전용 허용목록) → 역할 상한(`role_max_level` 또는 기본값) → `allow_tools`(등급 초과 예외 허용). 도구별 등급과 역할 모델은 `schema://mail/tools` 리소스의 `access`·`access_model` 필드로 확인할 수 있습니다.
 - **AI 품질 평가** — `mail_eval_prompt`(`POST /api/eval`)가 라벨링된 케이스로 분석 유형을 실행해 활성 프롬프트 버전의 정확도·지연을 측정합니다.
 - **OpenTelemetry** — `telemetry_enabled=true` 시 HTTP·MCP·AI·동기화 경로에 OTLP/HTTP 트레이스를 내보냅니다(엔드포인트는 표준 `OTEL_EXPORTER_OTLP_*` 환경변수).
 

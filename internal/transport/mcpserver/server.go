@@ -167,26 +167,43 @@ func registerDeleteTools(s *mcp.Server, app *application.App) {
 // toolCatalogSummary backs the schema://mail/tools resource: a stable,
 // non-sensitive listing of tool names grouped by capability.
 func toolCatalogSummary() map[string]any {
+	groups := map[string][]string{
+		"account_secret": {"mail_account_list", "mail_account_get", "mail_account_create",
+			"mail_account_update", "mail_account_test", "mail_account_disable",
+			"secret_registration_begin", "secret_rotation_begin", "secret_revoke"},
+		"sync": {"mail_sync_start", "job_status", "job_cancel"},
+		"query": {"mail_search", "mail_message_get", "mail_thread_get", "mail_thread_timeline",
+			"mail_attachment_list", "mail_hybrid_search", "mail_batch_update", "mail_work_inbox"},
+		"ai": {"mail_summarize", "mail_classify", "mail_action_items_extract",
+			"mail_entities_extract", "mail_phishing_inspect", "mail_auth_inspect", "mail_thread_summarize",
+			"mail_question_answer", "mail_embeddings_build", "mail_semantic_search",
+			"mail_attachment_summarize", "mail_eval_prompt"},
+		"compose_send": {"mail_draft_create", "mail_draft_update", "mail_draft_rewrite",
+			"mail_send_preview", "mail_send_request_approval", "mail_send", "mail_outbound_status"},
+		"automation":    {"mail_rules_list", "mail_rule_create", "mail_rule_update", "mail_rule_delete", "mail_apply_rules"},
+		"action_cards":  {"mail_action_cards_extract", "mail_action_cards_list", "mail_action_card_set_status", "mail_action_card_export"},
+		"collaboration": {"mail_team_inbox", "mail_collab_get", "mail_assign", "mail_set_work_status", "mail_add_note"},
+		"attachments":   {"mail_attachment_list", "mail_attachment_extract_text", "mail_attachment_summarize"},
+		"audit":         {"mail_audit_search"},
+	}
+	// Per-tool RBAC access level, derived from the authoritative classification.
+	access := map[string]string{}
+	for _, tools := range groups {
+		for _, t := range tools {
+			lvl, _ := application.ClassifyMCPTool(t)
+			access[t] = lvl
+		}
+	}
 	return map[string]any{
 		"protocol_version": "2025-11-25 (baseline)",
-		"groups": map[string][]string{
-			"account_secret": {"mail_account_list", "mail_account_get", "mail_account_create",
-				"mail_account_update", "mail_account_test", "mail_account_disable",
-				"secret_registration_begin", "secret_rotation_begin", "secret_revoke"},
-			"sync": {"mail_sync_start", "job_status", "job_cancel"},
-			"query": {"mail_search", "mail_message_get", "mail_thread_get", "mail_thread_timeline",
-				"mail_attachment_list", "mail_hybrid_search", "mail_batch_update", "mail_work_inbox"},
-			"ai": {"mail_summarize", "mail_classify", "mail_action_items_extract",
-				"mail_entities_extract", "mail_phishing_inspect", "mail_auth_inspect", "mail_thread_summarize",
-				"mail_question_answer", "mail_embeddings_build", "mail_semantic_search",
-				"mail_attachment_summarize", "mail_eval_prompt"},
-			"compose_send": {"mail_draft_create", "mail_draft_update", "mail_draft_rewrite",
-				"mail_send_preview", "mail_send_request_approval", "mail_send", "mail_outbound_status"},
-			"automation":    {"mail_rules_list", "mail_rule_create", "mail_rule_update", "mail_rule_delete", "mail_apply_rules"},
-			"action_cards":  {"mail_action_cards_extract", "mail_action_cards_list", "mail_action_card_set_status", "mail_action_card_export"},
-			"collaboration": {"mail_team_inbox", "mail_collab_get", "mail_assign", "mail_set_work_status", "mail_add_note"},
-			"attachments":   {"mail_attachment_list", "mail_attachment_extract_text", "mail_attachment_summarize"},
-			"audit":         {"mail_audit_search"},
+		"groups":           groups,
+		"access":           access,
+		"access_model": map[string]any{
+			"levels":      []string{"read", "write", "send", "delete", "admin"},
+			"admin":       "all tools",
+			"user":        "read, write, send (personal MCP key) — no delete/admin tools by default",
+			"other":       "read-only",
+			"overridable": "admin may adjust via the mcp.policy setting (role_max_level, role_allow, role_deny, allow_tools, deny_tools)",
 		},
 		"note": "Secret values are never accepted as tool arguments; use secret_registration_begin.",
 	}
