@@ -2249,6 +2249,23 @@ func (s *Store) NotifySettingsChange(ctx context.Context) {
 
 func (s *Store) ListenSettingsChange(ctx context.Context, cb func()) {
 	go func() {
+		// A panic anywhere in this goroutine (including inside cb, which
+		// re-initializes the vector store and reloads settings) would abort the
+		// entire process — this loop is Postgres-only, so such a crash would
+		// look like "the server randomly dies only in production".
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("pgstore: settings listener panic recovered; listener stopped until restart", "panic", r)
+			}
+		}()
+		safeCb := func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("pgstore: settings-change callback panic recovered", "panic", r)
+				}
+			}()
+			cb()
+		}
 		for {
 			select {
 			case <-ctx.Done():
@@ -2283,7 +2300,7 @@ func (s *Store) ListenSettingsChange(ctx context.Context, cb func()) {
 				}
 
 				slog.Info("pgstore: received settings changed notification", "payload", notification.Payload)
-				cb()
+				safeCb()
 			}
 
 			time.Sleep(2 * time.Second)

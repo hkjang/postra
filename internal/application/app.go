@@ -103,12 +103,14 @@ func New(cfg config.Config, store Storage, objects objectstore.Store,
 		ListenSettingsChange(ctx context.Context, cb func())
 	}); ok {
 		notifier.ListenSettingsChange(a.background, func() {
-			slog.Info("app: settings change notification received, re-initializing configuration and vector store")
-			if stored, err := a.Store.GetSettings(context.Background()); err == nil {
-				a.applyAISettings(stored)
-			}
-			a.initVectorStore(context.Background())
-			a.loadMCPPolicy(context.Background())
+			a.guard("settings-reload", func() {
+				slog.Info("app: settings change notification received, re-initializing configuration and vector store")
+				if stored, err := a.Store.GetSettings(context.Background()); err == nil {
+					a.applyAISettings(stored)
+				}
+				a.initVectorStore(context.Background())
+				a.loadMCPPolicy(context.Background())
+			})
 		})
 	}
 
