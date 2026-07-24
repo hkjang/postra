@@ -95,14 +95,24 @@ func loadApp(configPath string) (*application.App, config.Config, error) {
 	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
 		return nil, cfg, err
 	}
-	kek, err := crypto.LoadOrCreateKEK(cfg.DataDir)
+
+	// Open storage first so the encryption key and secret values can live in the
+	// shared database. In a multi-replica deployment the per-node /data is
+	// ephemeral, so a KEK/secret file kept there would differ on every pod and
+	// vanish on restart — the DB is the only durable, shared store.
+	store, err := openStorage(cfg)
 	if err != nil {
 		return nil, cfg, err
 	}
 
-	store, err := openStorage(cfg, kek)
+	kek, err := resolveKEK(context.Background(), cfg, store)
 	if err != nil {
 		return nil, cfg, err
+	}
+	if cfg.EncryptAtRest {
+		if enc, ok := store.(interface{ EnableEncryption(*crypto.KEK) }); ok {
+			enc.EnableEncryption(kek) // body-column encryption
+		}
 	}
 
 	local, err := objectstore.NewLocal(cfg.DataDir)
@@ -113,13 +123,61 @@ func loadApp(configPath string) (*application.App, config.Config, error) {
 	if cfg.EncryptAtRest {
 		objects = objectstore.NewEncrypted(local, kek)
 	}
-	secrets := secretstore.NewLocal(cfg.DataDir, kek)
+
+	// DB-backed secret store: values survive restarts and are shared across
+	// replicas, consistent with the CredentialRef/account rows that name them.
+	secrets := secretstore.NewDB(store, kek)
+	if n, err := secretstore.MigrateLocalFileToDB(context.Background(), cfg.DataDir, store); err != nil {
+		slog.Warn("secret migration from local file skipped", "err", err)
+	} else if n > 0 {
+		slog.Info("migrated local secrets into shared database", "count", n)
+	}
+
 	app, err := application.New(cfg, store, objects, secrets,
 		pop3.Dialer{}, adsmtp.Client{}, ai.New(cfg.AI, secrets))
 	if app != nil {
 		app.IMAP = imap.Dialer{} // inbound adapter selected per-account by protocol
 	}
 	return app, cfg, err
+}
+
+// keyringSettingKey names the shared, DB-persisted keyring row.
+const keyringSettingKey = "internal.keyring"
+
+// resolveKEK decides the encryption key in priority order:
+//  1. POSTRA_KEK (external key management, strongest — recommended in production);
+//  2. a keyring persisted in the shared database (survives ephemeral container
+//     storage and is identical on every replica), seeded from an existing
+//     on-disk keyring.json so an upgrading single-node deployment keeps
+//     decrypting its data;
+//  3. the legacy on-disk keyring as a last resort when the DB is unavailable.
+func resolveKEK(ctx context.Context, cfg config.Config, store application.Storage) (*crypto.KEK, error) {
+	if kek, found, err := crypto.NewKEKFromEnv(); found {
+		if err != nil {
+			return nil, err
+		}
+		slog.Info("encryption key sourced from POSTRA_KEK")
+		return kek, nil
+	}
+
+	// Seed the shared keyring from any existing on-disk keyring so previously
+	// stored envelopes remain decryptable; otherwise mint a fresh one.
+	candidate, err := crypto.ReadKeyringJSON(cfg.DataDir)
+	if err != nil {
+		return nil, err
+	}
+	if candidate == "" {
+		if candidate, err = crypto.NewRandomKeyringJSON(); err != nil {
+			return nil, err
+		}
+	}
+	val, err := store.GetOrCreateSetting(ctx, keyringSettingKey, candidate)
+	if err != nil {
+		slog.Warn("shared keyring unavailable in database; falling back to on-disk keyring", "err", err)
+		return crypto.LoadOrCreateKEK(cfg.DataDir)
+	}
+	slog.Warn("using an encryption key persisted in the database; for stronger encryption-at-rest inject POSTRA_KEK from a secret manager (Vault/OpenBao)")
+	return crypto.KEKFromKeyringJSON(val)
 }
 
 func maskDSN(dsn string) string {
@@ -135,7 +193,7 @@ func maskDSN(dsn string) string {
 // openStorage selects the persistence backend. SQLite is the personal/
 // embedded default (with optional at-rest body encryption); PostgreSQL is
 // the server/multi-user backend with pgvector semantic search.
-func openStorage(cfg config.Config, kek *crypto.KEK) (application.Storage, error) {
+func openStorage(cfg config.Config) (application.Storage, error) {
 	driver := cfg.StorageDriver
 	postgresConfigured := strings.TrimSpace(cfg.PostgresDSN) != ""
 	if postgresConfigured && (driver == "" || driver == "sqlite") && os.Getenv("POSTRA_STORAGE_DRIVER") != "sqlite" {
@@ -153,9 +211,6 @@ func openStorage(cfg config.Config, kek *crypto.KEK) (application.Storage, error
 		if err != nil {
 			slog.Error("failed to open sqlite database", "error", err, "path", filepath.Join(cfg.DataDir, "postra.db"))
 			return nil, fmt.Errorf("sqlite storage open failed: %w", err)
-		}
-		if cfg.EncryptAtRest {
-			st.EnableEncryption(kek) // body-column encryption (SQLite only)
 		}
 		slog.Info("successfully opened sqlite storage", "postgres_dsn_configured", postgresConfigured)
 		return st, nil
@@ -183,9 +238,6 @@ func openStorage(cfg config.Config, kek *crypto.KEK) (application.Storage, error
 				"dsn_masked", maskDSN(cfg.PostgresDSN),
 			)
 			return nil, fmt.Errorf("postgres storage open failed: %w", err)
-		}
-		if cfg.EncryptAtRest {
-			st.EnableEncryption(kek) // body-column encryption (parity with sqlite)
 		}
 		slog.Info("successfully connected and migrated postgres storage", "postgres_dsn_configured", true)
 		return st, nil
@@ -466,6 +518,7 @@ func serve(configPath string) error {
 	go app.RunScheduler(schedCtx)
 	go app.RunRetryWorker(schedCtx)
 	go app.RunIdleWorker(schedCtx)
+	go app.RunJobReaper(schedCtx)
 
 	// REST, Web UI, and Streamable HTTP MCP share the primary listener. A
 	// separate MCPHTTPAddr remains optional for existing deployments.
@@ -555,17 +608,25 @@ func keyCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	kek, err := crypto.LoadOrCreateKEK(cfg.DataDir)
+	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
+		return err
+	}
+
+	ctx := context.Background()
+	store, err := openStorage(cfg)
+	if err != nil {
+		return err
+	}
+	if c, ok := store.(interface{ Close() }); ok {
+		defer c.Close()
+	}
+	kek, err := resolveKEK(ctx, cfg, store)
 	if err != nil {
 		return err
 	}
 
 	switch sub {
 	case "rotate":
-		driver := cfg.StorageDriver
-		if strings.TrimSpace(cfg.PostgresDSN) != "" && (driver == "" || driver == "sqlite") && os.Getenv("POSTRA_STORAGE_DRIVER") != "sqlite" {
-			driver = "postgres"
-		}
 		prev := kek.CurrentVersion()
 		nv, err := kek.Rotate()
 		if err != nil {
@@ -573,8 +634,8 @@ func keyCmd(args []string) error {
 		}
 		fmt.Printf("rotated KEK: v%d -> v%d\n", prev, nv)
 
-		secrets := secretstore.NewLocal(cfg.DataDir, kek)
-		ns, err := secrets.RewrapAll(context.Background())
+		// Rewrap DB-backed secrets under the new key version.
+		ns, err := secretstore.NewDB(store, kek).RewrapAll(ctx)
 		if err != nil {
 			return fmt.Errorf("rewrap secrets: %w", err)
 		}
@@ -591,29 +652,18 @@ func keyCmd(args []string) error {
 			}
 			fmt.Printf("rewrapped objects: %d\n", no)
 
-			var nb int
-			if driver == "postgres" {
-				store, err := pgstore.Open(context.Background(), cfg.PostgresDSN)
-				if err != nil {
-					return err
-				}
-				defer store.Close()
-				store.EnableEncryption(kek)
-				if nb, err = store.RewrapBodies(context.Background()); err != nil {
-					return fmt.Errorf("rewrap bodies: %w", err)
-				}
-			} else {
-				store, err := persistence.Open(filepath.Join(cfg.DataDir, "postra.db"))
-				if err != nil {
-					return err
-				}
-				defer store.Close()
-				store.EnableEncryption(kek)
-				if nb, err = store.RewrapBodies(context.Background()); err != nil {
-					return fmt.Errorf("rewrap bodies: %w", err)
-				}
+			if enc, ok := store.(interface{ EnableEncryption(*crypto.KEK) }); ok {
+				enc.EnableEncryption(kek)
 			}
-			fmt.Printf("rewrapped bodies: %d\n", nb)
+			if br, ok := store.(interface {
+				RewrapBodies(context.Context) (int, error)
+			}); ok {
+				nb, err := br.RewrapBodies(ctx)
+				if err != nil {
+					return fmt.Errorf("rewrap bodies: %w", err)
+				}
+				fmt.Printf("rewrapped bodies: %d\n", nb)
+			}
 		}
 
 		if *retireOld {
@@ -621,6 +671,18 @@ func keyCmd(args []string) error {
 				kek.RetireVersion(v)
 			}
 			fmt.Printf("retired key versions 1..%d\n", nv-1)
+		}
+
+		// Persist the rotated keyring so every replica picks up the new
+		// version. Skip when the key is externally managed (POSTRA_KEK).
+		if !kek.IsExternal() {
+			ring, err := kek.KeyringJSON()
+			if err != nil {
+				return err
+			}
+			if err := store.UpsertSettings(ctx, map[string]string{keyringSettingKey: ring}); err != nil {
+				return fmt.Errorf("persist rotated keyring: %w", err)
+			}
 		}
 		fmt.Println("key rotation complete")
 		return nil

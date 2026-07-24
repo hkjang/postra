@@ -51,6 +51,7 @@ type App struct {
 	leaderMu     sync.RWMutex
 	isLeader     bool
 	mcpPolicy    mcpPolicyState
+	syncSem      chan struct{} // bounds concurrent account syncs (OOM guard)
 }
 
 func New(cfg config.Config, store Storage, objects objectstore.Store,
@@ -59,11 +60,16 @@ func New(cfg config.Config, store Storage, objects objectstore.Store,
 		applyStoredSettings(&cfg, stored)
 	}
 	bg, cancel := context.WithCancel(context.Background())
+	syncConcurrency := cfg.Sync.MaxConcurrentSyncs
+	if syncConcurrency <= 0 {
+		syncConcurrency = 2
+	}
 	a := &App{
 		Cfg: cfg, Store: store, Objects: objects, Secrets: secrets,
 		POP3: pop3, SMTP: smtp, AI: meteredAI{inner: ai}, aiRaw: ai,
 		Scanner:    malware.NewHeuristic(cfg.Attachments),
 		background: bg, cancelAll: cancel,
+		syncSem:    make(chan struct{}, syncConcurrency),
 	}
 	candidate := make([]byte, len(a.oidcStateKey))
 	if _, err := rand.Read(candidate); err != nil {
@@ -253,6 +259,7 @@ func (a *App) dialInbound(ctx context.Context, acc *domain.MailAccount, purpose 
 		InsecureSkipVerify: acc.InsecureSkipVerify,
 		ConnectTimeoutSec:  a.Cfg.Sync.ConnectTimeoutSec,
 		CommandTimeoutSec:  a.Cfg.Sync.CommandTimeoutSec,
+		MaxMessageBytes:    a.Cfg.Sync.MaxMessageBytes,
 	})
 	if secret != nil {
 		secret.Zero()

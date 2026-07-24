@@ -58,7 +58,7 @@ func (Dialer) Dial(ctx context.Context, opts domain.InboundDialOptions) (domain.
 		return nil, fmt.Errorf("imap connect %s: %w", addr, err)
 	}
 
-	s := &session{conn: conn, r: bufio.NewReader(conn), commandTO: secondsOr(opts.CommandTimeoutSec, 60)}
+	s := &session{conn: conn, r: bufio.NewReader(conn), commandTO: secondsOr(opts.CommandTimeoutSec, 60), maxLiteral: opts.MaxMessageBytes}
 	greeting, err := s.readLine()
 	if err != nil {
 		conn.Close()
@@ -107,6 +107,7 @@ type session struct {
 	conn        net.Conn
 	r           *bufio.Reader
 	commandTO   time.Duration
+	maxLiteral  int64 // per-literal buffer cap (0 = unlimited); OOM guard
 	tagN        int
 	uidValidity string
 	exists      int
@@ -155,6 +156,12 @@ func (s *session) exec(format string, args ...any) ([]string, error) {
 				break
 			}
 			n, _ := strconv.Atoi(m[1])
+			// Reject an oversized literal before allocating for it. Allow a
+			// small margin over MaxMessageBytes for envelope/header framing so
+			// legitimate at-limit messages still fetch.
+			if s.maxLiteral > 0 && int64(n) > s.maxLiteral+(1<<20) {
+				return nil, fmt.Errorf("server literal %d bytes exceeds max message size %d", n, s.maxLiteral)
+			}
 			buf := make([]byte, n)
 			s.deadline()
 			if _, err := io.ReadFull(s.r, buf); err != nil {

@@ -9,19 +9,44 @@ import (
 	"postra/internal/platform/metrics"
 )
 
-// RecoverStaleJobs marks jobs interrupted by a restart as failed so they are
-// not reported as perpetually running. Called once at startup before the
-// scheduler begins (비기능 "Worker 장애 후 Job 재개").
+// staleJobGraceSeconds is how long a queued/running job may go without a
+// heartbeat (updated_at bump) before recovery treats it as abandoned. It must
+// comfortably exceed the sync heartbeat interval so a live worker — on this or
+// any other replica — is never mistaken for a dead one during a leader flap.
+var staleJobGraceSeconds = 90
+
+// RecoverStaleJobs fails jobs abandoned by a crashed/restarted worker while
+// sparing any that are still actively heart-beating. Safe to call repeatedly:
+// it runs on the leader-transition edge and periodically via the reaper
+// (비기능 "Worker 장애 후 Job 재개").
 func (a *App) RecoverStaleJobs(ctx context.Context) {
 	activeIDs := a.ActiveJobIDs()
-	n, err := a.Store.RecoverStaleJobsExcept(ctx, activeIDs)
+	n, err := a.Store.RecoverStaleJobsExcept(ctx, activeIDs, staleJobGraceSeconds)
 	if err != nil {
 		slog.Error("recover stale jobs failed", "err", err)
 		return
 	}
 	if n > 0 {
-		slog.Info("marked interrupted jobs as failed", "count", n)
-		a.audit(WithActor(ctx, "scheduler"), "jobs_recovered", "jobs", "ok", "interrupted on restart")
+		slog.Info("marked abandoned jobs as failed", "count", n)
+		a.audit(WithActor(ctx, "scheduler"), "jobs_recovered", "jobs", "ok", "no heartbeat past grace window")
+	}
+}
+
+// RunJobReaper periodically reaps jobs whose worker stopped heart-beating,
+// catching crashes that happen while this node is already the stable leader
+// (the leader-transition edge alone would miss them). Leader-only.
+func (a *App) RunJobReaper(ctx context.Context) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if a.IsLeader() {
+				a.RecoverStaleJobs(ctx)
+			}
+		}
 	}
 }
 

@@ -206,6 +206,11 @@ type SyncConfig struct {
 	// active POP3 accounts on this cadence (POP-001 주기 동기화). It also acts
 	// as the per-account minimum interval (POP-002). 0 disables auto-sync.
 	AutoSyncMinutes int `json:"auto_sync_minutes"`
+	// MaxConcurrentSyncs caps how many account syncs run at once across the
+	// process. Each in-flight sync buffers whole messages in memory, so an
+	// unbounded fan-out (many accounts × the scheduler tick + IMAP IDLE) can
+	// OOM the container. 0 falls back to the default (2).
+	MaxConcurrentSyncs int `json:"max_concurrent_syncs"`
 }
 
 func Default() Config {
@@ -235,10 +240,11 @@ func Default() Config {
 			MaskExternalPII: true,
 		},
 		Sync: SyncConfig{
-			MaxMessageBytes:   50 << 20,
-			MaxPerSync:        0, // 0 = unlimited / full sync
-			ConnectTimeoutSec: 15,
-			CommandTimeoutSec: 60,
+			MaxMessageBytes:    50 << 20,
+			MaxPerSync:         0, // 0 = unlimited / full sync
+			ConnectTimeoutSec:  15,
+			CommandTimeoutSec:  60,
+			MaxConcurrentSyncs: 2,
 		},
 
 		Send: SendConfig{

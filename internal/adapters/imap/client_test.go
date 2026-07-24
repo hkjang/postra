@@ -82,6 +82,71 @@ func fakeServer(t *testing.T, rejectLogin bool) (addr string) {
 	return ln.Addr().String()
 }
 
+// oversizeServer announces a BODY literal far larger than any allowed message,
+// exercising the client's OOM guard: the client must refuse before allocating.
+func oversizeServer(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		br := bufio.NewReader(conn)
+		io.WriteString(conn, "* OK IMAP4rev1 ready\r\n")
+		for {
+			line, err := br.ReadString('\n')
+			if err != nil {
+				return
+			}
+			sp := strings.SplitN(strings.TrimRight(line, "\r\n"), " ", 3)
+			if len(sp) < 2 {
+				continue
+			}
+			tag, cmd := sp[0], strings.ToUpper(sp[1])
+			switch cmd {
+			case "LOGIN":
+				fmt.Fprintf(conn, "%s OK\r\n", tag)
+			case "SELECT":
+				io.WriteString(conn, "* 1 EXISTS\r\n* OK [UIDVALIDITY 1] ok\r\n")
+				fmt.Fprintf(conn, "%s OK\r\n", tag)
+			case "FETCH":
+				// Announce a 4 GiB literal but send nothing — the guard must
+				// trip before io.ReadFull ever allocates or blocks.
+				io.WriteString(conn, "* 1 FETCH (UID 1 BODY[] {4294967296}\r\n")
+				fmt.Fprintf(conn, "%s OK\r\n", tag)
+			default:
+				fmt.Fprintf(conn, "%s OK\r\n", tag)
+			}
+		}
+	}()
+	return ln.Addr().String()
+}
+
+func TestIMAPRejectsOversizeLiteral(t *testing.T) {
+	addr := oversizeServer(t)
+	host, portStr, _ := net.SplitHostPort(addr)
+	var port int
+	fmt.Sscanf(portStr, "%d", &port)
+	sess, err := Dialer{}.Dial(context.Background(), domain.InboundDialOptions{
+		Host: host, Port: port, Security: domain.SecurityNone,
+		Username: "me", Password: domain.NewSecretHandle([]byte("pw")),
+		MaxMessageBytes: 50 << 20,
+	})
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer sess.Close()
+	if _, err := sess.Retrieve(context.Background(), 1); err == nil {
+		t.Fatal("expected Retrieve to reject an oversized literal, got nil error")
+	}
+}
+
 func dial(t *testing.T, addr string) domain.InboundSession {
 	t.Helper()
 	host, portStr, _ := net.SplitHostPort(addr)

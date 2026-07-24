@@ -606,23 +606,40 @@ func TestRawPreservation(t *testing.T) {
 	}
 }
 
-// 비기능 "Worker 장애 후 Job 재개": jobs stuck in running/queued after a
-// restart are marked failed by recovery, not left live forever.
+// 비기능 "Worker 장애 후 Job 재개": a job abandoned by a crashed/restarted
+// worker is marked failed, but a job that is still actively heart-beating must
+// NOT be — otherwise a leader-election flap or failover kills a live sync
+// (the false "interrupted" bug).
 func TestJobRecovery(t *testing.T) {
 	app, _, _, _ := newTestApp(t)
 	ctx := WithActor(context.Background(), "test")
-	// Simulate a job that was interrupted mid-flight.
-	stuck := &domain.Job{ID: "job_stuck", UserID: DefaultUserID, Type: "sync", Status: domain.JobRunning}
-	if err := app.Store.CreateJob(ctx, stuck); err != nil {
+
+	// A fresh, heart-beating job (updated_at within the grace window) is spared.
+	job := &domain.Job{ID: "job_live", UserID: DefaultUserID, Type: "sync", Status: domain.JobRunning}
+	if err := app.Store.CreateJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
 	app.RecoverStaleJobs(ctx)
-	got, err := app.GetJob(ctx, "job_stuck")
+	got, err := app.GetJob(ctx, "job_live")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != domain.JobRunning {
+		t.Fatalf("live running job was falsely reaped as %s; must stay running", got.Status)
+	}
+
+	// Once the heartbeat lapses past the grace window (simulated with grace=0),
+	// the same job is recovered as failed.
+	orig := staleJobGraceSeconds
+	staleJobGraceSeconds = 0
+	defer func() { staleJobGraceSeconds = orig }()
+	app.RecoverStaleJobs(ctx)
+	got, err = app.GetJob(ctx, "job_live")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.Status != domain.JobFailed {
-		t.Fatalf("stuck job status=%s, want failed", got.Status)
+		t.Fatalf("abandoned job status=%s, want failed", got.Status)
 	}
 }
 

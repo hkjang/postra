@@ -49,6 +49,13 @@ type Storage interface {
 	TouchCredential(ctx context.Context, ref domain.SecretRef)
 	SetCredentialStatus(ctx context.Context, ref domain.SecretRef, status string) error
 
+	// Secret envelopes: the shared, DB-backed secret value store (survives pod
+	// restarts and is visible to every replica, unlike a per-node local file).
+	PutSecretEnvelope(ctx context.Context, sec domain.StoredSecret) error
+	GetSecretEnvelope(ctx context.Context, ref string) (domain.StoredSecret, error)
+	MarkSecretEnvelopeRevoked(ctx context.Context, ref string) error
+	ListSecretEnvelopes(ctx context.Context) ([]domain.StoredSecret, error)
+
 	HasCheckpoint(ctx context.Context, accountID, uidl string) (bool, error)
 	AddCheckpoint(ctx context.Context, accountID, uidl, messageID string) error
 	StoredUIDLs(ctx context.Context, accountID string) (map[string]bool, error)
@@ -104,8 +111,12 @@ type Storage interface {
 
 	CreateJob(ctx context.Context, j *domain.Job) error
 	UpdateJob(ctx context.Context, j *domain.Job) error
+	// TouchJob bumps a running job's updated_at as a liveness heartbeat, so
+	// stale-job recovery can distinguish an actively-progressing job from one
+	// abandoned by a crashed worker.
+	TouchJob(ctx context.Context, id string) error
 	RecoverStaleJobs(ctx context.Context) (int64, error)
-	RecoverStaleJobsExcept(ctx context.Context, activeJobIDs []string) (int64, error)
+	RecoverStaleJobsExcept(ctx context.Context, activeJobIDs []string, graceSeconds int) (int64, error)
 	GetJob(ctx context.Context, userID, id string) (*domain.Job, error)
 	ListJobs(ctx context.Context, userID string, limit int) ([]domain.Job, error)
 

@@ -32,9 +32,10 @@ type Envelope struct {
 // are retained so existing envelopes decrypt until they are rewrapped
 // (§11.3 회전, SEC-KEY-010).
 type KEK struct {
-	keys    map[int][]byte // version -> key
-	current int
-	path    string // keyring file for persistence (empty when env-injected)
+	keys     map[int][]byte // version -> key
+	current  int
+	path     string // keyring file for persistence (empty when env-injected or DB-backed)
+	external bool   // true only for POSTRA_KEK: managed outside the app, cannot be rotated here
 }
 
 type keyringFile struct {
@@ -99,6 +100,106 @@ func LoadOrCreateKEK(dataDir string) (*KEK, error) {
 	return k, k.save()
 }
 
+// ReadKeyringJSON returns the serialized keyring currently on disk under
+// dataDir (keyring.json, or a migrated legacy kek.key), or "" if neither
+// exists. It never creates a keyring — it is used to seed the shared DB-backed
+// keyring from an existing single-node deployment so envelopes already
+// encrypted under that key stay decryptable across the upgrade.
+func ReadKeyringJSON(dataDir string) (string, error) {
+	ringPath := filepath.Join(dataDir, "keyring.json")
+	if b, err := os.ReadFile(ringPath); err == nil { // #nosec G304 -- app-owned data dir
+		var kf keyringFile
+		if err := json.Unmarshal(b, &kf); err != nil {
+			return "", fmt.Errorf("corrupt keyring %s: %w", ringPath, err)
+		}
+		return string(b), nil
+	}
+	legacy := filepath.Join(dataDir, "kek.key")
+	if b, err := os.ReadFile(legacy); err == nil { // #nosec G304 -- app-owned data dir
+		key, err := base64.StdEncoding.DecodeString(string(b))
+		if err != nil || len(key) != keySize {
+			return "", fmt.Errorf("corrupt KEK file %s", legacy)
+		}
+		kf := keyringFile{Current: 1, Keys: map[string]string{"1": base64.StdEncoding.EncodeToString(key)}}
+		out, _ := json.Marshal(kf)
+		return string(out), nil
+	}
+	return "", nil
+}
+
+// NewKEKFromEnv returns the KEK pinned in POSTRA_KEK (base64 of 32 bytes), or
+// found=false when the variable is unset. Key management is external in this
+// mode (e.g. Vault/OpenBao), so the keyring is a single, non-persisted version.
+func NewKEKFromEnv() (kek *KEK, found bool, err error) {
+	v := os.Getenv("POSTRA_KEK")
+	if v == "" {
+		return nil, false, nil
+	}
+	key, err := base64.StdEncoding.DecodeString(v)
+	if err != nil || len(key) != keySize {
+		return nil, true, errors.New("POSTRA_KEK must be base64 of 32 bytes")
+	}
+	return &KEK{keys: map[int][]byte{1: key}, current: 1, external: true}, true, nil
+}
+
+// KeyringJSON serializes the keyring for persistence (e.g. writing the shared
+// DB-backed keyring back after a rotation). It is base64-key material, so the
+// destination must be access-controlled.
+func (k *KEK) KeyringJSON() (string, error) {
+	kf := keyringFile{Current: k.current, Keys: map[string]string{}}
+	for v, key := range k.keys {
+		kf.Keys[fmt.Sprintf("%d", v)] = base64.StdEncoding.EncodeToString(key)
+	}
+	b, err := json.Marshal(kf)
+	return string(b), err
+}
+
+// IsExternal reports whether the key is managed outside the app (POSTRA_KEK).
+func (k *KEK) IsExternal() bool { return k.external }
+
+// NewRandomKeyringJSON generates a fresh single-version keyring and returns its
+// serialized JSON form. Used as the candidate value when persisting a shared
+// keyring into the database (GetOrCreateSetting), so the first node to start
+// mints the key and every other node reads the same one back.
+func NewRandomKeyringJSON() (string, error) {
+	key := make([]byte, keySize)
+	if _, err := rand.Read(key); err != nil {
+		return "", err
+	}
+	kf := keyringFile{Current: 1, Keys: map[string]string{"1": base64.StdEncoding.EncodeToString(key)}}
+	b, err := json.Marshal(kf)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+// KEKFromKeyringJSON reconstructs a KEK from its serialized keyring form. The
+// resulting KEK has no on-disk path, so save() is a no-op — persistence is the
+// caller's responsibility (e.g. a shared DB row). Used for the DB-backed
+// keyring that survives ephemeral container storage and is shared across
+// replicas.
+func KEKFromKeyringJSON(data string) (*KEK, error) {
+	var kf keyringFile
+	if err := json.Unmarshal([]byte(data), &kf); err != nil {
+		return nil, fmt.Errorf("corrupt keyring: %w", err)
+	}
+	k := &KEK{keys: map[int][]byte{}, current: kf.Current}
+	for vs, ks := range kf.Keys {
+		var v int
+		fmt.Sscanf(vs, "%d", &v)
+		key, err := base64.StdEncoding.DecodeString(ks)
+		if err != nil || len(key) != keySize {
+			return nil, fmt.Errorf("corrupt key v%s in keyring", vs)
+		}
+		k.keys[v] = key
+	}
+	if len(k.keys) == 0 || k.keys[k.current] == nil {
+		return nil, errors.New("keyring missing current key")
+	}
+	return k, nil
+}
+
 func (k *KEK) save() error {
 	if k.path == "" {
 		return nil // env-injected keyring is not persisted
@@ -124,7 +225,7 @@ func (k *KEK) CurrentVersion() int { return k.current }
 // Rotate generates a new current key version, retaining old versions for
 // decryption/rewrap. Returns the new version.
 func (k *KEK) Rotate() (int, error) {
-	if k.path == "" {
+	if k.external {
 		return 0, errors.New("cannot rotate an externally-injected KEK (POSTRA_KEK); rotate it in the key manager")
 	}
 	key := make([]byte, keySize)

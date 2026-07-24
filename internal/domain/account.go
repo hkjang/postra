@@ -101,6 +101,10 @@ type POP3DialOptions struct {
 	InsecureSkipVerify bool
 	ConnectTimeoutSec  int
 	CommandTimeoutSec  int
+	// MaxMessageBytes caps a single server literal (message body) the client
+	// will buffer. 0 = no limit. Guards against a server that under-reports
+	// RFC822.SIZE and then streams a huge body, which would OOM the process.
+	MaxMessageBytes int64
 }
 
 type POP3Dialer interface {

@@ -10,8 +10,8 @@ import (
 	"io"
 	"log/slog"
 	"runtime"
-	"runtime/debug"
 	"strings"
+	"time"
 
 	"postra/internal/adapters/mailparse"
 	"postra/internal/adapters/persistence"
@@ -121,6 +121,38 @@ func (a *App) runSync(ctx context.Context, job *domain.Job, acc *domain.MailAcco
 		}
 	}()
 
+	// Heartbeat: keep updated_at fresh for the whole run — including the time
+	// spent queued on the concurrency semaphore and the long dial + mailbox-
+	// enumeration phase (no per-message updates there) — so a leader-election
+	// flap or the periodic reaper never mistakes this live sync for an
+	// abandoned one. Stops when the sync returns. TouchJob updates queued jobs
+	// too, so a job waiting for a slot stays fresh.
+	hbCtx, stopHeartbeat := context.WithCancel(ctx)
+	defer stopHeartbeat()
+	go func() {
+		ticker := time.NewTicker(20 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-hbCtx.Done():
+				return
+			case <-ticker.C:
+				_ = a.Store.TouchJob(context.Background(), job.ID)
+			}
+		}
+	}()
+
+	// Bound concurrent syncs so a scheduler fan-out over many accounts (plus
+	// IMAP IDLE triggers) doesn't buffer many whole messages at once and OOM
+	// the container (which K8s then restarts, orphaning this very job).
+	select {
+	case a.syncSem <- struct{}{}:
+		defer func() { <-a.syncSem }()
+	case <-ctx.Done():
+		finish(domain.JobCancelled, "cancelled")
+		return
+	}
+
 	job.Status = domain.JobRunning
 	_ = a.Store.UpdateJob(ctx, job)
 
@@ -200,15 +232,12 @@ func (a *App) runSync(ctx context.Context, job *domain.Job, acc *domain.MailAcco
 			continue
 		}
 		fetched++
-		if rm.Size > 1<<20 || fetched%2 == 0 {
+		if fetched%20 == 0 {
 			runtime.GC()
-			debug.FreeOSMemory()
 		}
 		job.Progress = fmt.Sprintf("%d/%d", fetched, len(remote))
 		_ = a.Store.UpdateJob(ctx, job)
 	}
-	runtime.GC()
-	debug.FreeOSMemory()
 	_ = sess.Quit(ctx)
 	finish(domain.JobSucceeded, "")
 }

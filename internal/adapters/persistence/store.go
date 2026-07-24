@@ -197,6 +197,12 @@ CREATE TABLE IF NOT EXISTS credential_refs (
   provider TEXT NOT NULL, label TEXT, status TEXT NOT NULL DEFAULT 'active',
   version INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, last_used_at INTEGER);
 
+CREATE TABLE IF NOT EXISTS secrets (
+  ref TEXT PRIMARY KEY, owner_id TEXT NOT NULL, secret_type TEXT NOT NULL,
+  label TEXT, envelope TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1,
+  revoked INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+
 CREATE TABLE IF NOT EXISTS sync_checkpoints (
   account_id TEXT NOT NULL, uidl TEXT NOT NULL, message_id TEXT,
   synced_at INTEGER NOT NULL, PRIMARY KEY (account_id, uidl));
@@ -665,6 +671,64 @@ func (s *Store) SetAccountStatus(ctx context.Context, userID, id string, st doma
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE mail_accounts SET status=?, updated_at=? WHERE id=? AND user_id=?`, st, now(), id, userID)
 	return err
+}
+
+// ---------- secret envelopes (shared, DB-backed secret store) ----------
+
+func (s *Store) PutSecretEnvelope(ctx context.Context, sec domain.StoredSecret) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO secrets
+	 (ref,owner_id,secret_type,label,envelope,version,revoked,created_at,updated_at)
+	 VALUES (?,?,?,?,?,?,0,?,?)
+	 ON CONFLICT(ref) DO UPDATE SET envelope=excluded.envelope, version=excluded.version,
+	   label=excluded.label, revoked=0, updated_at=excluded.updated_at`,
+		sec.Ref, sec.Owner, string(sec.Type), sec.Label, sec.Envelope, sec.Version, now(), now())
+	return err
+}
+
+func (s *Store) GetSecretEnvelope(ctx context.Context, ref string) (domain.StoredSecret, error) {
+	var out domain.StoredSecret
+	var st string
+	var revoked int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT ref,owner_id,secret_type,label,envelope,version,revoked FROM secrets WHERE ref=?`, ref).
+		Scan(&out.Ref, &out.Owner, &st, &out.Label, &out.Envelope, &out.Version, &revoked)
+	if errors.Is(err, sql.ErrNoRows) {
+		return out, domain.ErrNotFound
+	}
+	if err != nil {
+		return out, err
+	}
+	out.Type = domain.SecretType(st)
+	out.Revoked = revoked != 0
+	return out, nil
+}
+
+func (s *Store) MarkSecretEnvelopeRevoked(ctx context.Context, ref string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE secrets SET revoked=1, envelope='', updated_at=? WHERE ref=?`, now(), ref)
+	return err
+}
+
+func (s *Store) ListSecretEnvelopes(ctx context.Context) ([]domain.StoredSecret, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT ref,owner_id,secret_type,label,envelope,version,revoked FROM secrets WHERE revoked=0`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.StoredSecret
+	for rows.Next() {
+		var sec domain.StoredSecret
+		var st string
+		var revoked int
+		if err := rows.Scan(&sec.Ref, &sec.Owner, &st, &sec.Label, &sec.Envelope, &sec.Version, &revoked); err != nil {
+			return nil, err
+		}
+		sec.Type = domain.SecretType(st)
+		sec.Revoked = revoked != 0
+		out = append(out, sec)
+	}
+	return out, rows.Err()
 }
 
 // ---------- credential refs ----------
@@ -1676,35 +1740,43 @@ func (s *Store) UpdateJob(ctx context.Context, j *domain.Job) error {
 	return err
 }
 
+// TouchJob bumps a running job's updated_at as a liveness heartbeat.
+func (s *Store) TouchJob(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE jobs SET updated_at=? WHERE id=? AND status IN ('queued','running')`, now(), id)
+	return err
+}
+
 // RecoverStaleJobs marks jobs left in queued/running (e.g. after a crash)
 // as failed so they are not reported as live forever. The scheduler can then
 // re-enqueue eligible work (비기능 "Worker 장애 후 Job 재개").
 func (s *Store) RecoverStaleJobs(ctx context.Context) (int64, error) {
-	return s.RecoverStaleJobsExcept(ctx, nil)
+	return s.RecoverStaleJobsExcept(ctx, nil, 0)
 }
 
-func (s *Store) RecoverStaleJobsExcept(ctx context.Context, activeJobIDs []string) (int64, error) {
-	if len(activeJobIDs) == 0 {
-		res, err := s.db.ExecContext(ctx,
-			`UPDATE jobs SET status='failed', error='interrupted (process restart)', updated_at=?
-			 WHERE status IN ('queued','running')`, now())
-		if err != nil {
-			return 0, err
-		}
-		n, _ := res.RowsAffected()
-		return n, nil
-	}
-
-	placeholders := make([]string, len(activeJobIDs))
+// RecoverStaleJobsExcept fails queued/running jobs that are no longer being
+// worked on. A job is spared when (a) its ID is in activeJobIDs (running on
+// this node) or (b) graceSeconds > 0 and its updated_at is within the grace
+// window (a live worker on any node is still heart-beating it). This is what
+// keeps a leader-election flap or failover from killing an in-flight sync.
+func (s *Store) RecoverStaleJobsExcept(ctx context.Context, activeJobIDs []string, graceSeconds int) (int64, error) {
 	args := []any{now()}
-	for i, id := range activeJobIDs {
-		placeholders[i] = "?"
+	where := "status IN ('queued','running')"
+	if graceSeconds > 0 {
+		where += " AND updated_at < ?"
+		args = append(args, now()-int64(graceSeconds))
+	}
+	for _, id := range activeJobIDs {
 		args = append(args, id)
 	}
-
-	query := fmt.Sprintf(`UPDATE jobs SET status='failed', error='interrupted (process restart)', updated_at=?
-		 WHERE status IN ('queued','running') AND id NOT IN (%s)`, strings.Join(placeholders, ","))
-
+	if len(activeJobIDs) > 0 {
+		placeholders := make([]string, len(activeJobIDs))
+		for i := range activeJobIDs {
+			placeholders[i] = "?"
+		}
+		where += fmt.Sprintf(" AND id NOT IN (%s)", strings.Join(placeholders, ","))
+	}
+	query := "UPDATE jobs SET status='failed', error='interrupted (worker restart or failover)', updated_at=? WHERE " + where
 	res, err := s.db.ExecContext(ctx, query, args...)
 	if err != nil {
 		return 0, err

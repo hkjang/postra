@@ -96,6 +96,21 @@ type SecretStore interface {
 	Revoke(ctx context.Context, ref SecretRef) error
 }
 
+// StoredSecret is an envelope-encrypted secret persisted in the shared
+// database. Keeping the ciphertext alongside the CredentialRef that names it
+// (rather than in a per-node local file) is what lets a secret survive a pod
+// restart and be read by every replica (SEC-KEY-003: still only ciphertext at
+// rest; the plaintext never leaves an adapter after Acquire).
+type StoredSecret struct {
+	Ref      string
+	Owner    string
+	Type     SecretType
+	Label    string
+	Envelope string // JSON-encoded crypto.Envelope (ciphertext + wrapped DEK)
+	Version  int
+	Revoked  bool
+}
+
 // CredentialRef is the DB-visible metadata about a secret (never the value).
 type CredentialRef struct {
 	Ref        SecretRef  `json:"ref"`
