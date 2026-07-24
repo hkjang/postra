@@ -354,9 +354,17 @@ func (s *Server) oidcStart(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) oidcCallback(w http.ResponseWriter, r *http.Request) {
 	if oidcErr := r.URL.Query().Get("error"); oidcErr != "" {
+		// Keycloak puts the actionable reason in error_description (e.g.
+		// "Invalid scopes: groups", "Invalid parameter: redirect_uri"). Show and
+		// log it — "invalid_request" alone is undiagnosable.
+		desc := r.URL.Query().Get("error_description")
+		slog.Warn("OIDC provider returned an authorization error", "error", oidcErr, "error_description", desc)
+		msg := "Keycloak 로그인이 실패했습니다: " + oidcErr
+		if desc != "" {
+			msg += " — " + desc
+		}
 		s.render(w, "login", http.StatusUnauthorized, map[string]any{
-			"Error":     "Keycloak 로그인이 취소되었거나 실패했습니다: " + oidcErr,
-			"LocalAuth": true, "OIDCEnabled": true,
+			"Error": msg, "LocalAuth": true, "OIDCEnabled": true,
 		})
 		return
 	}

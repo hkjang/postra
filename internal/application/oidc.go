@@ -37,10 +37,13 @@ func (a *App) oidcRuntime(ctx context.Context) (oidcRuntime, error) {
 	if err != nil {
 		return oidcRuntime{}, err
 	}
+	// Trim stored values: a stray trailing space/newline (easy to paste into a
+	// settings form) in issuer or redirect_uri makes Keycloak reject the
+	// request with "Invalid parameter: redirect_uri" / discovery failures.
 	rt := oidcRuntime{
-		Issuer: values[SettingOIDCIssuer], ClientID: values[SettingOIDCClientID],
-		SecretRef: values[SettingOIDCSecretRef], RedirectURL: values[SettingOIDCRedirectURL],
-		AdminGroup:    values[SettingOIDCAdminGroup],
+		Issuer: strings.TrimSpace(values[SettingOIDCIssuer]), ClientID: strings.TrimSpace(values[SettingOIDCClientID]),
+		SecretRef: strings.TrimSpace(values[SettingOIDCSecretRef]), RedirectURL: strings.TrimSpace(values[SettingOIDCRedirectURL]),
+		AdminGroup:    strings.TrimSpace(values[SettingOIDCAdminGroup]),
 		AutoProvision: boolSetting(values, SettingOIDCAutoProvision, a.Cfg.Auth.OIDCAutoProvision),
 		ClientSecret:  a.Cfg.Auth.OIDCClientSecret,
 	}
@@ -114,6 +117,13 @@ func (a *App) BeginOIDC(ctx context.Context) (string, OIDCFlow, error) {
 		RedirectURL: rt.RedirectURL, Scopes: []string{oidc.ScopeOpenID, "profile", "email", "groups"},
 	}
 	authURL := cfg.AuthCodeURL(state, oidc.Nonce(nonce), oauth2.S256ChallengeOption(verifier))
+	// Log exactly what we send so a Keycloak "Invalid Request" (which is almost
+	// always a redirect_uri that doesn't match a registered Valid Redirect URI,
+	// or a scope the client isn't allowed) can be compared against the client
+	// config without guesswork.
+	slog.Info("OIDC authorization request built",
+		"issuer", rt.Issuer, "client_id", rt.ClientID, "redirect_uri", rt.RedirectURL,
+		"scopes", cfg.Scopes)
 	return authURL, flow, nil
 }
 
@@ -195,7 +205,22 @@ func (a *App) CompleteOIDC(ctx context.Context, code string, flow OIDCFlow) (*do
 		RedirectURL: rt.RedirectURL, Scopes: []string{oidc.ScopeOpenID, "profile", "email", "groups"}}
 	tok, err := cfg.Exchange(ctx, code, oauth2.VerifierOption(flow.CodeVerifier))
 	if err != nil {
-		return nil, userErrf("OIDC code exchange failed")
+		// Surface the token endpoint's real reason. Keycloak returns
+		// {"error":"invalid_request"/"invalid_client"/..., "error_description":"..."}
+		// which oauth2 exposes as *oauth2.RetrieveError — the opaque generic
+		// message hid exactly the detail needed to fix redirect_uri / client
+		// secret / PKCE problems.
+		detail := err.Error()
+		var re *oauth2.RetrieveError
+		if errors.As(err, &re) {
+			detail = fmt.Sprintf("%s: %s", re.ErrorCode, re.ErrorDescription)
+			if re.ErrorCode == "" {
+				detail = strings.TrimSpace(string(re.Body))
+			}
+		}
+		slog.Warn("OIDC code exchange failed", "detail", detail, "redirect_url", rt.RedirectURL, "client_id", rt.ClientID)
+		a.recordIncident(domain.SeverityError, "oidc", "OIDC 토큰 교환 실패", detail)
+		return nil, userErrf("OIDC 코드 교환 실패: %s", detail)
 	}
 	rawIDToken, ok := tok.Extra("id_token").(string)
 	if !ok {
@@ -203,7 +228,9 @@ func (a *App) CompleteOIDC(ctx context.Context, code string, flow OIDCFlow) (*do
 	}
 	idToken, err := provider.Verifier(&oidc.Config{ClientID: rt.ClientID}).Verify(ctx, rawIDToken)
 	if err != nil {
-		return nil, userErrf("OIDC ID token verification failed")
+		slog.Warn("OIDC ID token verification failed", "detail", err.Error(), "client_id", rt.ClientID)
+		a.recordIncident(domain.SeverityError, "oidc", "OIDC ID 토큰 검증 실패", err.Error())
+		return nil, userErrf("OIDC ID 토큰 검증 실패: %s", err.Error())
 	}
 	var claims oidcClaims
 	if err := idToken.Claims(&claims); err != nil || claims.Subject == "" {
