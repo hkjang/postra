@@ -56,6 +56,14 @@ type Storage interface {
 	MarkSecretEnvelopeRevoked(ctx context.Context, ref string) error
 	ListSecretEnvelopes(ctx context.Context) ([]domain.StoredSecret, error)
 
+	// Object blobs: the shared, DB-backed object store (raw MIME + attachment
+	// bodies), so they survive restarts and are readable from every replica.
+	PutObject(ctx context.Context, kind, name string, blob []byte) error
+	GetObject(ctx context.Context, kind, name string) ([]byte, error)
+	DeleteObject(ctx context.Context, kind, name string) error
+	WalkObjects(ctx context.Context, fn func(kind, name string, blob []byte) error) error
+	OverwriteObject(ctx context.Context, kind, name string, blob []byte) error
+
 	HasCheckpoint(ctx context.Context, accountID, uidl string) (bool, error)
 	AddCheckpoint(ctx context.Context, accountID, uidl, messageID string) error
 	StoredUIDLs(ctx context.Context, accountID string) (map[string]bool, error)
@@ -65,6 +73,11 @@ type Storage interface {
 	DeleteMessage(ctx context.Context, userID, id string) ([]string, error)
 	GetMessage(ctx context.Context, userID, id string) (*domain.Message, error)
 	GetBody(ctx context.Context, userID, messageID string) (*domain.MessageBody, error)
+	// UIDLsNeedingBodyRepair lists uidl→messageID for messages whose body is
+	// missing/empty/undecryptable, and UpdateMessageBody rewrites a body (and
+	// search index) in place — together they power body-repair re-sync.
+	UIDLsNeedingBodyRepair(ctx context.Context, accountID string) (map[string]string, error)
+	UpdateMessageBody(ctx context.Context, messageID string, body *domain.MessageBody) error
 	ListAttachments(ctx context.Context, userID, messageID string) ([]domain.Attachment, error)
 	Search(ctx context.Context, q domain.SearchQuery) (*domain.SearchResult, error)
 	UpdateMessage(ctx context.Context, m *domain.Message) error
@@ -115,6 +128,10 @@ type Storage interface {
 	// stale-job recovery can distinguish an actively-progressing job from one
 	// abandoned by a crashed worker.
 	TouchJob(ctx context.Context, id string) error
+	// FailStaleAccountJobs clears queued/running jobs for one account that have
+	// stopped heart-beating past the grace window (used to unstick a prior
+	// crashed sync when a new one starts).
+	FailStaleAccountJobs(ctx context.Context, accountID string, graceSeconds int) (int64, error)
 	RecoverStaleJobs(ctx context.Context) (int64, error)
 	RecoverStaleJobsExcept(ctx context.Context, activeJobIDs []string, graceSeconds int) (int64, error)
 	GetJob(ctx context.Context, userID, id string) (*domain.Job, error)

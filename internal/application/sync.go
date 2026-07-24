@@ -23,6 +23,10 @@ import (
 type SyncOptions struct {
 	MaxMessages int  `json:"max_messages,omitempty"`
 	FullSync    bool `json:"full_sync,omitempty"`
+	// RepairBodies re-fetches and rewrites the body of already-stored messages
+	// whose body is missing/empty/undecryptable (e.g. sealed under a key lost
+	// on restart), preserving message identity. No new messages are ingested.
+	RepairBodies bool `json:"repair_bodies,omitempty"`
 	// DeleteAfterFetch is intentionally absent from the MVP sync path:
 	// server-side deletion is a separate, approval-gated flow (§5.2).
 }
@@ -42,6 +46,14 @@ func (a *App) StartSync(ctx context.Context, accountID string, opts SyncOptions)
 	}
 	if _, loaded := a.syncLocks.LoadOrStore(accountID, struct{}{}); loaded {
 		return nil, userErrf("a sync for account %s is already running", accountID)
+	}
+
+	// Unstick a previous sync for this account that a crashed/restarted worker
+	// left "진행 중": holding the (fresh) in-memory lock means no live local
+	// sync exists, so any still-"running" DB job that stopped heart-beating is
+	// dead and safe to fail now instead of waiting for the periodic reaper.
+	if n, err := a.Store.FailStaleAccountJobs(ctx, accountID, staleJobGraceSeconds); err == nil && n > 0 {
+		slog.Info("cleared stale sync job on new sync start", "account", accountID, "count", n)
 	}
 
 	job := &domain.Job{
@@ -130,7 +142,7 @@ func (a *App) runSync(ctx context.Context, job *domain.Job, acc *domain.MailAcco
 	hbCtx, stopHeartbeat := context.WithCancel(ctx)
 	defer stopHeartbeat()
 	go func() {
-		ticker := time.NewTicker(20 * time.Second)
+		ticker := time.NewTicker(15 * time.Second)
 		defer ticker.Stop()
 		for {
 			select {
@@ -198,6 +210,15 @@ func (a *App) runSync(ctx context.Context, job *domain.Job, acc *domain.MailAcco
 		remote[i], remote[j] = remote[j], remote[i]
 	}
 
+	// Body-repair mode re-fetches only messages whose stored body is missing or
+	// undecryptable and rewrites them in place — no new ingestion.
+	if opts.RepairBodies {
+		a.runBodyRepair(ctx, sess, acc, remote, job, &stats)
+		_ = sess.Quit(ctx)
+		finish(domain.JobSucceeded, "")
+		return
+	}
+
 	maxN := a.Cfg.Sync.MaxPerSync
 	if opts.FullSync || opts.MaxMessages < 0 {
 		maxN = 0
@@ -240,6 +261,65 @@ func (a *App) runSync(ctx context.Context, job *domain.Job, acc *domain.MailAcco
 	}
 	_ = sess.Quit(ctx)
 	finish(domain.JobSucceeded, "")
+}
+
+// runBodyRepair re-fetches messages whose stored body is missing/undecryptable
+// and rewrites the body in place. It reuses the freshly enumerated mailbox
+// (seq→uidl) so no UID-FETCH is needed, and preserves message identity so
+// labels, collaboration, and analyses survive the repair.
+func (a *App) runBodyRepair(ctx context.Context, sess domain.POP3Session, acc *domain.MailAccount,
+	remote []domain.RemoteMessage, job *domain.Job, stats *domain.SyncStats) {
+	repairSet, err := a.Store.UIDLsNeedingBodyRepair(ctx, acc.ID)
+	if err != nil {
+		slog.Error("body repair: list failed", "account", acc.ID, "err", err)
+		return
+	}
+	if len(repairSet) == 0 {
+		slog.Info("body repair: nothing to repair", "account", acc.ID)
+		return
+	}
+	slog.Info("body repair: candidates", "account", acc.ID, "count", len(repairSet))
+	done := 0
+	for _, rm := range remote {
+		if ctx.Err() != nil {
+			return
+		}
+		msgID, ok := repairSet[rm.UIDL]
+		if !ok {
+			continue
+		}
+		stats.Seen++
+		raw, ferr := a.fetchRaw(ctx, sess, rm.Number)
+		if ferr != nil {
+			stats.Failed++
+			continue
+		}
+		parsed := mailparse.Parse(raw)
+		body := &domain.MessageBody{
+			MessageID: msgID, TextBody: parsed.TextBody,
+			HTMLSanitized: parsed.HTMLSafe, Charset: parsed.Charset,
+		}
+		if uerr := a.Store.UpdateMessageBody(ctx, msgID, body); uerr != nil {
+			slog.Warn("body repair: update failed", "message", msgID, "err", uerr)
+			stats.Failed++
+			continue
+		}
+		done++
+		job.Progress = fmt.Sprintf("repair %d/%d", done, len(repairSet))
+		_ = a.Store.UpdateJob(ctx, job)
+	}
+	stats.Duplicate = int64(len(repairSet) - done) // untouched candidates (not found on server)
+	slog.Info("body repair: done", "account", acc.ID, "repaired", done, "candidates", len(repairSet))
+}
+
+// fetchRaw downloads one message's raw bytes, bounded by MaxMessageBytes.
+func (a *App) fetchRaw(ctx context.Context, sess domain.POP3Session, number int) ([]byte, error) {
+	rc, err := sess.Retrieve(ctx, number)
+	if err != nil {
+		return nil, err
+	}
+	defer rc.Close()
+	return io.ReadAll(io.LimitReader(rc, a.Cfg.Sync.MaxMessageBytes+1))
 }
 
 // ingestOne downloads, stores, and indexes a single message. Each message is

@@ -66,6 +66,12 @@ type MessageBody struct {
 	// resources (MIME-008/009); the untouched original stays in RawURI.
 	HTMLSanitized string `json:"html_sanitized,omitempty"`
 	Charset       string `json:"charset,omitempty"`
+	// Unavailable is set when the stored body could not be decoded/decrypted
+	// (e.g. the at-rest key changed on restart). The message is shown with
+	// UnavailableReason instead of a silent blank, and can be recovered by a
+	// body repair re-sync.
+	Unavailable       bool   `json:"unavailable,omitempty"`
+	UnavailableReason string `json:"unavailable_reason,omitempty"`
 }
 
 type Attachment struct {

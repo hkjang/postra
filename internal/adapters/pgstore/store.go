@@ -161,7 +161,26 @@ func maskDSN(dsn string) string {
 // is required for semantic search.
 func Open(ctx context.Context, dsn string) (*Store, error) {
 	slog.Info("pgstore: connecting to postgres", "dsn_masked", maskDSN(dsn))
-	pool, err := pgxpool.New(ctx, dsn)
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		slog.Error("pgstore: invalid postgres DSN", "error", err, "dsn_masked", maskDSN(dsn))
+		return nil, fmt.Errorf("postgres DSN parse failed: %w", err)
+	}
+	// The default pool (~4 conns) is easily starved during a mail sync — with
+	// no free connection, the readiness Ping times out and the pod is marked
+	// unready, which makes the ingress return 503 for /mcp (and everything
+	// else). Give background work headroom while leaving connections for
+	// probes and MCP/REST requests. Respect a pool size already set in the DSN.
+	if cfg.MaxConns < 15 {
+		cfg.MaxConns = 15
+	}
+	if cfg.MinConns < 2 {
+		cfg.MinConns = 2
+	}
+	cfg.MaxConnLifetime = time.Hour
+	cfg.MaxConnIdleTime = 5 * time.Minute
+	cfg.HealthCheckPeriod = 30 * time.Second
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		slog.Error("pgstore: postgres pool creation failed", "error", err, "reason", err.Error(), "dsn_masked", maskDSN(dsn))
 		return nil, fmt.Errorf("postgres pool creation failed: %w", err)
@@ -251,6 +270,10 @@ func (s *Store) migrate(ctx context.Context) error {
 			label TEXT, envelope TEXT NOT NULL, version INT NOT NULL DEFAULT 1,
 			revoked BOOL NOT NULL DEFAULT false,
 			created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS objects (
+			kind TEXT NOT NULL, name TEXT NOT NULL, blob BYTEA NOT NULL,
+			size BIGINT NOT NULL, created_at BIGINT NOT NULL,
+			PRIMARY KEY (kind, name))`,
 		`CREATE TABLE IF NOT EXISTS sync_checkpoints (
 			account_id TEXT NOT NULL, uidl TEXT NOT NULL, message_id TEXT, synced_at BIGINT NOT NULL,
 			PRIMARY KEY (account_id, uidl))`,
@@ -658,6 +681,56 @@ func (s *Store) SetAccountStatus(ctx context.Context, userID, id string, st doma
 
 // ---------- credentials ----------
 
+// ---------- objects (shared, DB-backed object store) ----------
+
+func (s *Store) PutObject(ctx context.Context, kind, name string, blob []byte) error {
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO objects (kind,name,blob,size,created_at) VALUES ($1,$2,$3,$4,$5)
+		 ON CONFLICT (kind,name) DO NOTHING`, kind, name, blob, len(blob), now())
+	return err
+}
+
+func (s *Store) GetObject(ctx context.Context, kind, name string) ([]byte, error) {
+	var blob []byte
+	err := s.pool.QueryRow(ctx, `SELECT blob FROM objects WHERE kind=$1 AND name=$2`, kind, name).Scan(&blob)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, domain.ErrNotFound
+	}
+	return blob, err
+}
+
+func (s *Store) DeleteObject(ctx context.Context, kind, name string) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM objects WHERE kind=$1 AND name=$2`, kind, name)
+	return err
+}
+
+func (s *Store) WalkObjects(ctx context.Context, fn func(kind, name string, blob []byte) error) error {
+	rows, err := s.pool.Query(ctx, `SELECT kind,name,blob FROM objects`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var kind, name string
+		var blob []byte
+		if err := rows.Scan(&kind, &name, &blob); err != nil {
+			return err
+		}
+		if err := fn(kind, name, blob); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
+func (s *Store) OverwriteObject(ctx context.Context, kind, name string, blob []byte) error {
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO objects (kind,name,blob,size,created_at) VALUES ($1,$2,$3,$4,$5)
+		 ON CONFLICT (kind,name) DO UPDATE SET blob=excluded.blob, size=excluded.size`,
+		kind, name, blob, len(blob), now())
+	return err
+}
+
 func (s *Store) PutCredentialRef(ctx context.Context, c domain.CredentialRef) error {
 	_, err := s.pool.Exec(ctx, `INSERT INTO credential_refs (ref,owner_id,secret_type,provider,label,status,version,created_at)
 	 VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (ref) DO UPDATE SET status=excluded.status, version=excluded.version`,
@@ -895,6 +968,69 @@ func (s *Store) GetBody(ctx context.Context, userID, messageID string) (*domain.
 		return nil, err
 	}
 	return &b, nil
+}
+
+// UIDLsNeedingBodyRepair returns uidl→messageID for account messages whose
+// stored body is missing, empty, or undecryptable (e.g. sealed under a key that
+// changed on restart).
+func (s *Store) UIDLsNeedingBodyRepair(ctx context.Context, accountID string) (map[string]string, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT m.id, m.uidl, b.text_body, b.html_sanitized
+		 FROM messages m LEFT JOIN message_bodies b ON b.message_id=m.id
+		 WHERE m.account_id=$1 AND m.uidl IS NOT NULL AND m.uidl != ''`, accountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var id, uidl string
+		var text, html *string
+		if err := rows.Scan(&id, &uidl, &text, &html); err != nil {
+			return nil, err
+		}
+		needs := false
+		if text == nil && html == nil {
+			needs = true
+		} else {
+			t, terr := s.openBody(id, "text", deref(text))
+			h, herr := s.openBody(id, "html", deref(html))
+			if terr != nil || herr != nil {
+				needs = true
+			} else if strings.TrimSpace(t) == "" && strings.TrimSpace(h) == "" {
+				needs = true
+			}
+		}
+		if needs {
+			out[uidl] = id
+		}
+	}
+	return out, rows.Err()
+}
+
+// UpdateMessageBody rewrites a message's stored body and search vector in place.
+func (s *Store) UpdateMessageBody(ctx context.Context, messageID string, body *domain.MessageBody) error {
+	sealedText, err := s.sealBody(messageID, "text", body.TextBody)
+	if err != nil {
+		return err
+	}
+	sealedHTML, err := s.sealBody(messageID, "html", body.HTMLSanitized)
+	if err != nil {
+		return err
+	}
+	if _, err := s.pool.Exec(ctx,
+		`INSERT INTO message_bodies (message_id,text_body,html_sanitized,charset) VALUES ($1,$2,$3,$4)
+		 ON CONFLICT (message_id) DO UPDATE SET text_body=excluded.text_body,
+		   html_sanitized=excluded.html_sanitized, charset=excluded.charset`,
+		messageID, sealedText, sealedHTML, body.Charset); err != nil {
+		return err
+	}
+	// Refresh the message's search vector from subject + from + the new body.
+	_, err = s.pool.Exec(ctx,
+		`UPDATE messages SET search_tsv = to_tsvector('simple',
+		   coalesce(subject,'')||' '||coalesce(from_email,'')||' '||$2) WHERE id=$1`,
+		messageID, body.TextBody)
+	return err
 }
 
 func (s *Store) ListAttachments(ctx context.Context, userID, messageID string) ([]domain.Attachment, error) {
@@ -1579,6 +1715,21 @@ func (s *Store) TouchJob(ctx context.Context, id string) error {
 	_, err := s.pool.Exec(ctx,
 		`UPDATE jobs SET updated_at=$1 WHERE id=$2 AND status IN ('queued','running')`, now(), id)
 	return err
+}
+
+// FailStaleAccountJobs fails any queued/running job for an account that has not
+// heart-beat within the grace window. Called when a new sync starts for that
+// account, so a "진행 중" job orphaned by a crashed/restarted worker is cleared
+// immediately instead of lingering until the periodic reaper runs.
+func (s *Store) FailStaleAccountJobs(ctx context.Context, accountID string, graceSeconds int) (int64, error) {
+	ct, err := s.pool.Exec(ctx,
+		`UPDATE jobs SET status='failed', error='interrupted (worker restart or failover)', updated_at=$1
+		 WHERE account_id=$2 AND status IN ('queued','running') AND updated_at < $3`,
+		now(), accountID, now()-int64(graceSeconds))
+	if err != nil {
+		return 0, err
+	}
+	return ct.RowsAffected(), nil
 }
 
 func (s *Store) RecoverStaleJobs(ctx context.Context) (int64, error) {

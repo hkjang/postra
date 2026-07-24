@@ -643,6 +643,47 @@ func TestJobRecovery(t *testing.T) {
 	}
 }
 
+// Body repair: a stored message with an empty body is flagged and rewritten in
+// place, preserving its identity (the "제목만 수집됨" recovery path).
+func TestBodyRepairStoreMethods(t *testing.T) {
+	app, _, _, _ := newTestApp(t)
+	ctx := WithActor(context.Background(), "test")
+	acc := mustAccount(t, app)
+
+	msg := &domain.Message{
+		ID: "msg_r1", UserID: DefaultUserID, AccountID: acc.ID, UIDL: "1.100",
+		Subject: "hi", From: domain.Address{Email: "a@x"},
+		RawHash: "h1", RawURI: "mem://1", Date: 1, CreatedAt: 1,
+	}
+	if err := app.Store.InsertMessage(ctx, msg, &domain.MessageBody{MessageID: msg.ID}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	need, err := app.Store.UIDLsNeedingBodyRepair(ctx, acc.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if need["1.100"] != "msg_r1" {
+		t.Fatalf("empty-bodied message not flagged for repair: %v", need)
+	}
+
+	if err := app.Store.UpdateMessageBody(ctx, "msg_r1",
+		&domain.MessageBody{MessageID: "msg_r1", TextBody: "recovered text"}); err != nil {
+		t.Fatal(err)
+	}
+	b, err := app.Store.GetBody(ctx, DefaultUserID, "msg_r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.TextBody != "recovered text" {
+		t.Fatalf("body = %q, want %q", b.TextBody, "recovered text")
+	}
+	need2, _ := app.Store.UIDLsNeedingBodyRepair(ctx, acc.ID)
+	if _, still := need2["1.100"]; still {
+		t.Fatal("message still flagged for repair after body was restored")
+	}
+}
+
 // Scheduler tick syncs every active POP3 account once.
 func TestSchedulerSyncsActiveAccounts(t *testing.T) {
 	app, pop, _, _ := newTestApp(t)

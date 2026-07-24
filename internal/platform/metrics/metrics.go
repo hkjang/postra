@@ -59,6 +59,9 @@ var (
 	// POP3 ingest.
 	SyncTotal       = counter("pop3_sync_total", "POP3 sync jobs by terminal status.", "status")
 	MessagesFetched = plainCounter("pop3_messages_fetched_total", "New messages ingested via POP3.")
+	// BodyUnavailable counts message body reads that failed (e.g. the at-rest
+	// key changed on restart), so operators can spot and re-sync affected mail.
+	BodyUnavailable = plainCounter("message_body_unavailable_total", "Message body reads that could not be decoded/decrypted.")
 
 	// AI provider.
 	AIRequests = counter("ai_requests_total", "AI provider calls by op and result.", "op", "result")

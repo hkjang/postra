@@ -13,7 +13,7 @@ import (
 // heartbeat (updated_at bump) before recovery treats it as abandoned. It must
 // comfortably exceed the sync heartbeat interval so a live worker — on this or
 // any other replica — is never mistaken for a dead one during a leader flap.
-var staleJobGraceSeconds = 90
+var staleJobGraceSeconds = 60
 
 // RecoverStaleJobs fails jobs abandoned by a crashed/restarted worker while
 // sparing any that are still actively heart-beating. Safe to call repeatedly:

@@ -2,13 +2,39 @@ package application
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"strings"
 
 	"postra/internal/domain"
 	"postra/internal/platform/mask"
+	"postra/internal/platform/metrics"
 )
+
+// loadBody fetches a message body, turning a decode/decrypt failure into a
+// visible "unavailable" marker (plus a metric) rather than a silent blank. A
+// key change on restart made GetBody error, and callers used to swallow it —
+// so the message showed a subject with an empty body ("제목만 수집된" 것처럼
+// 보이던 증상). ErrNotFound means there is genuinely no body row (headers-only)
+// and stays nil.
+func (a *App) loadBody(ctx context.Context, userID, messageID string) *domain.MessageBody {
+	b, err := a.Store.GetBody(ctx, userID, messageID)
+	if err == nil {
+		return b
+	}
+	if errors.Is(err, domain.ErrNotFound) {
+		return nil
+	}
+	metrics.BodyUnavailable.Inc()
+	slog.Warn("message body unavailable", "message", messageID, "err", err)
+	return &domain.MessageBody{
+		MessageID:         messageID,
+		Unavailable:       true,
+		UnavailableReason: "본문을 불러올 수 없습니다 (at-rest 키 불일치 가능) — 본문 재동기화가 필요합니다.",
+	}
+}
 
 func (a *App) Search(ctx context.Context, q domain.SearchQuery) (*domain.SearchResult, error) {
 	q.UserID = userIDFrom(ctx)
@@ -45,7 +71,7 @@ func (a *App) getMessage(ctx context.Context, id string, includeBody, doMask boo
 	}
 	v := &MessageView{Message: *m}
 	if includeBody {
-		if b, err := a.Store.GetBody(ctx, userID, id); err == nil {
+		if b := a.loadBody(ctx, userID, id); b != nil {
 			if doMask {
 				b.TextBody, _ = mask.Mask(b.TextBody)
 				b.HTMLSanitized, _ = mask.Mask(b.HTMLSanitized)
@@ -88,9 +114,7 @@ func (a *App) GetThread(ctx context.Context, threadID string, includeBodies bool
 	for _, m := range msgs {
 		mv := MessageView{Message: m}
 		if includeBodies {
-			if b, err := a.Store.GetBody(ctx, userID, m.ID); err == nil {
-				mv.Body = b
-			}
+			mv.Body = a.loadBody(ctx, userID, m.ID)
 		}
 		tv.Messages = append(tv.Messages, mv)
 	}
@@ -326,9 +350,7 @@ func (a *App) GetThreadTimeline(ctx context.Context, threadID string) ([]Message
 	for i := range msgs {
 		m := msgs[i]
 		mv := MessageView{Message: m}
-		if b, err := a.Store.GetBody(ctx, userID, m.ID); err == nil {
-			mv.Body = b
-		}
+		mv.Body = a.loadBody(ctx, userID, m.ID)
 		if atts, err := a.Store.ListAttachments(ctx, userID, m.ID); err == nil {
 			mv.Attachments = atts
 		}

@@ -203,6 +203,11 @@ CREATE TABLE IF NOT EXISTS secrets (
   revoked INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
 
+CREATE TABLE IF NOT EXISTS objects (
+  kind TEXT NOT NULL, name TEXT NOT NULL, blob BLOB NOT NULL,
+  size INTEGER NOT NULL, created_at INTEGER NOT NULL,
+  PRIMARY KEY (kind, name));
+
 CREATE TABLE IF NOT EXISTS sync_checkpoints (
   account_id TEXT NOT NULL, uidl TEXT NOT NULL, message_id TEXT,
   synced_at INTEGER NOT NULL, PRIMARY KEY (account_id, uidl));
@@ -731,6 +736,56 @@ func (s *Store) ListSecretEnvelopes(ctx context.Context) ([]domain.StoredSecret,
 	return out, rows.Err()
 }
 
+// ---------- objects (shared, DB-backed object store) ----------
+
+func (s *Store) PutObject(ctx context.Context, kind, name string, blob []byte) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO objects (kind,name,blob,size,created_at) VALUES (?,?,?,?,?)
+		 ON CONFLICT(kind,name) DO NOTHING`, kind, name, blob, len(blob), now())
+	return err
+}
+
+func (s *Store) GetObject(ctx context.Context, kind, name string) ([]byte, error) {
+	var blob []byte
+	err := s.db.QueryRowContext(ctx, `SELECT blob FROM objects WHERE kind=? AND name=?`, kind, name).Scan(&blob)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, domain.ErrNotFound
+	}
+	return blob, err
+}
+
+func (s *Store) DeleteObject(ctx context.Context, kind, name string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM objects WHERE kind=? AND name=?`, kind, name)
+	return err
+}
+
+func (s *Store) WalkObjects(ctx context.Context, fn func(kind, name string, blob []byte) error) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT kind,name,blob FROM objects`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var kind, name string
+		var blob []byte
+		if err := rows.Scan(&kind, &name, &blob); err != nil {
+			return err
+		}
+		if err := fn(kind, name, blob); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
+func (s *Store) OverwriteObject(ctx context.Context, kind, name string, blob []byte) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO objects (kind,name,blob,size,created_at) VALUES (?,?,?,?,?)
+		 ON CONFLICT(kind,name) DO UPDATE SET blob=excluded.blob, size=excluded.size`,
+		kind, name, blob, len(blob), now())
+	return err
+}
+
 // ---------- credential refs ----------
 
 func (s *Store) PutCredentialRef(ctx context.Context, c domain.CredentialRef) error {
@@ -1028,6 +1083,71 @@ func (s *Store) GetBody(ctx context.Context, userID, messageID string) (*domain.
 	}
 	b.Charset = charset.String
 	return &b, nil
+}
+
+// UIDLsNeedingBodyRepair returns uidl→messageID for account messages whose
+// stored body is missing, empty, or undecryptable (e.g. sealed under a key
+// that changed on restart). Used by a body-repair re-sync to re-fetch only the
+// affected messages and rewrite their bodies in place.
+func (s *Store) UIDLsNeedingBodyRepair(ctx context.Context, accountID string) (map[string]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT m.id, m.uidl, b.text_body, b.html_sanitized
+		 FROM messages m LEFT JOIN message_bodies b ON b.message_id=m.id
+		 WHERE m.account_id=? AND m.uidl IS NOT NULL AND m.uidl != ''`, accountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var id, uidl string
+		var text, html sql.NullString
+		if err := rows.Scan(&id, &uidl, &text, &html); err != nil {
+			return nil, err
+		}
+		needs := false
+		if !text.Valid && !html.Valid {
+			needs = true // no body row at all
+		} else {
+			t, terr := s.openBody(id, "text", text.String)
+			h, herr := s.openBody(id, "html", html.String)
+			if terr != nil || herr != nil {
+				needs = true // sealed under a lost key
+			} else if strings.TrimSpace(t) == "" && strings.TrimSpace(h) == "" {
+				needs = true // nothing was extracted
+			}
+		}
+		if needs {
+			out[uidl] = id
+		}
+	}
+	return out, rows.Err()
+}
+
+// UpdateMessageBody rewrites a message's stored body (and search index) in
+// place — used by body repair so message identity (labels, collab, analysis)
+// is preserved rather than deleting and re-inserting.
+func (s *Store) UpdateMessageBody(ctx context.Context, messageID string, body *domain.MessageBody) error {
+	sealedText, err := s.sealBody(messageID, "text", body.TextBody)
+	if err != nil {
+		return err
+	}
+	sealedHTML, err := s.sealBody(messageID, "html", body.HTMLSanitized)
+	if err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO message_bodies (message_id,text_body,html_sanitized,charset) VALUES (?,?,?,?)
+		 ON CONFLICT(message_id) DO UPDATE SET text_body=excluded.text_body,
+		   html_sanitized=excluded.html_sanitized, charset=excluded.charset`,
+		messageID, sealedText, sealedHTML, body.Charset); err != nil {
+		return err
+	}
+	if s.fts {
+		// messages_fts stores plaintext body keyed by message_pk (= message id).
+		s.db.ExecContext(ctx, `UPDATE messages_fts SET text_body=? WHERE message_pk=?`, body.TextBody, messageID)
+	}
+	return nil
 }
 
 func (s *Store) ListAttachments(ctx context.Context, userID, messageID string) ([]domain.Attachment, error) {
@@ -1745,6 +1865,22 @@ func (s *Store) TouchJob(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE jobs SET updated_at=? WHERE id=? AND status IN ('queued','running')`, now(), id)
 	return err
+}
+
+// FailStaleAccountJobs fails any queued/running job for an account that has not
+// heart-beat within the grace window. Called when a new sync starts for that
+// account, so a "진행 중" job orphaned by a crashed/restarted worker is cleared
+// immediately instead of lingering until the periodic reaper runs.
+func (s *Store) FailStaleAccountJobs(ctx context.Context, accountID string, graceSeconds int) (int64, error) {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE jobs SET status='failed', error='interrupted (worker restart or failover)', updated_at=?
+		 WHERE account_id=? AND status IN ('queued','running') AND updated_at < ?`,
+		now(), accountID, now()-int64(graceSeconds))
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
 }
 
 // RecoverStaleJobs marks jobs left in queued/running (e.g. after a crash)

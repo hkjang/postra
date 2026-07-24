@@ -100,7 +100,7 @@ func loadApp(configPath string) (*application.App, config.Config, error) {
 	// shared database. In a multi-replica deployment the per-node /data is
 	// ephemeral, so a KEK/secret file kept there would differ on every pod and
 	// vanish on restart — the DB is the only durable, shared store.
-	store, err := openStorage(cfg)
+	store, driver, err := openStorage(cfg)
 	if err != nil {
 		return nil, cfg, err
 	}
@@ -119,9 +119,20 @@ func loadApp(configPath string) (*application.App, config.Config, error) {
 	if err != nil {
 		return nil, cfg, err
 	}
-	var objects objectstore.Store = local
+	// On Postgres (multi-replica), raw MIME + attachment blobs must live in the
+	// shared DB — a per-pod local directory is ephemeral and invisible to other
+	// replicas, so message bodies/attachments would vanish on restart. The local
+	// store stays as a read-fallback for objects written before this migration.
+	var raw objectstore.RawBackend = local
+	if driver == "postgres" {
+		if bs, ok := store.(objectstore.BlobStore); ok {
+			raw = objectstore.NewDB(bs, local)
+			slog.Info("object store: using shared database backend")
+		}
+	}
+	var objects objectstore.Store = raw
 	if cfg.EncryptAtRest {
-		objects = objectstore.NewEncrypted(local, kek)
+		objects = objectstore.NewEncrypted(raw, kek)
 	}
 
 	// DB-backed secret store: values survive restarts and are shared across
@@ -193,7 +204,7 @@ func maskDSN(dsn string) string {
 // openStorage selects the persistence backend. SQLite is the personal/
 // embedded default (with optional at-rest body encryption); PostgreSQL is
 // the server/multi-user backend with pgvector semantic search.
-func openStorage(cfg config.Config) (application.Storage, error) {
+func openStorage(cfg config.Config) (application.Storage, string, error) {
 	driver := cfg.StorageDriver
 	postgresConfigured := strings.TrimSpace(cfg.PostgresDSN) != ""
 	if postgresConfigured && (driver == "" || driver == "sqlite") && os.Getenv("POSTRA_STORAGE_DRIVER") != "sqlite" {
@@ -210,10 +221,10 @@ func openStorage(cfg config.Config) (application.Storage, error) {
 		st, err := persistence.Open(filepath.Join(cfg.DataDir, "postra.db"))
 		if err != nil {
 			slog.Error("failed to open sqlite database", "error", err, "path", filepath.Join(cfg.DataDir, "postra.db"))
-			return nil, fmt.Errorf("sqlite storage open failed: %w", err)
+			return nil, driver, fmt.Errorf("sqlite storage open failed: %w", err)
 		}
 		slog.Info("successfully opened sqlite storage", "postgres_dsn_configured", postgresConfigured)
-		return st, nil
+		return st, "sqlite", nil
 
 	case "postgres":
 		if !postgresConfigured {
@@ -223,7 +234,7 @@ func openStorage(cfg config.Config) (application.Storage, error) {
 				"postgres_dsn_configured", false,
 				"error", err,
 			)
-			return nil, err
+			return nil, driver, err
 		}
 		slog.Info("connecting to postgres storage",
 			"postgres_dsn_configured", true,
@@ -237,15 +248,15 @@ func openStorage(cfg config.Config) (application.Storage, error) {
 				"postgres_dsn_configured", true,
 				"dsn_masked", maskDSN(cfg.PostgresDSN),
 			)
-			return nil, fmt.Errorf("postgres storage open failed: %w", err)
+			return nil, driver, fmt.Errorf("postgres storage open failed: %w", err)
 		}
 		slog.Info("successfully connected and migrated postgres storage", "postgres_dsn_configured", true)
-		return st, nil
+		return st, "postgres", nil
 
 	default:
 		err := fmt.Errorf("unknown storage_driver %q (sqlite|postgres)", driver)
 		slog.Error("storage initialization failed", "error", err, "driver", driver)
-		return nil, err
+		return nil, driver, err
 	}
 }
 
@@ -301,6 +312,7 @@ func run(cmd string, args []string) error {
 	case "sync":
 		maxN := fs.Int("max", 0, "max messages this run (0 = full sync)")
 		fullSync := fs.Bool("full", false, "force full sync of all messages")
+		repairBodies := fs.Bool("repair-bodies", false, "re-fetch and rewrite bodies of stored messages whose body is missing/undecryptable")
 		account := fs.String("account", "", "account ID")
 		wait := fs.Bool("wait", false, "wait for completion")
 		fs.Parse(args)
@@ -312,7 +324,11 @@ func run(cmd string, args []string) error {
 			return err
 		}
 		ctx := application.WithActor(context.Background(), "cli")
-		opts := application.SyncOptions{MaxMessages: *maxN, FullSync: *fullSync || *maxN <= 0}
+		opts := application.SyncOptions{
+			MaxMessages:  *maxN,
+			FullSync:     *fullSync || (*maxN <= 0 && !*repairBodies),
+			RepairBodies: *repairBodies,
+		}
 		job, err := app.StartSync(ctx, *account, opts)
 
 		if err != nil {
@@ -613,7 +629,7 @@ func keyCmd(args []string) error {
 	}
 
 	ctx := context.Background()
-	store, err := openStorage(cfg)
+	store, driver, err := openStorage(cfg)
 	if err != nil {
 		return err
 	}
@@ -646,7 +662,13 @@ func keyCmd(args []string) error {
 			if err != nil {
 				return err
 			}
-			no, err := objectstore.NewEncrypted(local, kek).RewrapAll()
+			var raw objectstore.RawBackend = local
+			if driver == "postgres" {
+				if bs, ok := store.(objectstore.BlobStore); ok {
+					raw = objectstore.NewDB(bs, local)
+				}
+			}
+			no, err := objectstore.NewEncrypted(raw, kek).RewrapAll()
 			if err != nil {
 				return fmt.Errorf("rewrap objects: %w", err)
 			}

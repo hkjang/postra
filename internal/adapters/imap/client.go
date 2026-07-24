@@ -204,6 +204,11 @@ func (s *session) selectInbox() error {
 // ensureIndex enumerates the mailbox once (UID + size per sequence number) and
 // caches it. The stable per-message ID is "UIDVALIDITY.UID", which the sync
 // layer stores as the dedup checkpoint.
+// enumerateBatch bounds how many messages are enumerated per FETCH so the
+// whole-mailbox metadata response is never buffered in memory at once — a
+// single FETCH 1:N over a large mailbox was a primary OOM (pod restart) source.
+const enumerateBatch = 2000
+
 func (s *session) ensureIndex() error {
 	if s.indexed {
 		return nil
@@ -212,24 +217,30 @@ func (s *session) ensureIndex() error {
 	if s.exists == 0 {
 		return nil
 	}
-	lines, err := s.exec("FETCH 1:%d (UID RFC822.SIZE)", s.exists)
-	if err != nil {
-		return err
-	}
-	for _, l := range lines {
-		fm := reFetch.FindStringSubmatch(l)
-		if fm == nil {
-			continue
+	for start := 1; start <= s.exists; start += enumerateBatch {
+		end := start + enumerateBatch - 1
+		if end > s.exists {
+			end = s.exists
 		}
-		seq, _ := strconv.Atoi(fm[1])
-		rm := domain.RemoteMessage{Number: seq}
-		if m := reUID.FindStringSubmatch(l); m != nil {
-			rm.UIDL = s.uidValidity + "." + m[1]
+		lines, err := s.exec("FETCH %d:%d (UID RFC822.SIZE)", start, end)
+		if err != nil {
+			return err
 		}
-		if m := reSize.FindStringSubmatch(l); m != nil {
-			rm.Size, _ = strconv.ParseInt(m[1], 10, 64)
+		for _, l := range lines {
+			fm := reFetch.FindStringSubmatch(l)
+			if fm == nil {
+				continue
+			}
+			seq, _ := strconv.Atoi(fm[1])
+			rm := domain.RemoteMessage{Number: seq}
+			if m := reUID.FindStringSubmatch(l); m != nil {
+				rm.UIDL = s.uidValidity + "." + m[1]
+			}
+			if m := reSize.FindStringSubmatch(l); m != nil {
+				rm.Size, _ = strconv.ParseInt(m[1], 10, 64)
+			}
+			s.index = append(s.index, rm)
 		}
-		s.index = append(s.index, rm)
 	}
 	return nil
 }

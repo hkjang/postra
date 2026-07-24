@@ -20,11 +20,11 @@ import (
 // serialized crypto.Envelope. The AAD binds each object to its kind+hash so
 // envelopes cannot be swapped between slots.
 type Encrypted struct {
-	inner *Local
+	inner RawBackend
 	kek   *crypto.KEK
 }
 
-func NewEncrypted(inner *Local, kek *crypto.KEK) *Encrypted {
+func NewEncrypted(inner RawBackend, kek *crypto.KEK) *Encrypted {
 	return &Encrypted{inner: inner, kek: kek}
 }
 
