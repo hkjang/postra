@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"runtime"
+	"runtime/debug"
 	"strings"
 
 	"postra/internal/adapters/mailparse"
@@ -199,12 +200,15 @@ func (a *App) runSync(ctx context.Context, job *domain.Job, acc *domain.MailAcco
 			continue
 		}
 		fetched++
-		if fetched%10 == 0 {
+		if rm.Size > 1<<20 || fetched%2 == 0 {
 			runtime.GC()
+			debug.FreeOSMemory()
 		}
 		job.Progress = fmt.Sprintf("%d/%d", fetched, len(remote))
 		_ = a.Store.UpdateJob(ctx, job)
 	}
+	runtime.GC()
+	debug.FreeOSMemory()
 	_ = sess.Quit(ctx)
 	finish(domain.JobSucceeded, "")
 }
@@ -215,7 +219,11 @@ func (a *App) runSync(ctx context.Context, job *domain.Job, acc *domain.MailAcco
 func (a *App) ingestOne(ctx context.Context, sess domain.POP3Session, acc *domain.MailAccount,
 	rm domain.RemoteMessage, uidlSupported bool, stats *domain.SyncStats) (err error) {
 
+	var raw []byte
+	var parsed *mailparse.Parsed
 	defer func() {
+		raw = nil
+		parsed = nil
 		if r := recover(); r != nil {
 			slog.Error("ingestOne caught panic", "account", acc.ID, "uidl", rm.UIDL, "panic", r)
 			err = fmt.Errorf("ingest panic: %v", r)
@@ -226,7 +234,7 @@ func (a *App) ingestOne(ctx context.Context, sess domain.POP3Session, acc *domai
 	if err != nil {
 		return err
 	}
-	raw, err := io.ReadAll(io.LimitReader(rc, a.Cfg.Sync.MaxMessageBytes+1))
+	raw, err = io.ReadAll(io.LimitReader(rc, a.Cfg.Sync.MaxMessageBytes+1))
 	rc.Close()
 	if err != nil {
 		return err
@@ -247,7 +255,7 @@ func (a *App) ingestOne(ctx context.Context, sess domain.POP3Session, acc *domai
 		return nil
 	}
 
-	parsed := mailparse.Parse(raw)
+	parsed = mailparse.Parse(raw)
 	if parsed.ParseError != "" {
 		stats.ParseError++ // partial result still stored (MIME-004)
 	}
