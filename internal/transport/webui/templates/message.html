@@ -14,8 +14,17 @@
 </div>
 {{if $m.ParseError}}<div class="warn">부분 파싱: {{$m.ParseError}}</div>{{end}}
 <h2>본문</h2>
-{{if .View.Body}}
-  <div class="pre">{{.View.Body.TextBody}}</div>
+{{with .View.Body}}
+  {{if .Unavailable}}
+    <div class="warn">{{.UnavailableReason}}</div>
+  {{else if .HTMLSanitized}}
+    <article class="mail-body">{{mailHTML .HTMLSanitized}}</article>
+    {{if .TextBody}}<details class="mail-raw"><summary class="small muted">원문 텍스트 보기</summary><div class="pre">{{.TextBody}}</div></details>{{end}}
+  {{else if .TextBody}}
+    <article class="mail-body mail-body-text">{{mailText .TextBody}}</article>
+  {{else}}
+    <p class="muted">본문 없음.</p>
+  {{end}}
 {{else}}
   <p class="muted">본문 없음.</p>
 {{end}}

@@ -59,7 +59,9 @@ var funcs = template.FuncMap{
 		}
 		return time.Unix(unix, 0).Format("2006-01-02 15:04")
 	},
-	"size": humanSize,
+	"size":     humanSize,
+	"mailHTML": renderMailHTML,
+	"mailText": renderMailText,
 }
 
 // parseTemplates builds one template set per page (layout + page), so each
