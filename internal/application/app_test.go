@@ -684,6 +684,23 @@ func TestBodyRepairStoreMethods(t *testing.T) {
 	}
 }
 
+// guard must contain a panic so a bad background-task iteration degrades that
+// task instead of crashing the whole server (the v0.6.0→0.8.x restart
+// regression: new background goroutines whose panics aborted the process).
+func TestGuardContainsPanic(t *testing.T) {
+	if !guard("test", func() { panic("boom") }) {
+		t.Fatal("guard did not report the recovered panic")
+	}
+	if guard("test", func() {}) {
+		t.Fatal("guard reported a panic when none occurred")
+	}
+	ran := false
+	guard("test", func() { ran = true })
+	if !ran {
+		t.Fatal("guard did not run fn")
+	}
+}
+
 // Scheduler tick syncs every active POP3 account once.
 func TestSchedulerSyncsActiveAccounts(t *testing.T) {
 	app, pop, _, _ := newTestApp(t)

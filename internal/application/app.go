@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -400,13 +401,32 @@ func (a *App) setLeaderState(state bool) {
 	}
 }
 
+// guard runs fn with panic recovery. In Go, an unrecovered panic in ANY
+// goroutine aborts the whole process — which for a server means "the pod dies
+// and restarts". Every long-lived background worker (leader election, sync/
+// idle/retry/reaper loops) added since v0.6.0 must funnel its per-iteration
+// work through guard so a single bad tick degrades one task instead of killing
+// the server. Returns true if a panic was recovered.
+func guard(task string, fn func()) (recovered bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			recovered = true
+			slog.Error("background task panic recovered (server kept alive)",
+				"task", task, "panic", r, "stack", string(debug.Stack()))
+		}
+	}()
+	fn()
+	return
+}
+
 // onBecameLeader runs one-shot recovery when this node acquires leadership.
 func (a *App) onBecameLeader() {
 	a.workerGroup.Add(1)
 	go func() {
 		defer a.workerGroup.Done()
-		ctx := WithActor(a.background, "scheduler")
-		a.RecoverStaleJobs(ctx)
+		guard("job-recovery", func() {
+			a.RecoverStaleJobs(WithActor(a.background, "scheduler"))
+		})
 	}()
 }
 
@@ -421,7 +441,7 @@ func (a *App) startLeaderElectionLoop() {
 	go func() {
 		defer a.workerGroup.Done()
 
-		a.electLeader(context.Background())
+		guard("leader-election", func() { a.electLeader(context.Background()) })
 
 		ticker := time.NewTicker(8 * time.Second)
 		defer ticker.Stop()
@@ -432,7 +452,7 @@ func (a *App) startLeaderElectionLoop() {
 				a.releaseLease(context.Background())
 				return
 			case <-ticker.C:
-				a.electLeader(context.Background())
+				guard("leader-election", func() { a.electLeader(context.Background()) })
 			}
 		}
 	}()

@@ -149,7 +149,7 @@ func (a *App) runSync(ctx context.Context, job *domain.Job, acc *domain.MailAcco
 			case <-hbCtx.Done():
 				return
 			case <-ticker.C:
-				_ = a.Store.TouchJob(context.Background(), job.ID)
+				guard("sync-heartbeat", func() { _ = a.Store.TouchJob(context.Background(), job.ID) })
 			}
 		}
 	}()
