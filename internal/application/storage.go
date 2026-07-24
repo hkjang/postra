@@ -105,6 +105,7 @@ type Storage interface {
 	CreateJob(ctx context.Context, j *domain.Job) error
 	UpdateJob(ctx context.Context, j *domain.Job) error
 	RecoverStaleJobs(ctx context.Context) (int64, error)
+	RecoverStaleJobsExcept(ctx context.Context, activeJobIDs []string) (int64, error)
 	GetJob(ctx context.Context, userID, id string) (*domain.Job, error)
 	ListJobs(ctx context.Context, userID string, limit int) ([]domain.Job, error)
 

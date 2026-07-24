@@ -13,7 +13,8 @@ import (
 // not reported as perpetually running. Called once at startup before the
 // scheduler begins (비기능 "Worker 장애 후 Job 재개").
 func (a *App) RecoverStaleJobs(ctx context.Context) {
-	n, err := a.Store.RecoverStaleJobs(ctx)
+	activeIDs := a.ActiveJobIDs()
+	n, err := a.Store.RecoverStaleJobsExcept(ctx, activeIDs)
 	if err != nil {
 		slog.Error("recover stale jobs failed", "err", err)
 		return

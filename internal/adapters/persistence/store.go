@@ -1680,9 +1680,32 @@ func (s *Store) UpdateJob(ctx context.Context, j *domain.Job) error {
 // as failed so they are not reported as live forever. The scheduler can then
 // re-enqueue eligible work (비기능 "Worker 장애 후 Job 재개").
 func (s *Store) RecoverStaleJobs(ctx context.Context) (int64, error) {
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE jobs SET status='failed', error='interrupted (process restart)', updated_at=?
-		 WHERE status IN ('queued','running')`, now())
+	return s.RecoverStaleJobsExcept(ctx, nil)
+}
+
+func (s *Store) RecoverStaleJobsExcept(ctx context.Context, activeJobIDs []string) (int64, error) {
+	if len(activeJobIDs) == 0 {
+		res, err := s.db.ExecContext(ctx,
+			`UPDATE jobs SET status='failed', error='interrupted (process restart)', updated_at=?
+			 WHERE status IN ('queued','running')`, now())
+		if err != nil {
+			return 0, err
+		}
+		n, _ := res.RowsAffected()
+		return n, nil
+	}
+
+	placeholders := make([]string, len(activeJobIDs))
+	args := []any{now()}
+	for i, id := range activeJobIDs {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+
+	query := fmt.Sprintf(`UPDATE jobs SET status='failed', error='interrupted (process restart)', updated_at=?
+		 WHERE status IN ('queued','running') AND id NOT IN (%s)`, strings.Join(placeholders, ","))
+
+	res, err := s.db.ExecContext(ctx, query, args...)
 	if err != nil {
 		return 0, err
 	}

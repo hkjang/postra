@@ -431,6 +431,17 @@ func (a *App) startLeaderElectionLoop() {
 	}()
 }
 
+func (a *App) ActiveJobIDs() []string {
+	var ids []string
+	a.jobCancels.Range(func(key, value any) bool {
+		if id, ok := key.(string); ok {
+			ids = append(ids, id)
+		}
+		return true
+	})
+	return ids
+}
+
 func (a *App) electLeader(ctx context.Context) {
 	if !a.Cfg.WorkerEnabled {
 		a.setLeaderState(false)
@@ -443,7 +454,6 @@ func (a *App) electLeader(ctx context.Context) {
 	acquired, err := a.Store.TryAcquireLease(ctx, leaseKey, a.nodeID, leaseSec)
 	if err != nil {
 		slog.Error("app: leader election check failed", "error", err, "node_id", a.nodeID)
-		a.setLeaderState(false)
 		return
 	}
 	a.setLeaderState(acquired)

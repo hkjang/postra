@@ -1516,8 +1516,30 @@ func (s *Store) UpdateJob(ctx context.Context, j *domain.Job) error {
 }
 
 func (s *Store) RecoverStaleJobs(ctx context.Context) (int64, error) {
-	ct, err := s.pool.Exec(ctx, `UPDATE jobs SET status='failed', error='interrupted (process restart)', updated_at=$1
-	 WHERE status IN ('queued','running')`, now())
+	return s.RecoverStaleJobsExcept(ctx, nil)
+}
+
+func (s *Store) RecoverStaleJobsExcept(ctx context.Context, activeJobIDs []string) (int64, error) {
+	if len(activeJobIDs) == 0 {
+		ct, err := s.pool.Exec(ctx, `UPDATE jobs SET status='failed', error='interrupted (process restart)', updated_at=$1
+		 WHERE status IN ('queued','running')`, now())
+		if err != nil {
+			return 0, err
+		}
+		return ct.RowsAffected(), nil
+	}
+
+	placeholders := make([]string, len(activeJobIDs))
+	args := []any{now()}
+	for i, id := range activeJobIDs {
+		placeholders[i] = fmt.Sprintf("$%d", i+2)
+		args = append(args, id)
+	}
+
+	query := fmt.Sprintf(`UPDATE jobs SET status='failed', error='interrupted (process restart)', updated_at=$1
+		 WHERE status IN ('queued','running') AND id NOT IN (%s)`, strings.Join(placeholders, ","))
+
+	ct, err := s.pool.Exec(ctx, query, args...)
 	if err != nil {
 		return 0, err
 	}
