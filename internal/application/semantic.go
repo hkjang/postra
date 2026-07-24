@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 
@@ -44,6 +45,13 @@ func (a *App) BuildEmbeddings(ctx context.Context, accountID string, max int) (*
 }
 
 func (a *App) runBuildEmbeddings(ctx context.Context, job *domain.Job, accountID string, max int) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("runBuildEmbeddings caught panic", "job", job.ID, "panic", r)
+			job.Status, job.Error = domain.JobFailed, fmt.Sprintf("embed panic: %v", r)
+			_ = a.Store.UpdateJob(context.Background(), job)
+		}
+	}()
 	job.Status = domain.JobRunning
 	_ = a.Store.UpdateJob(ctx, job)
 

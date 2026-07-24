@@ -43,6 +43,11 @@ func (a *App) RunIdleWorker(ctx context.Context) {
 			accCopy := acc
 			a.workerGroup.Add(1)
 			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						slog.Error("idle worker panic", "account", accCopy.ID, "panic", r)
+					}
+				}()
 				defer a.workerGroup.Done()
 				a.idleLoop(accCtx, accCopy)
 			}()

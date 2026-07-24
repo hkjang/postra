@@ -95,15 +95,18 @@ func (s *LocalStore) Acquire(ctx context.Context, ref domain.SecretRef, purpose 
 	defer s.mu.Unlock()
 	m, err := s.load()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("secret store load failed: %w", err)
 	}
 	e, ok := m[string(ref)]
-	if !ok || e.Revoked {
-		return nil, fmt.Errorf("secret %s not available", ref)
+	if !ok || e == nil || e.Revoked {
+		return nil, fmt.Errorf("secret %s not available in secret store (re-enter password to update)", ref)
+	}
+	if e.Envelope == nil {
+		return nil, fmt.Errorf("secret %s envelope missing (re-enter password to update)", ref)
 	}
 	pt, err := s.kek.Decrypt(e.Envelope, aad(string(ref), e.Owner, e.Type))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("secret %s decryption failed (KEK/keyring changed on restart; re-enter password to update): %w", ref, err)
 	}
 	h := domain.NewSecretHandle(pt)
 	for i := range pt {
@@ -120,8 +123,9 @@ func (s *LocalStore) Rotate(ctx context.Context, ref domain.SecretRef, req domai
 		return err
 	}
 	e, ok := m[string(ref)]
-	if !ok || e.Revoked {
-		return fmt.Errorf("secret %s not available", ref)
+	if !ok || e == nil || e.Revoked {
+		e = &entry{Owner: "local", Type: domain.SecretMailPassword, Label: "Mail Password", Version: 1}
+		m[string(ref)] = e
 	}
 	env, err := s.kek.Encrypt(req.Value.Reveal(), aad(string(ref), e.Owner, e.Type))
 	req.Value.Zero()

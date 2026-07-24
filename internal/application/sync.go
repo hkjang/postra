@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"runtime"
 	"strings"
 
@@ -59,6 +60,11 @@ func (a *App) StartSync(ctx context.Context, accountID string, opts SyncOptions)
 	a.jobCancels.Store(job.ID, cancel)
 	a.workerGroup.Add(1)
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("sync worker panic", "account", accountID, "job", job.ID, "panic", r)
+			}
+		}()
 		defer a.workerGroup.Done()
 		defer a.syncLocks.Delete(accountID)
 		defer a.jobCancels.Delete(job.ID)
@@ -105,6 +111,14 @@ func (a *App) runSync(ctx context.Context, job *domain.Job, acc *domain.MailAcco
 		a.audit(context.Background(), "sync_finish", "account:"+acc.ID, string(status),
 			fmt.Sprintf("job:%s new=%d dup=%d failed=%d", job.ID, stats.New, stats.Duplicate, stats.Failed))
 	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			errStr := fmt.Sprintf("panic during sync: %v", r)
+			slog.Error("runSync caught panic", "account", acc.ID, "job", job.ID, "panic", r)
+			finish(domain.JobFailed, errStr)
+		}
+	}()
 
 	job.Status = domain.JobRunning
 	_ = a.Store.UpdateJob(ctx, job)
@@ -199,7 +213,14 @@ func (a *App) runSync(ctx context.Context, job *domain.Job, acc *domain.MailAcco
 // committed independently so an interruption never loses or duplicates
 // already-stored mail (POP-012, POP-015).
 func (a *App) ingestOne(ctx context.Context, sess domain.POP3Session, acc *domain.MailAccount,
-	rm domain.RemoteMessage, uidlSupported bool, stats *domain.SyncStats) error {
+	rm domain.RemoteMessage, uidlSupported bool, stats *domain.SyncStats) (err error) {
+
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("ingestOne caught panic", "account", acc.ID, "uidl", rm.UIDL, "panic", r)
+			err = fmt.Errorf("ingest panic: %v", r)
+		}
+	}()
 
 	rc, err := sess.Retrieve(ctx, rm.Number)
 	if err != nil {
