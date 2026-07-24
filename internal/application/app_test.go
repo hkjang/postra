@@ -688,16 +688,81 @@ func TestBodyRepairStoreMethods(t *testing.T) {
 // task instead of crashing the whole server (the v0.6.0→0.8.x restart
 // regression: new background goroutines whose panics aborted the process).
 func TestGuardContainsPanic(t *testing.T) {
-	if !guard("test", func() { panic("boom") }) {
+	app, _, _, _ := newTestApp(t)
+	if !app.guard("test", func() { panic("boom") }) {
 		t.Fatal("guard did not report the recovered panic")
 	}
-	if guard("test", func() {}) {
+	if app.guard("test", func() {}) {
 		t.Fatal("guard reported a panic when none occurred")
 	}
 	ran := false
-	guard("test", func() { ran = true })
+	app.guard("test", func() { ran = true })
 	if !ran {
 		t.Fatal("guard did not run fn")
+	}
+	// The recovered panic must have been recorded as a critical incident.
+	ctx := WithPrincipal(WithActor(context.Background(), "test"),
+		domain.Principal{UserID: DefaultUserID, Role: domain.RoleAdmin})
+	incs, err := app.AdminListIncidents(ctx, domain.IncidentFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, i := range incs {
+		if i.Component == "test" && i.Severity == domain.SeverityCritical {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("recovered panic was not recorded as a critical incident")
+	}
+}
+
+// Incidents dedup by fingerprint (recurring faults collapse into one row with
+// a rising count), resolve, and reopen on the next occurrence.
+func TestIncidentDedupResolveReopen(t *testing.T) {
+	app, _, _, _ := newTestApp(t)
+	admin := WithPrincipal(WithActor(context.Background(), "test"),
+		domain.Principal{UserID: DefaultUserID, LoginID: "admin", Role: domain.RoleAdmin})
+
+	app.recordIncident(domain.SeverityError, "sync", "connect failed", "detail-1", withIncidentAccount("acc1"))
+	app.recordIncident(domain.SeverityError, "sync", "connect failed", "detail-2", withIncidentAccount("acc1"))
+
+	syncOf := func(f domain.IncidentFilter) *domain.Incident {
+		incs, err := app.AdminListIncidents(admin, f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := range incs {
+			if incs[i].Component == "sync" {
+				return &incs[i]
+			}
+		}
+		return nil
+	}
+
+	got := syncOf(domain.IncidentFilter{})
+	if got == nil || got.Count != 2 {
+		t.Fatalf("expected one deduped sync incident with count=2, got %+v", got)
+	}
+
+	if err := app.AdminResolveIncident(admin, got.ID); err != nil {
+		t.Fatal(err)
+	}
+	if open := syncOf(domain.IncidentFilter{}); open != nil {
+		t.Fatalf("resolved incident still listed as open: %+v", open)
+	}
+
+	// A fresh occurrence after resolution opens a new incident (count resets).
+	app.recordIncident(domain.SeverityError, "sync", "connect failed", "detail-3")
+	reopened := syncOf(domain.IncidentFilter{})
+	if reopened == nil || reopened.Count != 1 || reopened.ID == got.ID {
+		t.Fatalf("expected a new open incident after resolve, got %+v", reopened)
+	}
+
+	// Non-admin is denied.
+	if _, err := app.AdminListIncidents(WithActor(context.Background(), "test"), domain.IncidentFilter{}); err == nil {
+		t.Fatal("expected non-admin incident listing to be denied")
 	}
 }
 

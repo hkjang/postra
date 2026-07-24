@@ -68,7 +68,7 @@ func parseTemplates() map[string]*template.Template {
 	pages := []string{"search", "message", "draft", "send", "sent", "login", "error",
 		"accounts", "account_new", "account", "compose", "analysis", "job",
 		"setup", "admin_users", "admin_settings", "mcp_keys"}
-	pages = append(pages, "admin_ai")
+	pages = append(pages, "admin_ai", "admin_incidents")
 	out := make(map[string]*template.Template, len(pages))
 	for _, p := range pages {
 		t := template.Must(template.New("layout").Funcs(funcs).
@@ -103,6 +103,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /ui/admin/users/{id}/delete", s.gate(s.adminUserDelete))
 	mux.HandleFunc("GET /ui/admin/settings", s.gate(s.adminSettings))
 	mux.HandleFunc("POST /ui/admin/settings", s.gate(s.adminSettingsSave))
+	mux.HandleFunc("GET /ui/admin/incidents", s.gate(s.adminIncidents))
+	mux.HandleFunc("POST /ui/admin/incidents/{id}/resolve", s.gate(s.adminIncidentResolve))
 	mux.HandleFunc("GET /ui/jobs/status", s.gate(s.jobsStatus))
 
 	mux.HandleFunc("GET /ui/admin/ai", s.gate(s.adminAI))
@@ -488,6 +490,38 @@ func csrfFromRequest(r *http.Request) string {
 		return c.Value
 	}
 	return ""
+}
+
+func (s *Server) adminIncidents(w http.ResponseWriter, r *http.Request) {
+	includeResolved := r.URL.Query().Get("resolved") == "true"
+	incs, err := s.app.AdminListIncidents(r.Context(), domain.IncidentFilter{
+		Severity:        domain.Severity(r.URL.Query().Get("severity")),
+		Component:       r.URL.Query().Get("component"),
+		IncludeResolved: includeResolved,
+	})
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	stats, err := s.app.AdminIncidentStats(r.Context())
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	s.render(w, "admin_incidents", http.StatusOK, map[string]any{
+		"Incidents":       incs,
+		"Stats":           stats,
+		"IncludeResolved": includeResolved,
+		"CSRF":            csrfFromRequest(r),
+	})
+}
+
+func (s *Server) adminIncidentResolve(w http.ResponseWriter, r *http.Request) {
+	if err := s.app.AdminResolveIncident(r.Context(), r.PathValue("id")); err != nil {
+		s.fail(w, err)
+		return
+	}
+	http.Redirect(w, r, "/ui/admin/incidents", http.StatusSeeOther)
 }
 
 func (s *Server) adminUsers(w http.ResponseWriter, r *http.Request) {

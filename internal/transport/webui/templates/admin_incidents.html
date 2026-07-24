@@ -1,0 +1,44 @@
+{{define "title"}}시스템 오류/장애{{end}}
+{{define "content"}}
+<div class="actions" style="justify-content:space-between">
+  <h1>시스템 오류/장애</h1>
+  <div>
+    {{if .IncludeResolved}}<a class="btn ghost" href="/ui/admin/incidents">미해결만 보기</a>
+    {{else}}<a class="btn ghost" href="/ui/admin/incidents?resolved=true">해결 포함 전체</a>{{end}}
+  </div>
+</div>
+
+<div class="card grid" style="grid-template-columns:repeat(5,1fr);gap:0.75rem;text-align:center">
+  <div><div style="font-size:1.6rem;font-weight:700;color:#dc2626">{{.Stats.OpenCritical}}</div><div class="small muted">Critical</div></div>
+  <div><div style="font-size:1.6rem;font-weight:700;color:#d97706">{{.Stats.OpenError}}</div><div class="small muted">Error</div></div>
+  <div><div style="font-size:1.6rem;font-weight:700;color:#6b7280">{{.Stats.OpenWarning}}</div><div class="small muted">Warning</div></div>
+  <div><div style="font-size:1.6rem;font-weight:700">{{.Stats.OpenTotal}}</div><div class="small muted">미해결 합계</div></div>
+  <div><div style="font-size:1.6rem;font-weight:700;color:#16a34a">{{.Stats.Resolved}}</div><div class="small muted">해결됨</div></div>
+</div>
+
+{{if not .Incidents}}
+<div class="card"><p class="muted">표시할 오류가 없습니다. 🎉</p></div>
+{{else}}
+<div class="card"><table>
+<thead><tr><th>심각도</th><th>구성요소</th><th>내용</th><th>횟수</th><th>최초</th><th>최근</th><th>상태</th></tr></thead>
+<tbody>{{range .Incidents}}<tr>
+  <td>
+    {{if eq (printf "%s" .Severity) "critical"}}<b style="color:#dc2626">CRITICAL</b>
+    {{else if eq (printf "%s" .Severity) "error"}}<b style="color:#d97706">ERROR</b>
+    {{else}}<span style="color:#6b7280">WARNING</span>{{end}}
+  </td>
+  <td><code>{{.Component}}</code>{{if .AccountID}}<br><span class="small muted">acct {{.AccountID}}</span>{{end}}{{if .JobID}}<br><span class="small muted">job {{.JobID}}</span>{{end}}</td>
+  <td style="max-width:38rem">
+    {{.Message}}
+    {{if .Detail}}<details><summary class="small muted">상세 (스택/원인)</summary><pre style="white-space:pre-wrap;overflow-x:auto;font-size:0.75rem">{{.Detail}}</pre></details>{{end}}
+  </td>
+  <td style="text-align:right"><b>{{.Count}}</b></td>
+  <td class="small muted">{{ts .FirstSeen}}</td>
+  <td class="small muted">{{ts .LastSeen}}</td>
+  <td>
+    {{if .Resolved}}<span class="small muted">해결됨<br>{{.ResolvedBy}}<br>{{ts .ResolvedAt}}</span>
+    {{else}}<form method="post" action="/ui/admin/incidents/{{.ID}}/resolve" onsubmit="return confirm('이 항목을 해결됨으로 표시하시겠습니까?')"><button class="ghost" type="submit">해결 처리</button></form>{{end}}
+  </td>
+</tr>{{end}}</tbody></table></div>
+{{end}}
+{{end}}

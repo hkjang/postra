@@ -41,6 +41,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/admin/users/{id}/password", s.adminResetPassword)
 	mux.HandleFunc("GET /api/admin/mcp-keys", s.adminListMCPKeys)
 	mux.HandleFunc("DELETE /api/admin/mcp-keys/{id}", s.adminRevokeMCPKey)
+	mux.HandleFunc("GET /api/admin/incidents", s.adminListIncidents)
+	mux.HandleFunc("POST /api/admin/incidents/{id}/resolve", s.adminResolveIncident)
 	mux.HandleFunc("GET /api/admin/settings", s.adminGetSettings)
 	mux.HandleFunc("PATCH /api/admin/settings", s.adminSaveSettings)
 	mux.HandleFunc("PUT /api/admin/ai", s.adminSaveAI)
@@ -215,6 +217,36 @@ func (s *Server) adminResetPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) adminListIncidents(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	f := domain.IncidentFilter{
+		Severity:        domain.Severity(q.Get("severity")),
+		Component:       q.Get("component"),
+		IncludeResolved: q.Get("resolved") == "true",
+		Limit:           limit,
+	}
+	incs, err := s.app.AdminListIncidents(r.Context(), f)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	stats, err := s.app.AdminIncidentStats(r.Context())
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"incidents": incs, "stats": stats})
+}
+
+func (s *Server) adminResolveIncident(w http.ResponseWriter, r *http.Request) {
+	if err := s.app.AdminResolveIncident(r.Context(), r.PathValue("id")); err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "resolved"})
 }
 
 func (s *Server) adminGetSettings(w http.ResponseWriter, r *http.Request) {

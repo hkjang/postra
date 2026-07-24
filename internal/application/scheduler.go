@@ -44,7 +44,7 @@ func (a *App) RunJobReaper(ctx context.Context) {
 			return
 		case <-ticker.C:
 			if a.IsLeader() {
-				guard("job-reaper", func() { a.RecoverStaleJobs(ctx) })
+				a.guard("job-reaper", func() { a.RecoverStaleJobs(ctx) })
 			}
 		}
 	}
@@ -67,7 +67,7 @@ func (a *App) RunScheduler(ctx context.Context) {
 	// so it runs even when auto-sync is disabled. Here we only kick an initial
 	// sync if this node is already the leader.
 	if a.IsLeader() {
-		guard("scheduler", func() { a.syncAllActive(ctx) })
+		a.guard("scheduler", func() { a.syncAllActive(ctx) })
 	}
 
 	for {
@@ -76,7 +76,7 @@ func (a *App) RunScheduler(ctx context.Context) {
 			return
 		case <-ticker.C:
 			if a.IsLeader() {
-				guard("scheduler", func() { a.syncAllActive(ctx) })
+				a.guard("scheduler", func() { a.syncAllActive(ctx) })
 			}
 		}
 	}
@@ -93,7 +93,7 @@ func (a *App) RunRetryWorker(ctx context.Context) {
 			return
 		case <-ticker.C:
 			if a.IsLeader() {
-				guard("retry-worker", func() {
+				a.guard("retry-worker", func() {
 					if n := a.ProcessRetries(ctx); n > 0 {
 						slog.Info("outbox retries processed", "count", n)
 					}

@@ -406,13 +406,16 @@ func (a *App) setLeaderState(state bool) {
 // and restarts". Every long-lived background worker (leader election, sync/
 // idle/retry/reaper loops) added since v0.6.0 must funnel its per-iteration
 // work through guard so a single bad tick degrades one task instead of killing
-// the server. Returns true if a panic was recovered.
-func guard(task string, fn func()) (recovered bool) {
+// the server. Recovered panics are logged AND recorded as a critical system
+// incident for admin reporting. Returns true if a panic was recovered.
+func (a *App) guard(task string, fn func()) (recovered bool) {
 	defer func() {
 		if r := recover(); r != nil {
 			recovered = true
+			stack := string(debug.Stack())
 			slog.Error("background task panic recovered (server kept alive)",
-				"task", task, "panic", r, "stack", string(debug.Stack()))
+				"task", task, "panic", r, "stack", stack)
+			a.recordIncident(domain.SeverityCritical, task, fmt.Sprintf("panic: %v", r), stack)
 		}
 	}()
 	fn()
@@ -424,7 +427,7 @@ func (a *App) onBecameLeader() {
 	a.workerGroup.Add(1)
 	go func() {
 		defer a.workerGroup.Done()
-		guard("job-recovery", func() {
+		a.guard("job-recovery", func() {
 			a.RecoverStaleJobs(WithActor(a.background, "scheduler"))
 		})
 	}()
@@ -441,7 +444,7 @@ func (a *App) startLeaderElectionLoop() {
 	go func() {
 		defer a.workerGroup.Done()
 
-		guard("leader-election", func() { a.electLeader(context.Background()) })
+		a.guard("leader-election", func() { a.electLeader(context.Background()) })
 
 		ticker := time.NewTicker(8 * time.Second)
 		defer ticker.Stop()
@@ -452,7 +455,7 @@ func (a *App) startLeaderElectionLoop() {
 				a.releaseLease(context.Background())
 				return
 			case <-ticker.C:
-				guard("leader-election", func() { a.electLeader(context.Background()) })
+				a.guard("leader-election", func() { a.electLeader(context.Background()) })
 			}
 		}
 	}()

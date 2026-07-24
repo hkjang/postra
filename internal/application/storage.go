@@ -14,6 +14,9 @@ type Storage interface {
 	// Ping verifies the backend is reachable (readiness probe).
 	Ping(ctx context.Context) error
 
+	// System incident tracking (major errors captured for admin reporting).
+	domain.IncidentStore
+
 	EnsureUser(ctx context.Context, id, loginID string) error
 	CreateUser(ctx context.Context, user *domain.User, passwordHash string) error
 	GetUser(ctx context.Context, id string) (*domain.User, error)

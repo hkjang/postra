@@ -62,13 +62,13 @@ func (a *App) RunIdleWorker(ctx context.Context) {
 		}
 	}
 
-	guard("idle-reconcile", reconcile)
+	a.guard("idle-reconcile", reconcile)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			guard("idle-reconcile", reconcile)
+			a.guard("idle-reconcile", reconcile)
 		}
 	}
 }

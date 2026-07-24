@@ -29,6 +29,10 @@ func (a *App) loadBody(ctx context.Context, userID, messageID string) *domain.Me
 	}
 	metrics.BodyUnavailable.Inc()
 	slog.Warn("message body unavailable", "message", messageID, "err", err)
+	// Stable message (no per-message ID) so all such failures collapse into one
+	// incident with a rising count instead of flooding the admin view.
+	a.recordIncident(domain.SeverityWarning, "message-body",
+		"본문 복호화/디코딩 실패 (at-rest 키 불일치 가능)", "message="+messageID+" err="+err.Error())
 	return &domain.MessageBody{
 		MessageID:         messageID,
 		Unavailable:       true,

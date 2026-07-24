@@ -208,6 +208,16 @@ CREATE TABLE IF NOT EXISTS objects (
   size INTEGER NOT NULL, created_at INTEGER NOT NULL,
   PRIMARY KEY (kind, name));
 
+CREATE TABLE IF NOT EXISTS system_incidents (
+  id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, severity TEXT NOT NULL,
+  component TEXT NOT NULL, message TEXT NOT NULL, detail TEXT,
+  count INTEGER NOT NULL DEFAULT 1,
+  first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL,
+  resolved INTEGER NOT NULL DEFAULT 0, resolved_at INTEGER, resolved_by TEXT,
+  account_id TEXT, job_id TEXT);
+CREATE INDEX IF NOT EXISTS idx_incidents_list ON system_incidents(resolved, last_seen DESC);
+CREATE INDEX IF NOT EXISTS idx_incidents_fp ON system_incidents(fingerprint, resolved);
+
 CREATE TABLE IF NOT EXISTS sync_checkpoints (
   account_id TEXT NOT NULL, uidl TEXT NOT NULL, message_id TEXT,
   synced_at INTEGER NOT NULL, PRIMARY KEY (account_id, uidl));
@@ -732,6 +742,125 @@ func (s *Store) ListSecretEnvelopes(ctx context.Context) ([]domain.StoredSecret,
 		sec.Type = domain.SecretType(st)
 		sec.Revoked = revoked != 0
 		out = append(out, sec)
+	}
+	return out, rows.Err()
+}
+
+// ---------- system incidents ----------
+
+func (s *Store) RecordIncident(ctx context.Context, inc *domain.Incident) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE system_incidents SET count=count+1, last_seen=?, detail=?, severity=?, message=?
+		 WHERE fingerprint=? AND resolved=0`,
+		inc.LastSeen, inc.Detail, string(inc.Severity), inc.Message, inc.Fingerprint)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		return nil
+	}
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO system_incidents
+		 (id,fingerprint,severity,component,message,detail,count,first_seen,last_seen,resolved,account_id,job_id)
+		 VALUES (?,?,?,?,?,?,?,?,?,0,?,?)`,
+		inc.ID, inc.Fingerprint, string(inc.Severity), inc.Component, inc.Message, inc.Detail,
+		inc.Count, inc.FirstSeen, inc.LastSeen, inc.AccountID, inc.JobID)
+	return err
+}
+
+func (s *Store) ListIncidents(ctx context.Context, f domain.IncidentFilter) ([]domain.Incident, error) {
+	q := `SELECT id,fingerprint,severity,component,message,COALESCE(detail,''),count,first_seen,last_seen,
+	 resolved,COALESCE(resolved_at,0),COALESCE(resolved_by,''),COALESCE(account_id,''),COALESCE(job_id,'')
+	 FROM system_incidents`
+	var conds []string
+	var args []any
+	if !f.IncludeResolved {
+		conds = append(conds, "resolved=0")
+	}
+	if f.Severity != "" {
+		conds = append(conds, "severity=?")
+		args = append(args, string(f.Severity))
+	}
+	if f.Component != "" {
+		conds = append(conds, "component=?")
+		args = append(args, f.Component)
+	}
+	if len(conds) > 0 {
+		q += " WHERE " + strings.Join(conds, " AND ")
+	}
+	q += " ORDER BY resolved ASC, last_seen DESC"
+	limit := f.Limit
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	q += fmt.Sprintf(" LIMIT %d", limit)
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanIncidents(rows)
+}
+
+func (s *Store) GetIncident(ctx context.Context, id string) (*domain.Incident, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id,fingerprint,severity,component,message,COALESCE(detail,''),count,first_seen,last_seen,
+		 resolved,COALESCE(resolved_at,0),COALESCE(resolved_by,''),COALESCE(account_id,''),COALESCE(job_id,'')
+		 FROM system_incidents WHERE id=?`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	list, err := scanIncidents(rows)
+	if err != nil {
+		return nil, err
+	}
+	if len(list) == 0 {
+		return nil, ErrNotFound
+	}
+	return &list[0], nil
+}
+
+func (s *Store) ResolveIncident(ctx context.Context, id, resolvedBy string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE system_incidents SET resolved=1, resolved_at=?, resolved_by=? WHERE id=? AND resolved=0`,
+		now(), resolvedBy, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) IncidentStats(ctx context.Context) (domain.IncidentStats, error) {
+	var st domain.IncidentStats
+	err := s.db.QueryRowContext(ctx, `SELECT
+	 COALESCE(SUM(CASE WHEN resolved=0 AND severity='critical' THEN 1 ELSE 0 END),0),
+	 COALESCE(SUM(CASE WHEN resolved=0 AND severity='error' THEN 1 ELSE 0 END),0),
+	 COALESCE(SUM(CASE WHEN resolved=0 AND severity='warning' THEN 1 ELSE 0 END),0),
+	 COALESCE(SUM(CASE WHEN resolved=0 THEN 1 ELSE 0 END),0),
+	 COALESCE(SUM(CASE WHEN resolved=1 THEN 1 ELSE 0 END),0)
+	 FROM system_incidents`).
+		Scan(&st.OpenCritical, &st.OpenError, &st.OpenWarning, &st.OpenTotal, &st.Resolved)
+	return st, err
+}
+
+func scanIncidents(rows *sql.Rows) ([]domain.Incident, error) {
+	var out []domain.Incident
+	for rows.Next() {
+		var inc domain.Incident
+		var sev string
+		var resolved int
+		if err := rows.Scan(&inc.ID, &inc.Fingerprint, &sev, &inc.Component, &inc.Message, &inc.Detail,
+			&inc.Count, &inc.FirstSeen, &inc.LastSeen, &resolved, &inc.ResolvedAt, &inc.ResolvedBy,
+			&inc.AccountID, &inc.JobID); err != nil {
+			return nil, err
+		}
+		inc.Severity = domain.Severity(sev)
+		inc.Resolved = resolved != 0
+		out = append(out, inc)
 	}
 	return out, rows.Err()
 }

@@ -123,6 +123,10 @@ func (a *App) runSync(ctx context.Context, job *domain.Job, acc *domain.MailAcco
 		metrics.MessagesFetched.Add(float64(stats.New))
 		a.audit(context.Background(), "sync_finish", "account:"+acc.ID, string(status),
 			fmt.Sprintf("job:%s new=%d dup=%d failed=%d", job.ID, stats.New, stats.Duplicate, stats.Failed))
+		if status == domain.JobFailed {
+			a.recordIncident(domain.SeverityError, "sync", errMsg, "",
+				withIncidentAccount(acc.ID), withIncidentJob(job.ID))
+		}
 	}
 
 	defer func() {
@@ -149,7 +153,7 @@ func (a *App) runSync(ctx context.Context, job *domain.Job, acc *domain.MailAcco
 			case <-hbCtx.Done():
 				return
 			case <-ticker.C:
-				guard("sync-heartbeat", func() { _ = a.Store.TouchJob(context.Background(), job.ID) })
+				a.guard("sync-heartbeat", func() { _ = a.Store.TouchJob(context.Background(), job.ID) })
 			}
 		}
 	}()
