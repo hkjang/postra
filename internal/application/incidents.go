@@ -51,6 +51,48 @@ func incidentFingerprint(component string, severity domain.Severity, message str
 	return hex.EncodeToString(sum[:16])
 }
 
+// ---------- process lifecycle (crash evidence) ----------
+
+// bootStateKeyPrefix namespaces the per-host boot sentinel in system_settings.
+// "running" means the host booted and has not shut down cleanly yet; "clean"
+// is written on graceful shutdown. A host that boots while its own sentinel
+// still says "running" was killed without warning (OOMKill, liveness-probe
+// kill, SIGKILL) — exactly the class of death that leaves no log and no
+// incident, which is why it must be detected after the fact.
+const bootStateKeyPrefix = "internal.boot_state."
+
+// IngestCrashReport records a fatal-error dump captured by debug.SetCrashOutput
+// during the previous run. Unlike guarded panics, fatal runtime errors
+// (concurrent map writes, unrecovered panics in third-party goroutines, ...)
+// kill the process before any incident can be written — the dump file is the
+// only evidence, so it is surfaced on the next boot.
+func (a *App) IngestCrashReport(detail string) {
+	a.recordIncident(domain.SeverityCritical, "process",
+		"서버가 런타임 치명 오류(fatal error)로 종료됨 — 이전 실행의 크래시 덤프", detail)
+}
+
+// NoteBootAndDetectUncleanShutdown marks this host as running and, if the
+// previous run on the same host never reached a clean shutdown, records a
+// critical incident. hadCrashReport suppresses the generic incident when the
+// crash dump already explains the death.
+func (a *App) NoteBootAndDetectUncleanShutdown(ctx context.Context, hostname string, hadCrashReport bool) {
+	key := bootStateKeyPrefix + hostname
+	if settings, err := a.Store.GetSettings(ctx); err == nil && settings[key] == "running" && !hadCrashReport {
+		a.recordIncident(domain.SeverityCritical, "process",
+			"비정상 종료 감지 — 이전 실행이 정상 종료 없이 중단됨 (OOMKill/liveness kill 가능성)",
+			"host="+hostname+"; 크래시 덤프가 없으므로 Go 런타임 오류가 아니라 외부 강제 종료로 추정: "+
+				"K8s라면 kubectl describe pod에서 lastState.terminated.reason(OOMKilled 여부)과 "+
+				"livenessProbe 대상(/api/livez 권장, /api/healthz는 DB 의존이라 부하 시 kill 유발)을 확인하세요.")
+	}
+	_ = a.Store.UpsertSettings(ctx, map[string]string{key: "running"})
+}
+
+// MarkCleanShutdown records that this host exited gracefully, so the next boot
+// does not report an unclean shutdown.
+func (a *App) MarkCleanShutdown(ctx context.Context, hostname string) {
+	_ = a.Store.UpsertSettings(ctx, map[string]string{bootStateKeyPrefix + hostname: "clean"})
+}
+
 // ---------- admin surface ----------
 
 func (a *App) AdminListIncidents(ctx context.Context, f domain.IncidentFilter) ([]domain.Incident, error) {

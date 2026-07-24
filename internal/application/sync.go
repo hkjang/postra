@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -76,6 +77,9 @@ func (a *App) StartSync(ctx context.Context, accountID string, opts SyncOptions)
 		defer func() {
 			if r := recover(); r != nil {
 				slog.Error("sync worker panic", "account", accountID, "job", job.ID, "panic", r)
+				a.recordIncident(domain.SeverityCritical, "sync-worker",
+					fmt.Sprintf("panic: %v", r), string(debug.Stack()),
+					withIncidentAccount(accountID), withIncidentJob(job.ID))
 			}
 		}()
 		defer a.workerGroup.Done()

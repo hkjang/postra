@@ -18,6 +18,8 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -509,6 +511,28 @@ func serve(configPath string) error {
 
 	warnIfNonLoopback(cfg)
 
+	// Crash evidence pipeline: deaths that bypass every panic guard (fatal
+	// runtime errors, OOMKill, liveness-probe kills) leave no incident — so
+	// capture fatal-error dumps to a file, surface the previous run's dump on
+	// boot, and detect boots whose prior run never shut down cleanly.
+	hostname, _ := os.Hostname()
+	crashPath := filepath.Join(cfg.DataDir, "crash.log")
+	hadCrash := false
+	if b, rerr := os.ReadFile(crashPath); rerr == nil && len(strings.TrimSpace(string(b))) > 0 {
+		hadCrash = true
+		app.IngestCrashReport(string(b))
+		_ = os.Rename(crashPath, crashPath+".old")
+		slog.Error("previous run crashed with a fatal runtime error; dump recorded as incident", "file", crashPath+".old")
+	}
+	if f, oerr := os.OpenFile(crashPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600); oerr == nil {
+		if serr := debug.SetCrashOutput(f, debug.CrashOptions{}); serr != nil {
+			slog.Warn("fatal-error capture unavailable", "err", serr)
+		}
+		f.Close() // SetCrashOutput duplicates the FD
+	}
+	app.NoteBootAndDetectUncleanShutdown(context.Background(), hostname, hadCrash)
+	applyCgroupMemoryLimit()
+
 	// OpenTelemetry tracing (OTLP/HTTP). No-op unless enabled + endpoint set.
 	if cfg.TelemetryEnabled {
 		shutdown, terr := telemetry.Init(context.Background(), "postra", build.Version)
@@ -586,7 +610,36 @@ func serve(configPath string) error {
 		if mcpSrv != nil {
 			mcpSrv.Shutdown(ctx)
 		}
+		app.MarkCleanShutdown(context.Background(), hostname)
 		return nil
+	}
+}
+
+// applyCgroupMemoryLimit sets Go's soft memory limit to ~85% of the container
+// memory limit so the GC works aggressively near the cgroup ceiling instead of
+// letting the kernel OOM-kill the process — an OOMKill leaves no log and no
+// incident, just a restarted pod. An explicit GOMEMLIMIT env var wins.
+func applyCgroupMemoryLimit() {
+	if os.Getenv("GOMEMLIMIT") != "" {
+		return
+	}
+	for _, p := range []string{"/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_in_bytes"} {
+		b, err := os.ReadFile(p) // #nosec G304 -- fixed kernel cgroup paths
+		if err != nil {
+			continue
+		}
+		s := strings.TrimSpace(string(b))
+		if s == "max" {
+			return // no container limit
+		}
+		n, err := strconv.ParseInt(s, 10, 64)
+		if err != nil || n <= 0 || n > 1<<60 {
+			return
+		}
+		lim := n * 85 / 100
+		debug.SetMemoryLimit(lim)
+		slog.Info("Go soft memory limit set from container cgroup", "cgroup_limit_bytes", n, "gomemlimit_bytes", lim)
+		return
 	}
 }
 

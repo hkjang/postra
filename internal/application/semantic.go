@@ -50,6 +50,8 @@ func (a *App) runBuildEmbeddings(ctx context.Context, job *domain.Job, accountID
 			slog.Error("runBuildEmbeddings caught panic", "job", job.ID, "panic", r)
 			job.Status, job.Error = domain.JobFailed, fmt.Sprintf("embed panic: %v", r)
 			_ = a.Store.UpdateJob(context.Background(), job)
+			a.recordIncident(domain.SeverityCritical, "embeddings",
+				fmt.Sprintf("panic: %v", r), "", withIncidentAccount(accountID), withIncidentJob(job.ID))
 		}
 	}()
 	job.Status = domain.JobRunning

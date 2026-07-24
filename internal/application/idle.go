@@ -2,7 +2,9 @@ package application
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"time"
 
 	"postra/internal/domain"
@@ -46,6 +48,9 @@ func (a *App) RunIdleWorker(ctx context.Context) {
 				defer func() {
 					if r := recover(); r != nil {
 						slog.Error("idle worker panic", "account", accCopy.ID, "panic", r)
+						a.recordIncident(domain.SeverityCritical, "idle-worker",
+							fmt.Sprintf("panic: %v", r), string(debug.Stack()),
+							withIncidentAccount(accCopy.ID))
 					}
 				}()
 				defer a.workerGroup.Done()
