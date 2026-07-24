@@ -22,6 +22,10 @@ type Storage interface {
 	GetUser(ctx context.Context, id string) (*domain.User, error)
 	GetUserByLogin(ctx context.Context, loginID string) (*domain.User, string, error)
 	GetUserByOIDC(ctx context.Context, issuer, subject string) (*domain.User, error)
+	// GetUserByEmail returns the single active user with this email, or
+	// ErrNotFound when there is no match or the match is ambiguous (used for
+	// safe OIDC account linking).
+	GetUserByEmail(ctx context.Context, email string) (*domain.User, error)
 	ListUsers(ctx context.Context) ([]domain.User, error)
 	UpdateUser(ctx context.Context, user *domain.User) error
 	SetUserPassword(ctx context.Context, userID, passwordHash string) error

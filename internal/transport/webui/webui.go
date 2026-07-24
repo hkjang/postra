@@ -372,6 +372,7 @@ func (s *Server) oidcCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	u, err := s.app.CompleteOIDC(application.WithActor(r.Context(), "oidc"), r.URL.Query().Get("code"), flow)
 	if err != nil {
+		slog.Warn("OIDC callback failed", "err", err) // surface the exact reason behind the 401
 		s.render(w, "login", http.StatusUnauthorized, map[string]any{"Error": err.Error(), "LocalAuth": true, "OIDCEnabled": true})
 		return
 	}

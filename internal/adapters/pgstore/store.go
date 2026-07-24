@@ -487,6 +487,32 @@ func (s *Store) GetUserByOIDC(ctx context.Context, issuer, subject string) (*dom
 	return scanUser(s.pool.QueryRow(ctx, `SELECT `+userCols+` FROM users WHERE oidc_issuer=$1 AND oidc_subject=$2`, issuer, subject))
 }
 
+func (s *Store) GetUserByEmail(ctx context.Context, email string) (*domain.User, error) {
+	email = strings.TrimSpace(email)
+	if email == "" {
+		return nil, ErrNotFound
+	}
+	rows, err := s.pool.Query(ctx, `SELECT `+userCols+` FROM users WHERE lower(email)=lower($1) AND email<>'' AND status='active' LIMIT 2`, email)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*domain.User
+	for rows.Next() {
+		var u domain.User
+		if err := rows.Scan(&u.ID, &u.LoginID, &u.DisplayName, &u.Email, &u.Role, &u.Status,
+			&u.AuthProvider, &u.OIDCIssuer, &u.OIDCSubject, &u.CreatedAt, &u.UpdatedAt, &u.LastLoginAt); err != nil {
+			return nil, err
+		}
+		uu := u
+		out = append(out, &uu)
+	}
+	if len(out) != 1 { // 0 = none, >1 = ambiguous; never guess
+		return nil, ErrNotFound
+	}
+	return out[0], nil
+}
+
 func (s *Store) ListUsers(ctx context.Context) ([]domain.User, error) {
 	rows, err := s.pool.Query(ctx, `SELECT `+userCols+` FROM users ORDER BY login_id`)
 	if err != nil {

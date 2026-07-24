@@ -766,6 +766,60 @@ func TestIncidentDedupResolveReopen(t *testing.T) {
 	}
 }
 
+// OIDC login for a pre-existing LOCAL account (the bootstrap admin has a login
+// but no email and no OIDC subject) must adopt that account — not 401 and not
+// duplicate it — preserving its admin role and making it resolvable by
+// (issuer,subject) thereafter.
+func TestOIDCLinksExistingLocalAdmin(t *testing.T) {
+	app, _, _, _ := newTestApp(t)
+	ctx := WithActor(context.Background(), "test")
+	admin := &domain.User{
+		ID: persistence.NewID("usr"), LoginID: "admin", DisplayName: "admin",
+		Role: domain.RoleAdmin, Status: domain.UserActive, AuthProvider: "local",
+	}
+	if err := app.Store.CreateUser(ctx, admin, ""); err != nil {
+		t.Fatal(err)
+	}
+	rt := oidcRuntime{Issuer: "https://kc/realms/x"}
+
+	linked := app.linkExistingLocalUser(ctx, rt, oidcClaims{Subject: "sub-123", PreferredUsername: "admin"})
+	if linked == nil || linked.ID != admin.ID {
+		t.Fatalf("expected to link existing admin, got %+v", linked)
+	}
+	if linked.Role != domain.RoleAdmin {
+		t.Fatalf("admin role lost on link: %s", linked.Role)
+	}
+	// Now resolvable directly by the OIDC identity (subsequent logins).
+	got, err := app.Store.GetUserByOIDC(ctx, rt.Issuer, "sub-123")
+	if err != nil || got.ID != admin.ID {
+		t.Fatalf("OIDC lookup after link failed: %v", err)
+	}
+	// A different subject claiming the same username must NOT hijack the
+	// now-federated account.
+	if app.linkExistingLocalUser(ctx, rt, oidcClaims{Subject: "other", PreferredUsername: "admin"}) != nil {
+		t.Fatal("must not re-link an already-federated account")
+	}
+}
+
+// Username match with a conflicting verified email must NOT link (takeover guard).
+func TestOIDCLinkRefusesEmailConflict(t *testing.T) {
+	app, _, _, _ := newTestApp(t)
+	ctx := WithActor(context.Background(), "test")
+	u := &domain.User{
+		ID: persistence.NewID("usr"), LoginID: "bob", Email: "bob@corp.local",
+		Role: domain.RoleUser, Status: domain.UserActive, AuthProvider: "local",
+	}
+	if err := app.Store.CreateUser(ctx, u, ""); err != nil {
+		t.Fatal(err)
+	}
+	rt := oidcRuntime{Issuer: "https://kc/realms/x"}
+	got := app.linkExistingLocalUser(ctx, rt,
+		oidcClaims{Subject: "s", PreferredUsername: "bob", Email: "attacker@evil.example", EmailVerified: true})
+	if got != nil {
+		t.Fatal("linked despite conflicting email — takeover guard failed")
+	}
+}
+
 // Scheduler tick syncs every active POP3 account once.
 func TestSchedulerSyncsActiveAccounts(t *testing.T) {
 	app, pop, _, _ := newTestApp(t)

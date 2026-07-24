@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"strings"
 	"time"
@@ -120,10 +121,24 @@ type oidcClaims struct {
 	Subject           string   `json:"sub"`
 	PreferredUsername string   `json:"preferred_username"`
 	Email             string   `json:"email"`
+	EmailVerified     bool     `json:"email_verified"`
 	Name              string   `json:"name"`
 	Groups            []string `json:"groups"`
 	AuthorizedParty   string   `json:"azp"`
 	Audience          any      `json:"aud"`
+}
+
+// oidcRole maps IdP group membership to a Postra role.
+func oidcRole(groups []string, adminGroup string) domain.UserRole {
+	if adminGroup == "" {
+		return domain.RoleUser
+	}
+	for _, g := range groups {
+		if strings.TrimPrefix(g, "/") == strings.TrimPrefix(adminGroup, "/") {
+			return domain.RoleAdmin
+		}
+	}
+	return domain.RoleUser
 }
 
 func (a *App) AuthenticateOIDCAccessToken(ctx context.Context, raw string) (domain.Principal, error) {
@@ -209,8 +224,18 @@ func (a *App) CompleteOIDC(ctx context.Context, code string, flow OIDCFlow) (*do
 	if !errors.Is(err, domain.ErrNotFound) {
 		return nil, err
 	}
+
+	// No (issuer,subject) match yet. Before treating this as a brand-new user,
+	// adopt a pre-existing LOCAL account (e.g. the bootstrap admin) that this
+	// person clearly owns, so IdP login uses that account instead of 401ing or
+	// creating a duplicate. This runs even when auto-provision is off, because
+	// linking an existing account is not provisioning a new one.
+	if linked := a.linkExistingLocalUser(ctx, rt, claims); linked != nil {
+		return linked, nil
+	}
+
 	if !rt.AutoProvision {
-		return nil, userErrf("OIDC user provisioning is disabled; contact an administrator")
+		return nil, userErrf("OIDC 사용자 자동 생성이 비활성화되어 있고, 연결할 기존 계정도 없습니다. 관리자에게 문의하세요 (사용자명/이메일이 기존 계정과 일치하는지 확인).")
 	}
 	loginID := strings.TrimSpace(claims.PreferredUsername)
 	if loginID == "" {
@@ -222,16 +247,9 @@ func (a *App) CompleteOIDC(ctx context.Context, code string, flow OIDCFlow) (*do
 	if _, _, err := a.Store.GetUserByLogin(ctx, loginID); err == nil {
 		loginID += "-" + shortSubject(claims.Subject)
 	}
-	role := domain.RoleUser
-	for _, group := range claims.Groups {
-		if strings.TrimPrefix(group, "/") == strings.TrimPrefix(rt.AdminGroup, "/") && rt.AdminGroup != "" {
-			role = domain.RoleAdmin
-			break
-		}
-	}
 	u = &domain.User{
 		ID: persistence.NewID("usr"), LoginID: loginID, DisplayName: claims.Name, Email: claims.Email,
-		Role: role, Status: domain.UserActive, AuthProvider: "oidc",
+		Role: oidcRole(claims.Groups, rt.AdminGroup), Status: domain.UserActive, AuthProvider: "oidc",
 		OIDCIssuer: rt.Issuer, OIDCSubject: claims.Subject, LastLoginAt: time.Now().Unix(),
 	}
 	if u.DisplayName == "" {
@@ -242,6 +260,64 @@ func (a *App) CompleteOIDC(ctx context.Context, code string, flow OIDCFlow) (*do
 	}
 	a.audit(WithPrincipal(ctx, principalFor(u, "oidc")), "user_provision", "user:"+u.ID, "ok", rt.Issuer)
 	return u, nil
+}
+
+// linkExistingLocalUser adopts a pre-existing LOCAL account for an OIDC login
+// that has no (issuer,subject) match yet. It links only accounts that are safe
+// to adopt: active, still local (not already federated to another IdP
+// identity), and matched by a trustworthy signal. On success the OIDC identity
+// is stored on that account so subsequent logins resolve directly, admin-group
+// membership can elevate the role, and the account keeps working (password
+// login stays available). Returns nil when nothing safe matches.
+func (a *App) linkExistingLocalUser(ctx context.Context, rt oidcRuntime, claims oidcClaims) *domain.User {
+	cand := a.oidcLinkCandidate(ctx, claims)
+	if cand == nil || cand.Status != domain.UserActive {
+		return nil
+	}
+	// Never hijack an account already federated to a (possibly different) IdP
+	// identity, and never adopt anything but a local account.
+	if cand.OIDCSubject != "" || cand.AuthProvider != "local" {
+		return nil
+	}
+	cand.OIDCIssuer, cand.OIDCSubject = rt.Issuer, claims.Subject
+	if cand.Email == "" {
+		cand.Email = claims.Email
+	}
+	if oidcRole(claims.Groups, rt.AdminGroup) == domain.RoleAdmin {
+		cand.Role = domain.RoleAdmin
+	}
+	cand.LastLoginAt = time.Now().Unix()
+	if err := a.Store.UpdateUser(ctx, cand); err != nil {
+		slog.Error("oidc: failed to link existing local account", "user", cand.ID, "err", err)
+		return nil
+	}
+	a.audit(WithPrincipal(ctx, principalFor(cand, "oidc")), "user_oidc_link", "user:"+cand.ID, "ok",
+		fmt.Sprintf("%s → login=%s", rt.Issuer, cand.LoginID))
+	return cand
+}
+
+// oidcLinkCandidate finds the local account an OIDC identity should adopt:
+// first a verified-email match, then preferred_username == login_id (which
+// covers the emailless bootstrap admin) — but only when the token does not
+// assert a *different* verified email for that username, to avoid takeover.
+func (a *App) oidcLinkCandidate(ctx context.Context, claims oidcClaims) *domain.User {
+	if claims.Email != "" && claims.EmailVerified {
+		if u, err := a.Store.GetUserByEmail(ctx, claims.Email); err == nil && u != nil {
+			return u
+		}
+	}
+	login := strings.TrimSpace(claims.PreferredUsername)
+	if login == "" {
+		return nil
+	}
+	u, _, err := a.Store.GetUserByLogin(ctx, login)
+	if err != nil || u == nil {
+		return nil
+	}
+	if u.Email != "" && claims.Email != "" && !strings.EqualFold(u.Email, claims.Email) {
+		return nil // username matches but emails disagree — refuse to link
+	}
+	return u
 }
 
 func shortSubject(subject string) string {
