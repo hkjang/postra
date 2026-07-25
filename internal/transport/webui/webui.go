@@ -128,6 +128,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /ui/messages/{id}", s.gate(s.message))
 	mux.HandleFunc("GET /ui/messages/{id}/attachments/{att}", s.gate(s.attachment))
 	mux.HandleFunc("POST /ui/messages/{id}/analyze", s.gate(s.analyze))
+	mux.HandleFunc("POST /ui/messages/{id}/suggest", s.gate(s.messageSuggest))
 	mux.HandleFunc("POST /ui/messages/{id}/draft", s.gate(s.messageDraft))
 	mux.HandleFunc("GET /ui/drafts/{id}", s.gate(s.draft))
 	mux.HandleFunc("POST /ui/drafts/{id}", s.gate(s.draftUpdate))
@@ -1003,6 +1004,25 @@ func (s *Server) message(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "message", http.StatusOK, map[string]any{"View": view, "Accounts": accounts})
 }
 
+// messageSuggest generates Smart Reply options and re-renders the message page
+// with them shown as pick-to-draft chips.
+func (s *Server) messageSuggest(w http.ResponseWriter, r *http.Request) {
+	view, err := s.app.GetMessage(r.Context(), r.PathValue("id"), true)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	accounts, _ := s.app.ListAccounts(r.Context())
+	data := map[string]any{"View": view, "Accounts": accounts}
+	sug, err := s.app.SuggestReplies(r.Context(), r.PathValue("id"))
+	if err != nil {
+		data["SuggestError"] = err.Error()
+	} else {
+		data["Suggestions"] = sug.Suggestions
+	}
+	s.render(w, "message", http.StatusOK, data)
+}
+
 func (s *Server) attachment(w http.ResponseWriter, r *http.Request) {
 	ack := r.URL.Query().Get("ack") == "true"
 	at, rc, err := s.app.GetAttachment(r.Context(), r.PathValue("id"), r.PathValue("att"), ack)
@@ -1053,6 +1073,9 @@ func (s *Server) messageDraft(w http.ResponseWriter, r *http.Request) {
 	}
 	dv, err := s.app.CreateDraft(r.Context(), application.CreateDraftInput{
 		AccountID: mv.Message.AccountID, Kind: kind, ReplyToMessageID: mv.Message.ID,
+		// A chosen Smart Reply suggestion arrives as body (user-authored, no
+		// re-generation); the free-form field stays AI instructions.
+		Body:         strings.TrimSpace(r.FormValue("body")),
 		Instructions: strings.TrimSpace(r.FormValue("instructions")),
 	})
 	if err != nil {

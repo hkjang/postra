@@ -108,6 +108,11 @@ JSON schema: {"subject": string, "body": string, "language": string}`,
 		task: `Rewrite the draft in the untrusted block according to the user instruction given above the block. Keep the factual content identical.
 JSON schema: {"subject": string, "body": string}`,
 	},
+	"smart_reply": {
+		system: "You are an email reply assistant. Respond with JSON only. Write short, ready-to-send replies in the SAME language as the email. Never invent facts, commitments, dates, numbers, or names that are not in the email; when a detail is unknown keep the wording general. Write natural prose — no placeholders like [Name] and no signature.",
+		task: `Draft 3 distinct, concise reply options (each 1–3 sentences) for the email in the untrusted block, covering the stances that fit the content — for example an affirmative/accepting reply, a reply that asks a clarifying question, and a brief holding or polite-decline reply.
+JSON schema: {"suggestions": [string, string, string]}`,
+	},
 }
 
 func init() {
@@ -311,19 +316,13 @@ func (a *App) AnswerQuestion(ctx context.Context, question, accountID string) (*
 	if strings.TrimSpace(question) == "" {
 		return nil, userErrf("question is empty")
 	}
-	res, err := a.Search(ctx, domain.SearchQuery{Text: question, AccountID: accountID, Limit: 5})
-	if err != nil {
-		return nil, err
-	}
-	if len(res.Messages) == 0 {
-		// keyword fallback: recent messages
-		res, err = a.Search(ctx, domain.SearchQuery{AccountID: accountID, Limit: 5})
-		if err != nil {
-			return nil, err
-		}
+	const topK = 6
+	msgs := a.retrieveForQuestion(ctx, question, accountID, topK)
+	if len(msgs) == 0 {
+		return nil, userErrf("답변할 근거가 될 메일을 찾지 못했습니다")
 	}
 	var sb strings.Builder
-	for _, m := range res.Messages {
+	for _, m := range msgs {
 		body, _ := a.Store.GetBody(ctx, userIDFrom(ctx), m.ID)
 		text := ""
 		if body != nil {
@@ -333,6 +332,30 @@ func (a *App) AnswerQuestion(ctx context.Context, question, accountID string) (*
 			m.ID, m.Subject, m.From.Email, fmtUnix(m.Date), text)
 	}
 	return a.runAnalysis(ctx, "question_answer", "query", "adhoc", "Question: "+question, sb.String())
+}
+
+// retrieveForquestion gathers the candidate messages for RAG question
+// answering. It prefers hybrid (FTS + semantic RRF) retrieval so a question
+// phrased differently from the mail still surfaces the right threads; it
+// degrades to plain keyword search when embeddings/AI are unavailable, and
+// finally to the most recent mail so the model always has some grounding.
+func (a *App) retrieveForQuestion(ctx context.Context, question, accountID string, limit int) []domain.Message {
+	if views, err := a.HybridSearch(ctx, HybridSearchOptions{
+		Query: question, AccountID: accountID, Limit: limit,
+	}); err == nil && len(views) > 0 {
+		out := make([]domain.Message, 0, len(views))
+		for _, v := range views {
+			out = append(out, v.Message)
+		}
+		return out
+	}
+	if res, err := a.Search(ctx, domain.SearchQuery{Text: question, AccountID: accountID, Limit: limit}); err == nil && len(res.Messages) > 0 {
+		return res.Messages
+	}
+	if res, err := a.Search(ctx, domain.SearchQuery{AccountID: accountID, Limit: limit}); err == nil {
+		return res.Messages
+	}
+	return nil
 }
 
 func fmtUnix(u int64) string {

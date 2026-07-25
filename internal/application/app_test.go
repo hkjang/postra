@@ -820,6 +820,38 @@ func TestOIDCLinkRefusesEmailConflict(t *testing.T) {
 	}
 }
 
+// Smart Reply returns parsed suggestions and — critically — sends the message
+// body only in the untrusted block, never in the instruction channel (AI-014).
+func TestSuggestReplies(t *testing.T) {
+	app, _, _, ai := newTestApp(t)
+	ai.response = `{"suggestions":["네, 참석하겠습니다.","일정 확인 후 다시 알려드리겠습니다.","이번에는 어렵습니다."]}`
+	ctx := WithActor(context.Background(), "test")
+	acc := mustAccount(t, app)
+
+	const marker = "내일 회의 참석 가능하신가요"
+	msg := &domain.Message{
+		ID: "msg_sr", UserID: DefaultUserID, AccountID: acc.ID, UIDL: "1.9",
+		Subject: "회의", From: domain.Address{Email: "a@x"}, RawHash: "h", RawURI: "mem://sr", Date: 1, CreatedAt: 1,
+	}
+	if err := app.Store.InsertMessage(ctx, msg, &domain.MessageBody{MessageID: "msg_sr", TextBody: marker + "?"}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := app.SuggestReplies(ctx, "msg_sr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Suggestions) != 3 {
+		t.Fatalf("want 3 suggestions, got %d: %v", len(out.Suggestions), out.Suggestions)
+	}
+	if !strings.Contains(ai.lastRequest.Untrusted, marker) {
+		t.Fatal("message body must be sent in the untrusted block")
+	}
+	if strings.Contains(ai.lastRequest.System, marker) || strings.Contains(ai.lastRequest.User, marker) {
+		t.Fatal("message body leaked into the instruction channel (prompt-injection risk)")
+	}
+}
+
 // Scheduler tick syncs every active POP3 account once.
 func TestSchedulerSyncsActiveAccounts(t *testing.T) {
 	app, pop, _, _ := newTestApp(t)

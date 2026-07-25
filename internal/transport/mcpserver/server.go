@@ -177,7 +177,7 @@ func toolCatalogSummary() map[string]any {
 		"ai": {"mail_summarize", "mail_classify", "mail_action_items_extract",
 			"mail_entities_extract", "mail_phishing_inspect", "mail_auth_inspect", "mail_thread_summarize",
 			"mail_question_answer", "mail_embeddings_build", "mail_semantic_search",
-			"mail_attachment_summarize", "mail_eval_prompt"},
+			"mail_attachment_summarize", "mail_eval_prompt", "mail_suggest_replies"},
 		"compose_send": {"mail_draft_create", "mail_draft_update", "mail_draft_rewrite",
 			"mail_send_preview", "mail_send_request_approval", "mail_send", "mail_outbound_status"},
 		"automation":    {"mail_rules_list", "mail_rule_create", "mail_rule_update", "mail_rule_delete", "mail_apply_rules"},
@@ -714,6 +714,20 @@ func registerAITools(s *mcp.Server, app *application.App) {
 			return nil, nil, err
 		}
 		return nil, an, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "mail_suggest_replies",
+		Description: "Suggest short, ready-to-send reply options for a message (the user picks/edits/sends; nothing is sent automatically).",
+		Annotations: aiAnn,
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct {
+		MessageID string `json:"message_id" jsonschema:"the message to suggest replies for"`
+	}) (*mcp.CallToolResult, any, error) {
+		out, err := app.SuggestReplies(ctx, in.MessageID)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, out, nil
 	})
 }
 

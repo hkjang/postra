@@ -81,6 +81,7 @@ var toolAccess = map[string]accessLevel{
 	"mail_auth_inspect":            AccessRead,
 	"mail_thread_summarize":        AccessRead,
 	"mail_question_answer":         AccessRead,
+	"mail_suggest_replies":         AccessRead,
 	"mail_semantic_search":         AccessRead,
 	"mail_attachment_summarize":    AccessRead,
 	"mail_eval_prompt":             AccessRead,

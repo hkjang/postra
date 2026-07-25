@@ -85,6 +85,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/accounts/{id}/server-delete", s.serverDelete)
 
 	mux.HandleFunc("POST /api/messages/{id}/analyze", s.analyzeMessage)
+	mux.HandleFunc("POST /api/messages/{id}/suggest-replies", s.suggestReplies)
 	mux.HandleFunc("POST /api/threads/{id}/summarize", s.summarizeThread)
 	mux.HandleFunc("POST /api/qa", s.questionAnswer)
 	mux.HandleFunc("POST /api/eval", s.evalPrompt)
@@ -775,6 +776,15 @@ func (s *Server) analyzeMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, an)
+}
+
+func (s *Server) suggestReplies(w http.ResponseWriter, r *http.Request) {
+	out, err := s.app.SuggestReplies(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) summarizeThread(w http.ResponseWriter, r *http.Request) {

@@ -52,7 +52,24 @@
 </div>
 <h2>답장</h2>
 <div class="card">
-  <form method="post" action="/ui/messages/{{$m.ID}}/draft">
+  <div class="actions" style="margin-top:0;justify-content:space-between">
+    <span class="small muted">AI가 이 메일에 맞는 짧은 답장 후보를 제안합니다. 선택하면 그대로 초안이 되며, 검토·수정 후 직접 보냅니다.</span>
+    <form method="post" action="/ui/messages/{{$m.ID}}/suggest"><button class="ghost" type="submit">✨ 빠른 답장 제안</button></form>
+  </div>
+  {{if .SuggestError}}<div class="warn">답장 제안 실패: {{.SuggestError}}</div>{{end}}
+  {{if .Suggestions}}
+  <div class="smart-replies">
+    {{range .Suggestions}}
+    <form method="post" action="/ui/messages/{{$m.ID}}/draft" class="smart-reply">
+      <input type="hidden" name="kind" value="reply">
+      <input type="hidden" name="body" value="{{.}}">
+      <p>{{.}}</p>
+      <button class="ghost" type="submit">이 내용으로 초안 →</button>
+    </form>
+    {{end}}
+  </div>
+  {{end}}
+  <form method="post" action="/ui/messages/{{$m.ID}}/draft" style="margin-top:1rem">
     <div class="field"><label>방식</label><select name="kind"><option value="reply">답장</option><option value="reply_all">전체 답장</option><option value="forward">전달</option></select></div>
     <div class="field"><label>AI 작성 지시(선택)</label><textarea name="instructions" placeholder="예: 참석 가능하다고 정중하게 답장해 줘"></textarea></div>
     <button type="submit">초안 만들기</button>
