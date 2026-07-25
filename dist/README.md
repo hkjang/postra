@@ -2,13 +2,13 @@
 
 Docker 데몬 없이 빌드한, 오프라인망에서 바로 사용 가능한 산출물입니다.
 
-> **v0.10.5**: 메일 본문 보기 개선 — 정화된 HTML 본문을 테마에 맞게 렌더링(이미지/표/인용문 스타일링), 평문 본문은 URL·이메일 자동 링크·인용(>) 블록·경량 마크다운(제목/**굵게**/`코드`)으로 예쁘게 표시, 원문 텍스트 접기 보기 추가.
+> **v0.11.0**: AI 빠른 답장(Smart Reply) — 받은 메일에 맞는 짧은 답장 후보를 제안하고 선택 시 그대로 초안 생성(발송은 사용자 승인). 프롬프트-인젝션 방어(본문은 untrusted 블록에만)·PII 마스킹·캐싱 적용. 메일 질의응답 검색을 하이브리드(시맨틱) 리트리벌로 고도화. REST·MCP(mail_suggest_replies)·웹 UI 지원.
 
 | 파일 | 설명 |
 | --- | --- |
-| `postra-0.10.5-linux-amd64-image.tar.gz` | `docker load` 로 불러오는 컨테이너 이미지 (`postra:0.10.5`, linux/amd64) |
-| `postra-0.10.5-linux-amd64` | 정적 링크 단일 실행 파일 (CGO 없음, 의존성 없음) |
-| `postra-0.10.5-sbom.cdx.json` | CycloneDX 소프트웨어 자재명세서 |
+| `postra-0.11.0-linux-amd64-image.tar.gz` | `docker load` 로 불러오는 컨테이너 이미지 (`postra:0.11.0`, linux/amd64) |
+| `postra-0.11.0-linux-amd64` | 정적 링크 단일 실행 파일 (CGO 없음, 의존성 없음) |
+| `postra-0.11.0-sbom.cdx.json` | CycloneDX 소프트웨어 자재명세서 |
 | `SHA256SUMS.txt` | 모든 릴리즈 파일의 SHA-256 체크섬 |
 
 이미지는 순수 Go 정적 바이너리 + CA 인증서 + 최소 rootfs 로만 구성됩니다(scratch 기반).
@@ -17,7 +17,7 @@ Docker 데몬 없이 빌드한, 오프라인망에서 바로 사용 가능한 �
 
 ```bash
 # 폐쇄망 호스트로 tar.gz 를 옮긴 뒤:
-docker load -i postra-0.10.5-linux-amd64-image.tar.gz     # gzip 자동 인식
+docker load -i postra-0.11.0-linux-amd64-image.tar.gz     # gzip 자동 인식
 docker image ls | grep postra
 
 # 오프라인망(평문 POP3/SMTP 허용) 실행 예시
@@ -27,7 +27,7 @@ docker run -d --name postra \
   -e POSTRA_HTTP_ADDR=0.0.0.0:8480 \
   -e POSTRA_ALLOW_INSECURE_MAIL=true \
   -e POSTRA_API_TOKEN=change-me \
-  postra:0.10.5
+  postra:0.11.0
 
 # CLI 사용 (같은 컨테이너)
 docker exec -it postra postra account list
@@ -39,9 +39,9 @@ REST API는 `/api`, Web UI는 `/ui`, MCP Streamable HTTP는 `/mcp`이며 모두 
 ## 2) 바이너리 단독 실행 (Docker 불필요)
 
 ```bash
-chmod +x postra-0.10.5-linux-amd64
-./postra-0.10.5-linux-amd64 init
-POSTRA_BOOTSTRAP_ADMIN_PASSWORD='replace-me' ./postra-0.10.5-linux-amd64 serve
+chmod +x postra-0.11.0-linux-amd64
+./postra-0.11.0-linux-amd64 init
+POSTRA_BOOTSTRAP_ADMIN_PASSWORD='replace-me' ./postra-0.11.0-linux-amd64 serve
 ```
 
 ## 데이터 / 비밀값
@@ -55,6 +55,6 @@ Docker 없이 이미지를 다시 만들려면:
 
 ```bash
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o postra ./cmd/postra
-go run scripts/mkimage.go postra postra-image.tar postra:0.10.5
+go run scripts/mkimage.go postra postra-image.tar postra:0.11.0
 gzip -9 postra-image.tar
 ```
