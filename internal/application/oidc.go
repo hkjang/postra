@@ -301,10 +301,17 @@ func (a *App) linkExistingLocalUser(ctx context.Context, rt oidcRuntime, claims 
 	if cand == nil || cand.Status != domain.UserActive {
 		return nil
 	}
-	// Never hijack an account already federated to a (possibly different) IdP
-	// identity, and never adopt anything but a local account.
-	if cand.OIDCSubject != "" || cand.AuthProvider != "local" {
+	// Never hijack an account already federated to another identity. In
+	// addition to local accounts, accept an administrator-preprovisioned OIDC
+	// account whose issuer matches and whose subject has not been bound yet.
+	preprovisioned := cand.AuthProvider == "oidc" && cand.OIDCSubject == "" &&
+		cand.OIDCIssuer == rt.Issuer
+	if cand.OIDCSubject != "" || (cand.AuthProvider != "local" && !preprovisioned) {
 		return nil
+	}
+	if preprovisioned && (!claims.EmailVerified || cand.Email == "" ||
+		!strings.EqualFold(cand.Email, claims.Email)) {
+		return nil // pending OIDC identities bind only through exact verified email
 	}
 	cand.OIDCIssuer, cand.OIDCSubject = rt.Issuer, claims.Subject
 	if cand.Email == "" {

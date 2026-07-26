@@ -85,6 +85,63 @@ func TestOIDCFlowIntegrityAndAdminSettings(t *testing.T) {
 	}
 }
 
+func TestAdminPreprovisionsOIDCUserAndSharedMailSecret(t *testing.T) {
+	app, _, _, _ := newTestApp(t)
+	base := WithActor(context.Background(), "test")
+	admin, err := app.SetupInitialAdmin(base, "admin", "Admin", "admin-password-long")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminCtx := WithPrincipal(base, principalFor(admin, "local"))
+	if err := app.AdminSaveSettings(adminCtx, map[string]string{
+		SettingOIDCIssuer:      "https://keycloak.example/realms/postra",
+		SettingOIDCClientID:    "postra",
+		SettingOIDCRedirectURL: "https://postra.example/ui/auth/oidc/callback",
+	}, ""); err != nil {
+		t.Fatal(err)
+	}
+	result, err := app.AdminProvisionMailAccount(adminCtx, AdminMailProvisionInput{
+		TargetUser: "hong@corp.local", IMAPHost: "127.0.0.1",
+		IMAPPort: 993, IMAPSecurity: "tls", SMTPHost: "127.0.0.1",
+		SMTPPort: 587, SMTPSecurity: "starttls", AuthUsername: "hong",
+		MailPassword: "mail-password-only",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.User.AuthProvider != "oidc" || result.User.OIDCSubject != "" {
+		t.Fatalf("expected pending OIDC link, got %+v", result.User)
+	}
+	if result.Account.UserID != result.User.ID || result.Account.InboundProtocol != domain.InboundIMAP {
+		t.Fatalf("account ownership/protocol mismatch: %+v", result.Account)
+	}
+	if result.Account.POP3Secret == "" || result.Account.POP3Secret != result.Account.SMTPSecret {
+		t.Fatal("IMAP and SMTP must share one secret by default")
+	}
+	if result.Account.Email != "hong@corp.local" || result.Account.POP3Username != "hong" {
+		t.Fatalf("mail defaults were not applied: %+v", result.Account)
+	}
+	separate := false
+	noAuth, err := app.AdminProvisionMailAccount(adminCtx, AdminMailProvisionInput{
+		TargetUser: result.User.ID, IMAPHost: "127.0.0.1", IMAPSecurity: "tls",
+		SMTPHost: "127.0.0.1", SMTPSecurity: "none", SMTPAuth: "none",
+		MailPassword: "imap-only-password", SamePassword: &separate,
+	})
+	if err != nil {
+		t.Fatalf("SMTP without AUTH must not require an SMTP password: %v", err)
+	}
+	if noAuth.Account.SMTPAuth != "none" {
+		t.Fatalf("expected SMTP AUTH to be disabled, got %q", noAuth.Account.SMTPAuth)
+	}
+
+	linked := app.linkExistingLocalUser(base,
+		oidcRuntime{Issuer: "https://keycloak.example/realms/postra"},
+		oidcClaims{Subject: "kc-subject-1", Email: "hong@corp.local", EmailVerified: true})
+	if linked == nil || linked.ID != result.User.ID || linked.OIDCSubject != "kc-subject-1" {
+		t.Fatalf("first Keycloak login did not complete pending link: %+v", linked)
+	}
+}
+
 func TestOIDCStateKeyIsSharedAcrossAppInstances(t *testing.T) {
 	app, pop, smtp, aiProvider := newTestApp(t)
 	second, err := New(app.Cfg, app.Store, app.Objects, app.Secrets, pop, smtp, aiProvider)

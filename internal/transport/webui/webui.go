@@ -103,6 +103,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /ui/admin/users/{id}", s.gate(s.adminUserUpdate))
 	mux.HandleFunc("POST /ui/admin/users/{id}/password", s.gate(s.adminPasswordReset))
 	mux.HandleFunc("POST /ui/admin/users/{id}/delete", s.gate(s.adminUserDelete))
+	mux.HandleFunc("POST /ui/admin/mail-provision", s.gate(s.adminMailProvision))
 	mux.HandleFunc("GET /ui/admin/settings", s.gate(s.adminSettings))
 	mux.HandleFunc("POST /ui/admin/settings", s.gate(s.adminSettingsSave))
 	mux.HandleFunc("GET /ui/admin/incidents", s.gate(s.adminIncidents))
@@ -542,7 +543,9 @@ func (s *Server) adminUsers(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	s.render(w, "admin_users", http.StatusOK, map[string]any{"Users": users, "CSRF": csrfFromRequest(r)})
+	s.render(w, "admin_users", http.StatusOK, map[string]any{
+		"Users": users, "CSRF": csrfFromRequest(r), "Provisioned": r.URL.Query().Get("provisioned") == "1",
+	})
 }
 
 func (s *Server) adminUserCreate(w http.ResponseWriter, r *http.Request) {
@@ -582,6 +585,30 @@ func (s *Server) adminPasswordReset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/ui/admin/users", http.StatusSeeOther)
+}
+
+func (s *Server) adminMailProvision(w http.ResponseWriter, r *http.Request) {
+	samePassword := r.FormValue("same_password") == "true"
+	automaticSync := r.FormValue("automatic_sync") == "true"
+	_, err := s.app.AdminProvisionMailAccount(r.Context(), application.AdminMailProvisionInput{
+		TargetUser: r.FormValue("target_user"), MailAddress: r.FormValue("mail_address"),
+		IMAPHost: r.FormValue("imap_host"), IMAPPort: intForm(r, "imap_port"),
+		IMAPSecurity: r.FormValue("imap_security"),
+		SMTPHost:     r.FormValue("smtp_host"), SMTPPort: intForm(r, "smtp_port"),
+		SMTPSecurity: r.FormValue("smtp_security"), SMTPAuth: r.FormValue("smtp_auth"),
+		AuthUsername: r.FormValue("auth_username"),
+		MailPassword: r.FormValue("mail_password"), SamePassword: &samePassword,
+		SMTPPassword: r.FormValue("smtp_password"), AutomaticSync: &automaticSync,
+		InsecureSkipVerify: r.FormValue("insecure_skip_verify") == "true",
+	})
+	if err != nil {
+		users, _ := s.app.AdminListUsers(r.Context())
+		s.render(w, "admin_users", http.StatusBadRequest, map[string]any{
+			"Users": users, "CSRF": csrfFromRequest(r), "Error": err.Error(), "ProvisionForm": r.Form,
+		})
+		return
+	}
+	http.Redirect(w, r, "/ui/admin/users?provisioned=1", http.StatusSeeOther)
 }
 
 func (s *Server) adminSettings(w http.ResponseWriter, r *http.Request) {

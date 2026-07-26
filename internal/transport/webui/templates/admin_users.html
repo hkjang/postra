@@ -2,6 +2,7 @@
 {{define "content"}}
 <div class="actions" style="justify-content:space-between"><h1>사용자 관리</h1><a class="btn ghost" href="/ui/admin/settings">시스템 설정</a></div>
 {{if .Error}}<div class="warn">{{.Error}}</div>{{end}}
+{{if eq (index . "Provisioned") true}}<div class="ok">메일 계정을 프로비저닝했습니다.</div>{{end}}
 <div class="card"><table>
 <thead><tr><th>사용자</th><th>인증</th><th>역할·상태</th><th>변경</th></tr></thead>
 <tbody>{{range .Users}}<tr>
@@ -27,5 +28,26 @@
   <div class="field"><label>역할</label><select name="role"><option value="user">user</option><option value="admin">admin</option></select></div>
   <div class="field"><label>초기 비밀번호</label><input type="password" name="password" minlength="12" required autocomplete="new-password"></div>
   <div class="actions"><button type="submit">사용자 추가</button></div>
+</div></form>
+<h2>SSO 사용자 메일 프로비저닝</h2>
+<form method="post" action="/ui/admin/mail-provision"><div class="card">
+  <p class="small muted">Keycloak 비밀번호와 메일 비밀번호는 별개입니다. 메일 비밀번호는 저장 후 다시 표시되지 않으며, 사용자의 첫 로그인 전에도 동기화할 수 있습니다.</p>
+  <div class="grid">
+    <div class="field"><label>대상 사용자</label><input type="text" name="target_user" placeholder="hong@corp.local" required><span class="small muted">Postra ID·로그인 ID·이메일 또는 새 Keycloak 사용자</span></div>
+    <div class="field"><label>메일 주소</label><input type="email" name="mail_address" placeholder="비우면 대상 사용자 값"></div>
+    <div class="field"><label>IMAP 서버</label><input type="text" name="imap_host" placeholder="imap.corp.local" required></div>
+    <div class="field"><label>IMAP 포트</label><input type="number" name="imap_port" placeholder="993 또는 143"></div>
+    <div class="field"><label>IMAP 보안</label><select name="imap_security"><option value="tls">TLS</option><option value="starttls">STARTTLS</option><option value="none">없음(격리망)</option></select></div>
+    <div class="field"><label>SMTP 서버</label><input type="text" name="smtp_host" placeholder="smtp.corp.local" required></div>
+    <div class="field"><label>SMTP 포트</label><input type="number" name="smtp_port" placeholder="465, 587 또는 25"></div>
+    <div class="field"><label>SMTP 보안</label><select name="smtp_security"><option value="tls">TLS</option><option value="starttls">STARTTLS</option><option value="none">없음(격리망)</option></select></div>
+    <div class="field"><label>SMTP 인증</label><select name="smtp_auth"><option value="auto">아이디·비밀번호 인증</option><option value="none">인증 없음(내부 릴레이)</option></select><span class="small muted">인증 없음은 SMTP AUTH를 수행하지 않습니다.</span></div>
+    <div class="field"><label>인증 아이디</label><input type="text" name="auth_username" placeholder="비우면 메일 주소"></div>
+    <div class="field"><label>메일 비밀번호</label><input type="password" name="mail_password" required autocomplete="new-password"></div>
+    <div class="field"><label><input type="checkbox" name="same_password" value="true" checked> IMAP·SMTP 동일 비밀번호</label></div>
+    <div class="field"><label>별도 SMTP 비밀번호</label><input type="password" name="smtp_password" autocomplete="new-password" placeholder="공유 해제 시 입력"></div>
+    <div class="field"><label><input type="checkbox" name="automatic_sync" value="true" checked> 자동 동기화 활성</label></div>
+  </div>
+  <div class="actions"><button type="submit">안전하게 프로비저닝</button></div>
 </div></form>
 {{end}}

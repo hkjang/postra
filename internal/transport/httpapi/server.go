@@ -39,6 +39,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/admin/users/{id}", s.adminUpdateUser)
 	mux.HandleFunc("DELETE /api/admin/users/{id}", s.adminDeleteUser)
 	mux.HandleFunc("POST /api/admin/users/{id}/password", s.adminResetPassword)
+	mux.HandleFunc("POST /api/admin/mail-accounts", s.adminProvisionMailAccount)
 	mux.HandleFunc("GET /api/admin/mcp-keys", s.adminListMCPKeys)
 	mux.HandleFunc("DELETE /api/admin/mcp-keys/{id}", s.adminRevokeMCPKey)
 	mux.HandleFunc("GET /api/admin/incidents", s.adminListIncidents)
@@ -218,6 +219,20 @@ func (s *Server) adminResetPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) adminProvisionMailAccount(w http.ResponseWriter, r *http.Request) {
+	var in application.AdminMailProvisionInput
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&in); err != nil {
+		writeErr(w, err)
+		return
+	}
+	result, err := s.app.AdminProvisionMailAccount(r.Context(), in)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, result)
 }
 
 func (s *Server) adminListIncidents(w http.ResponseWriter, r *http.Request) {
