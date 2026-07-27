@@ -70,7 +70,14 @@ func New(cfg config.Config, store Storage, objects objectstore.Store,
 		POP3: pop3, SMTP: smtp, AI: meteredAI{inner: ai}, aiRaw: ai,
 		Scanner:    malware.NewHeuristic(cfg.Attachments),
 		background: bg, cancelAll: cancel,
-		syncSem:    make(chan struct{}, syncConcurrency),
+		syncSem: make(chan struct{}, syncConcurrency),
+	}
+	// The provider is constructed by the composition root before New loads
+	// database-backed settings. Reconfigure it with the merged config so a
+	// restarted process uses the persisted API-key reference, endpoint, and
+	// model instead of stale environment/default values.
+	if configurable, ok := ai.(interface{ Configure(config.AIConfig) }); ok {
+		configurable.Configure(cfg.AI)
 	}
 	candidate := make([]byte, len(a.oidcStateKey))
 	if _, err := rand.Read(candidate); err != nil {

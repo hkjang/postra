@@ -55,3 +55,11 @@ func TestGenerateStreaming(t *testing.T) {
 		t.Fatalf("got %q", res.Text)
 	}
 }
+
+func TestSanitizeProviderError(t *testing.T) {
+	const key = "sk-super-secret-value-12345"
+	got := sanitizeProviderError(`{"error":"api_key=`+key+` Authorization: Bearer `+key+`"}`, key)
+	if strings.Contains(got, key) || !strings.Contains(got, "[REDACTED]") {
+		t.Fatalf("provider error was not sanitized: %s", got)
+	}
+}

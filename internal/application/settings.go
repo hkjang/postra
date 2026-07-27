@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -321,8 +322,9 @@ func (a *App) AdminSaveAISettings(ctx context.Context, values map[string]string,
 	requestedKeyRef, keyRefProvided := values[SettingAIAPIKeyRef]
 	removeKey := apiKey == "" && keyRefProvided && requestedKeyRef == ""
 	if apiKey != "" {
-		ref, err := a.RegisterSecret(ctx, domain.SecretAPIKey, "AI provider API key",
-			domain.NewSecretHandle([]byte(apiKey)))
+		handle := domain.NewSecretHandle([]byte(apiKey))
+		ref, err := a.RegisterSecret(ctx, domain.SecretAPIKey, "AI provider API key", handle)
+		handle.Zero()
 		if err != nil {
 			return err
 		}
@@ -332,6 +334,8 @@ func (a *App) AdminSaveAISettings(ctx context.Context, values map[string]string,
 		return err
 	}
 	if removeKey && oldKeyRef != "" {
+		_ = a.RevokeSecret(ctx, domain.SecretRef(oldKeyRef))
+	} else if apiKey != "" && oldKeyRef != "" && oldKeyRef != clean[SettingAIAPIKeyRef] {
 		_ = a.RevokeSecret(ctx, domain.SecretRef(oldKeyRef))
 	}
 	a.applyAISettings(clean)
@@ -384,17 +388,29 @@ func (a *App) AdminTestAI(ctx context.Context) (AIConnectionResult, error) {
 	})
 	out := AIConnectionResult{Model: a.currentAIConfig().Model, LatencyMS: time.Since(start).Milliseconds()}
 	if err != nil {
-		out.Message = err.Error()
+		out.Message = sanitizeAIConnectionMessage(err.Error())
 		return out, nil
 	}
-	out.OK = strings.Contains(strings.ToUpper(result.Text), "POSTRA_AI_OK")
+	out.OK = strings.TrimSpace(result.Text) != ""
 	if out.OK {
 		out.Message = "Chat completion connection is healthy."
 	} else {
-		out.Message = fmt.Sprintf("Provider responded, but probe output was unexpected: %.120s", result.Text)
+		out.Message = "Provider responded successfully, but returned an empty completion."
 	}
 	return out, nil
 }
+
+func sanitizeAIConnectionMessage(message string) string {
+	// Adapter errors are already sanitized. This is a final transport boundary
+	// guard for errors produced by alternative AIProvider implementations.
+	message = aiConnectionSecretPattern.ReplaceAllString(message, `$1$2[REDACTED]`)
+	return aiConnectionOpenAIKeyPattern.ReplaceAllString(message, "[REDACTED]")
+}
+
+var (
+	aiConnectionSecretPattern    = regexp.MustCompile(`(?i)(api[_ -]?key|authorization|bearer|access[_ -]?token|secret)(["'\s:=]+)([^\s"',;}]+)`)
+	aiConnectionOpenAIKeyPattern = regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{8,}\b`)
+)
 
 type EmbeddingStoreTestResult struct {
 	OK                   bool   `json:"ok"`

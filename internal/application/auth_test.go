@@ -2,11 +2,15 @@ package application
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	aiadapter "postra/internal/adapters/ai"
 	"postra/internal/domain"
+	"postra/internal/platform/config"
 )
 
 func TestPasswordHashAndSessionLifecycle(t *testing.T) {
@@ -386,6 +390,61 @@ func TestAdminAISettingsAndConnectionProbe(t *testing.T) {
 	settings, _ = app.SystemSettings(ctx)
 	if settings[SettingAIAPIKeyRef] != "" {
 		t.Fatal("AI API key reference was not removed")
+	}
+}
+
+func TestAIKeyAndConfigSurviveRestartWithoutErrorLeak(t *testing.T) {
+	app, pop, smtp, _ := newTestApp(t)
+	base := WithActor(context.Background(), "test")
+	admin, err := app.SetupInitialAdmin(base, "admin", "Admin", "admin-password-long")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := WithPrincipal(base, principalFor(admin, "local"))
+	const apiKey = "sk-restart-secret-123456789"
+	fail := false
+	var authorization string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorization = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		if fail {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":{"message":"invalid api_key=` + apiKey + ` Authorization: Bearer ` + apiKey + `"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"provider is responding normally"}}]}`))
+	}))
+	defer srv.Close()
+	if err := app.AdminSaveAISettings(ctx, map[string]string{
+		SettingAIBaseURL: srv.URL, SettingAIModel: "restart-model",
+		SettingAITimeout: "5", SettingAIMaxTokens: "64",
+	}, apiKey); err != nil {
+		t.Fatal(err)
+	}
+
+	freshCfg := config.Default()
+	freshCfg.DataDir = app.Cfg.DataDir
+	provider := aiadapter.New(freshCfg.AI, app.Secrets)
+	restarted, err := New(freshCfg, app.Store, app.Objects, app.Secrets, pop, smtp, provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restarted.Shutdown()
+	result, err := restarted.AdminTestAI(ctx)
+	if err != nil || !result.OK || result.Model != "restart-model" {
+		t.Fatalf("restarted AI test failed: result=%+v err=%v", result, err)
+	}
+	if authorization != "Bearer "+apiKey {
+		t.Fatalf("persisted AI key was not restored; authorization=%q", authorization)
+	}
+
+	fail = true
+	result, err = restarted.AdminTestAI(ctx)
+	if err != nil || result.OK {
+		t.Fatalf("invalid-key response was not reported as failure: result=%+v err=%v", result, err)
+	}
+	if strings.Contains(result.Message, apiKey) || !strings.Contains(result.Message, "[REDACTED]") {
+		t.Fatalf("AI key leaked through connection error: %s", result.Message)
 	}
 }
 

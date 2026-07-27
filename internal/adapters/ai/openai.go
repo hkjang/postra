@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -158,12 +159,14 @@ func (p *OpenAICompat) generateOnce(ctx context.Context, cfg config.AIConfig, cl
 		return "", err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	var sensitiveKey string
 	if route.APIKeyRef != "" && p.secrets != nil {
 		h, err := p.secrets.Acquire(ctx, domain.SecretRef(route.APIKeyRef), domain.PurposeAIKey)
 		if err != nil {
 			return "", fmt.Errorf("acquire AI key: %w", err)
 		}
-		httpReq.Header.Set("Authorization", "Bearer "+string(h.Reveal()))
+		sensitiveKey = string(h.Reveal())
+		httpReq.Header.Set("Authorization", "Bearer "+sensitiveKey)
 		defer h.Zero()
 	}
 	injectExtraHeaders(httpReq.Header, cfg.ExtraHeaders)
@@ -175,11 +178,16 @@ func (p *OpenAICompat) generateOnce(ctx context.Context, cfg config.AIConfig, cl
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
-		return "", fmt.Errorf("AI API %d: %s", resp.StatusCode, truncate(string(respBody), 300))
+		return "", fmt.Errorf("AI API %d: %s", resp.StatusCode,
+			sanitizeProviderError(truncate(string(respBody), 300), sensitiveKey))
 	}
 
 	if isEventStream(resp.Header.Get("Content-Type")) {
-		return parseSSEChatStream(io.LimitReader(resp.Body, 10<<20))
+		text, err := parseSSEChatStream(io.LimitReader(resp.Body, 10<<20))
+		if err != nil {
+			return "", fmt.Errorf("%s", sanitizeProviderError(err.Error(), sensitiveKey))
+		}
+		return text, nil
 	}
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
 	if err != nil {
@@ -190,7 +198,7 @@ func (p *OpenAICompat) generateOnce(ctx context.Context, cfg config.AIConfig, cl
 		return "", fmt.Errorf("AI response parse: %w", err)
 	}
 	if cr.Error != nil {
-		return "", fmt.Errorf("AI API error: %s", cr.Error.Message)
+		return "", fmt.Errorf("AI API error: %s", sanitizeProviderError(cr.Error.Message, sensitiveKey))
 	}
 	if len(cr.Choices) == 0 {
 		return "", fmt.Errorf("AI API returned no choices")
@@ -277,12 +285,14 @@ func (p *OpenAICompat) Embed(ctx context.Context, req domain.EmbeddingRequest) (
 		return domain.EmbeddingResult{}, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	var sensitiveKey string
 	if cfg.APIKeyRef != "" {
 		h, err := p.secrets.Acquire(ctx, domain.SecretRef(cfg.APIKeyRef), domain.PurposeAIKey)
 		if err != nil {
 			return domain.EmbeddingResult{}, fmt.Errorf("acquire AI key: %w", err)
 		}
-		httpReq.Header.Set("Authorization", "Bearer "+string(h.Reveal()))
+		sensitiveKey = string(h.Reveal())
+		httpReq.Header.Set("Authorization", "Bearer "+sensitiveKey)
 		defer h.Zero()
 	}
 	injectExtraHeaders(httpReq.Header, cfg.ExtraHeaders)
@@ -296,14 +306,16 @@ func (p *OpenAICompat) Embed(ctx context.Context, req domain.EmbeddingRequest) (
 		return domain.EmbeddingResult{}, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return domain.EmbeddingResult{}, fmt.Errorf("embed API %d: %s", resp.StatusCode, truncate(string(body), 300))
+		return domain.EmbeddingResult{}, fmt.Errorf("embed API %d: %s", resp.StatusCode,
+			sanitizeProviderError(truncate(string(body), 300), sensitiveKey))
 	}
 	var er embedResponse
 	if err := json.Unmarshal(body, &er); err != nil {
 		return domain.EmbeddingResult{}, fmt.Errorf("embed response parse: %w", err)
 	}
 	if er.Error != nil {
-		return domain.EmbeddingResult{}, fmt.Errorf("embed API error: %s", er.Error.Message)
+		return domain.EmbeddingResult{}, fmt.Errorf("embed API error: %s",
+			sanitizeProviderError(er.Error.Message, sensitiveKey))
 	}
 	out := domain.EmbeddingResult{Model: model, Vectors: make([][]float32, len(er.Data))}
 	for i, d := range er.Data {
@@ -317,6 +329,19 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+var (
+	secretLabelPattern = regexp.MustCompile(`(?i)(api[_ -]?key|authorization|bearer|access[_ -]?token|secret)(["'\s:=]+)([^\s"',;}]+)`)
+	openAIKeyPattern   = regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{8,}\b`)
+)
+
+func sanitizeProviderError(message, exactSecret string) string {
+	if exactSecret != "" {
+		message = strings.ReplaceAll(message, exactSecret, "[REDACTED]")
+	}
+	message = secretLabelPattern.ReplaceAllString(message, `$1$2[REDACTED]`)
+	return openAIKeyPattern.ReplaceAllString(message, "[REDACTED]")
 }
 
 func injectExtraHeaders(h http.Header, extra string) {
