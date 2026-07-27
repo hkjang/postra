@@ -52,6 +52,17 @@ func (a *App) AdminProvisionMailAccount(ctx context.Context, in AdminMailProvisi
 	if strings.TrimSpace(in.IMAPHost) == "" || strings.TrimSpace(in.SMTPHost) == "" {
 		return nil, userErrf("IMAP and SMTP servers are required")
 	}
+	smtpAuth := strings.TrimSpace(in.SMTPAuth)
+	if smtpAuth == "" {
+		smtpAuth = "auto"
+	}
+	if smtpAuth != "auto" && smtpAuth != "none" {
+		return nil, userErrf("invalid SMTP auth mode")
+	}
+	in.SMTPAuth = smtpAuth
+	if err := a.validateOIDCMailProvisionPolicy(ctx, in); err != nil {
+		return nil, err
+	}
 	mailAddress := strings.TrimSpace(in.Email)
 	var user *domain.User
 	created := false
@@ -87,14 +98,6 @@ func (a *App) AdminProvisionMailAccount(ctx context.Context, in AdminMailProvisi
 	}
 
 	same := in.SamePassword == nil || *in.SamePassword
-	smtpAuth := strings.TrimSpace(in.SMTPAuth)
-	if smtpAuth == "" {
-		smtpAuth = "auto"
-	}
-	if smtpAuth != "auto" && smtpAuth != "none" {
-		_ = a.RevokeSecret(ownerCtx, inRef)
-		return nil, userErrf("invalid SMTP auth mode")
-	}
 	smtpRef := inRef
 	if smtpAuth != "none" && !same {
 		if in.SMTPPassword == "" {
@@ -145,6 +148,30 @@ func (a *App) AdminProvisionMailAccount(ctx context.Context, in AdminMailProvisi
 	}
 	a.audit(ctx, "admin_mail_provision", resource, "ok", detail)
 	return &AdminMailProvisionResult{User: user, Account: acc}, nil
+}
+
+func (a *App) validateOIDCMailProvisionPolicy(ctx context.Context, in AdminMailProvisionInput) error {
+	imapSecurity, err := normSecurity(in.IMAPSecurity, domain.SecurityTLS)
+	if err != nil {
+		return err
+	}
+	smtpSecurity, err := normSecurity(in.SMTPSecurity, domain.SecurityTLS)
+	if err != nil {
+		return err
+	}
+	for _, host := range []string{in.IMAPHost, in.SMTPHost} {
+		if err := a.validateMailHost(ctx, host); err != nil {
+			return err
+		}
+	}
+	return a.checkInsecureAllowed(ctx, &domain.MailAccount{
+		ID: "oidc-mail-policy", InboundProtocol: domain.InboundIMAP,
+		POP3Host: strings.TrimSpace(in.IMAPHost), POP3Port: portOr(in.IMAPPort, imapSecurity, 993, 143),
+		POP3Security: imapSecurity, SMTPHost: strings.TrimSpace(in.SMTPHost),
+		SMTPPort:     portOr(in.SMTPPort, smtpSecurity, 465, 587),
+		SMTPSecurity: smtpSecurity, SMTPAuth: in.SMTPAuth,
+		InsecureSkipVerify: in.InsecureSkipVerify,
+	})
 }
 
 func normalizedProvisionEmail(raw string) (string, error) {
@@ -224,7 +251,7 @@ func (a *App) saveOIDCMailProvisionPolicy(ctx context.Context, in AdminMailProvi
 }
 
 // autoProvisionOIDCMail applies the administrator's shared offline-mail
-// policy after a verified Keycloak login. Failure never blocks SSO login.
+// policy after a signed Keycloak login. Failure never blocks SSO login.
 func (a *App) autoProvisionOIDCMail(ctx context.Context, u *domain.User) error {
 	values, err := a.Store.GetSettings(ctx)
 	if err != nil || values[settingOIDCMailEnabled] != "true" {
@@ -241,6 +268,7 @@ func (a *App) autoProvisionOIDCMail(ctx context.Context, u *domain.User) error {
 	}
 	for i := range accounts {
 		if strings.EqualFold(accounts[i].Email, email) && accounts[i].Status != domain.AccountDeleted {
+			a.startInitialOIDCMailSync(ownerCtx, &accounts[i])
 			return nil
 		}
 	}
@@ -261,9 +289,25 @@ func (a *App) autoProvisionOIDCMail(ctx context.Context, u *domain.User) error {
 	}
 	if values[settingOIDCMailAutoSync] == "false" {
 		_ = a.Store.SetAccountStatus(ctx, u.ID, acc.ID, domain.AccountDisabled)
+		acc.Status = domain.AccountDisabled
 	}
+	a.startInitialOIDCMailSync(ownerCtx, acc)
 	a.audit(ownerCtx, "oidc_mail_auto_provision", "account:"+acc.ID, "ok", fmt.Sprintf("email=%s", email))
 	return nil
+}
+
+func (a *App) startInitialOIDCMailSync(ctx context.Context, acc *domain.MailAccount) {
+	if acc == nil || acc.Status != domain.AccountActive {
+		return
+	}
+	if _, err := a.StartSync(ctx, acc.ID, SyncOptions{}); err != nil {
+		// A concurrent scheduler/IDLE sync is benign; any real failure is also
+		// visible as an incident without turning a successful SSO login into an
+		// error page or removing the newly created account.
+		a.audit(ctx, "oidc_initial_sync", "account:"+acc.ID, "error", err.Error())
+		return
+	}
+	a.audit(ctx, "oidc_initial_sync", "account:"+acc.ID, "ok", "")
 }
 
 func (a *App) tryAutoProvisionOIDCMail(ctx context.Context, u *domain.User) {

@@ -255,7 +255,7 @@ func (a *App) CompleteOIDC(ctx context.Context, code string, flow OIDCFlow) (*do
 			}
 			u.LastLoginAt = time.Now().Unix()
 			_ = a.Store.UpdateUser(ctx, u)
-			if claims.EmailVerified {
+			if strings.TrimSpace(claims.Email) != "" {
 				a.tryAutoProvisionOIDCMail(ctx, u)
 			}
 			return u, nil
@@ -271,7 +271,7 @@ func (a *App) CompleteOIDC(ctx context.Context, code string, flow OIDCFlow) (*do
 	// creating a duplicate. This runs even when auto-provision is off, because
 	// linking an existing account is not provisioning a new one.
 	if linked := a.linkExistingLocalUser(ctx, rt, claims); linked != nil {
-		if claims.EmailVerified {
+		if strings.TrimSpace(claims.Email) != "" {
 			a.tryAutoProvisionOIDCMail(ctx, linked)
 		}
 		return linked, nil
@@ -302,7 +302,7 @@ func (a *App) CompleteOIDC(ctx context.Context, code string, flow OIDCFlow) (*do
 		return nil, err
 	}
 	a.audit(WithPrincipal(ctx, principalFor(u, "oidc")), "user_provision", "user:"+u.ID, "ok", rt.Issuer)
-	if claims.EmailVerified {
+	if strings.TrimSpace(claims.Email) != "" {
 		a.tryAutoProvisionOIDCMail(ctx, u)
 	}
 	return u, nil
@@ -328,9 +328,8 @@ func (a *App) linkExistingLocalUser(ctx context.Context, rt oidcRuntime, claims 
 	if cand.OIDCSubject != "" || (cand.AuthProvider != "local" && !preprovisioned) {
 		return nil
 	}
-	if preprovisioned && (!claims.EmailVerified || cand.Email == "" ||
-		!strings.EqualFold(cand.Email, claims.Email)) {
-		return nil // pending OIDC identities bind only through exact verified email
+	if preprovisioned && (cand.Email == "" || !strings.EqualFold(cand.Email, claims.Email)) {
+		return nil // pending OIDC identities bind only through the exact asserted email
 	}
 	cand.OIDCIssuer, cand.OIDCSubject = rt.Issuer, claims.Subject
 	if cand.Email == "" {
@@ -350,11 +349,11 @@ func (a *App) linkExistingLocalUser(ctx context.Context, rt oidcRuntime, claims 
 }
 
 // oidcLinkCandidate finds the local account an OIDC identity should adopt:
-// first a verified-email match, then preferred_username == login_id (which
+// first an IdP-asserted email match, then preferred_username == login_id (which
 // covers the emailless bootstrap admin) — but only when the token does not
 // assert a *different* verified email for that username, to avoid takeover.
 func (a *App) oidcLinkCandidate(ctx context.Context, claims oidcClaims) *domain.User {
-	if claims.Email != "" && claims.EmailVerified {
+	if claims.Email != "" {
 		if u, err := a.Store.GetUserByEmail(ctx, claims.Email); err == nil && u != nil {
 			return u
 		}

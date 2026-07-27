@@ -86,7 +86,10 @@ func TestOIDCFlowIntegrityAndAdminSettings(t *testing.T) {
 }
 
 func TestAdminPreprovisionsOIDCUserAndSharedMailSecret(t *testing.T) {
-	app, _, _, _ := newTestApp(t)
+	app, _, smtp, _ := newTestApp(t)
+	app.IMAP = &fakeInbound{raw: map[string]string{
+		"999.1": testMail("sso-auto-1", "SSO auto collected", "automatic IMAP sync"),
+	}}
 	base := WithActor(context.Background(), "test")
 	admin, err := app.SetupInitialAdmin(base, "admin", "Admin", "admin-password-long")
 	if err != nil {
@@ -149,7 +152,7 @@ func TestAdminPreprovisionsOIDCUserAndSharedMailSecret(t *testing.T) {
 
 	linked := app.linkExistingLocalUser(base,
 		oidcRuntime{Issuer: "https://keycloak.example/realms/postra"},
-		oidcClaims{Subject: "kc-subject-1", Email: "hong@corp.local", EmailVerified: true})
+		oidcClaims{Subject: "kc-subject-1", Email: "hong@corp.local"})
 	if linked == nil || linked.ID != result.User.ID || linked.OIDCSubject != "kc-subject-1" {
 		t.Fatalf("first Keycloak login did not complete pending link: %+v", linked)
 	}
@@ -176,6 +179,38 @@ func TestAdminPreprovisionsOIDCUserAndSharedMailSecret(t *testing.T) {
 	autoAccounts, err := app.ListAccounts(autoCtx)
 	if err != nil || len(autoAccounts) != 1 || autoAccounts[0].Email != autoUser.Email {
 		t.Fatalf("automatic SSO mail provisioning failed: accounts=%+v err=%v", autoAccounts, err)
+	}
+	if autoAccounts[0].SMTPAuth != "none" {
+		t.Fatalf("offline SMTP relay unexpectedly requires authentication: %+v", autoAccounts[0])
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		messages, searchErr := app.Search(autoCtx, domain.SearchQuery{AccountID: autoAccounts[0].ID, Limit: 10})
+		if searchErr == nil && len(messages.Messages) == 1 &&
+			messages.Messages[0].Subject == "SSO auto collected" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("first SSO login did not immediately collect IMAP mail: result=%+v err=%v", messages, searchErr)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	draft, err := app.CreateDraft(autoCtx, CreateDraftInput{
+		AccountID: autoAccounts[0].ID, Kind: "new", To: []string{"recipient@corp.local"},
+		Subject: "SMTP relay", Body: "no auth",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, approval, err := app.RequestSendApproval(autoCtx, draft.Draft.ID, "test", 60)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.Send(autoCtx, SendInput{DraftID: draft.Draft.ID, ApprovalToken: approval.Token}); err != nil {
+		t.Fatalf("SMTP relay without authentication failed: %v", err)
+	}
+	if len(smtp.sent) != 1 || smtp.lastOpts.AuthMethod != "none" || smtp.lastOpts.Password != nil {
+		t.Fatalf("SMTP AUTH was not skipped: sent=%d opts=%+v", len(smtp.sent), smtp.lastOpts)
 	}
 }
 
@@ -258,6 +293,9 @@ func TestAdminManagementAndTenantIsolation(t *testing.T) {
 		got.Body == nil || got.Body.TextBody != "private body" {
 		t.Fatalf("owner could not read private message: view=%+v err=%v", got, err)
 	}
+	if err := app.AdminPurgeDeletedUserMail(adminCtx, "member@example.test", "member@example.test"); err == nil {
+		t.Fatal("active user's mailbox could be purged")
+	}
 	renamed, newEmail := "Renamed account", "renamed@example.test"
 	if _, err := app.UpdateAccount(adminCtx, UpdateAccountInput{
 		AccountID: adminAccount.ID, Name: &renamed, Email: &newEmail,
@@ -288,6 +326,18 @@ func TestAdminManagementAndTenantIsolation(t *testing.T) {
 		if users[i].ID == user.ID {
 			t.Fatal("deleted user remained visible in administrator list")
 		}
+	}
+	if err := app.AdminPurgeDeletedUserMail(adminCtx, "member@example.test", "wrong@example.test"); err == nil {
+		t.Fatal("mail purge accepted a mismatched confirmation")
+	}
+	if err := app.AdminPurgeDeletedUserMail(adminCtx, "member@example.test", "member@example.test"); err != nil {
+		t.Fatalf("deleted user's old mailbox could not be purged: %v", err)
+	}
+	if _, err := app.Store.GetAccount(base, user.ID, userAccount.ID); err == nil {
+		t.Fatal("purged deleted-user account still exists")
+	}
+	if _, err := app.Store.GetMessage(base, user.ID, privateMessage.ID); err == nil {
+		t.Fatal("purged deleted-user message still exists")
 	}
 	if _, err := app.AdminCreateUser(adminCtx, CreateUserInput{
 		LoginID: "member", DisplayName: "Replacement", Role: domain.RoleUser,

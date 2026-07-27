@@ -35,6 +35,9 @@ type Storage interface {
 	TouchSession(ctx context.Context, id string, lastSeen int64) error
 	DeleteSession(ctx context.Context, id string) error
 	DeleteUserSessions(ctx context.Context, userID string) error
+	// PurgeDeletedUserMailByEmail permanently removes mailbox data belonging
+	// only to tombstoned users previously associated with email.
+	PurgeDeletedUserMailByEmail(ctx context.Context, email string) ([]string, error)
 	GetSettings(ctx context.Context) (map[string]string, error)
 	UpsertSettings(ctx context.Context, values map[string]string) error
 	GetOrCreateSetting(ctx context.Context, key, candidate string) (string, error)

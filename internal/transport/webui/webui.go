@@ -104,6 +104,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /ui/admin/users/{id}/password", s.gate(s.adminPasswordReset))
 	mux.HandleFunc("POST /ui/admin/users/{id}/delete", s.gate(s.adminUserDelete))
 	mux.HandleFunc("POST /ui/admin/mail-provision", s.gate(s.adminMailProvision))
+	mux.HandleFunc("POST /ui/admin/deleted-mail/purge", s.gate(s.adminDeletedMailPurge))
 	mux.HandleFunc("GET /ui/admin/settings", s.gate(s.adminSettings))
 	mux.HandleFunc("POST /ui/admin/settings", s.gate(s.adminSettingsSave))
 	mux.HandleFunc("GET /ui/admin/incidents", s.gate(s.adminIncidents))
@@ -545,6 +546,7 @@ func (s *Server) adminUsers(w http.ResponseWriter, r *http.Request) {
 	}
 	s.render(w, "admin_users", http.StatusOK, map[string]any{
 		"Users": users, "CSRF": csrfFromRequest(r), "Provisioned": r.URL.Query().Get("provisioned") == "1",
+		"Purged": r.URL.Query().Get("purged") == "1",
 	})
 }
 
@@ -610,6 +612,17 @@ func (s *Server) adminMailProvision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/ui/admin/users?provisioned=1", http.StatusSeeOther)
+}
+
+func (s *Server) adminDeletedMailPurge(w http.ResponseWriter, r *http.Request) {
+	if err := s.app.AdminPurgeDeletedUserMail(r.Context(), r.FormValue("email"), r.FormValue("confirm_email")); err != nil {
+		users, _ := s.app.AdminListUsers(r.Context())
+		s.render(w, "admin_users", http.StatusBadRequest, map[string]any{
+			"Users": users, "CSRF": csrfFromRequest(r), "Error": err.Error(),
+		})
+		return
+	}
+	http.Redirect(w, r, "/ui/admin/users?purged=1", http.StatusSeeOther)
 }
 
 func (s *Server) adminSettings(w http.ResponseWriter, r *http.Request) {

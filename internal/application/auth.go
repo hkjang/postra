@@ -378,6 +378,33 @@ func tombstoneUserIdentity(u *domain.User) {
 	u.OIDCSubject = ""
 }
 
+func (a *App) AdminPurgeDeletedUserMail(ctx context.Context, email, confirmation string) error {
+	if _, err := requireAdmin(ctx); err != nil {
+		return err
+	}
+	normalized, err := normalizedProvisionEmail(email)
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(normalized, strings.TrimSpace(confirmation)) {
+		return userErrf("email confirmation does not match")
+	}
+	uris, err := a.Store.PurgeDeletedUserMailByEmail(ctx, normalized)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			return userErrf("no deleted-user mailbox was found for %s", normalized)
+		}
+		return err
+	}
+	for _, uri := range uris {
+		if uri != "" {
+			_ = a.Objects.Delete(uri)
+		}
+	}
+	a.audit(ctx, "deleted_user_mail_purge", "email:"+normalized, "ok", fmt.Sprintf("objects=%d", len(uris)))
+	return nil
+}
+
 func (a *App) AdminResetPassword(ctx context.Context, userID, password string) error {
 	if _, err := requireAdmin(ctx); err != nil {
 		return err

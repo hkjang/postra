@@ -595,6 +595,83 @@ func (s *Store) DeleteUserSessions(ctx context.Context, userID string) error {
 	_, err := s.pool.Exec(ctx, `DELETE FROM auth_sessions WHERE user_id=$1`, userID)
 	return err
 }
+func (s *Store) PurgeDeletedUserMailByEmail(ctx context.Context, email string) ([]string, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	rows, err := tx.Query(ctx, `SELECT DISTINCT a.user_id FROM mail_accounts a
+		JOIN users u ON u.id=a.user_id WHERE lower(a.email)=lower($1) AND u.status='deleted'`, strings.TrimSpace(email))
+	if err != nil {
+		return nil, err
+	}
+	var userIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		userIDs = append(userIDs, id)
+	}
+	rows.Close()
+	if len(userIDs) == 0 {
+		return nil, ErrNotFound
+	}
+	var uris []string
+	for _, userID := range userIDs {
+		rawRows, err := tx.Query(ctx, `SELECT raw_uri FROM messages WHERE user_id=$1 AND raw_uri<>''`, userID)
+		if err != nil {
+			return nil, err
+		}
+		for rawRows.Next() {
+			var uri string
+			if err := rawRows.Scan(&uri); err != nil {
+				rawRows.Close()
+				return nil, err
+			}
+			uris = append(uris, uri)
+		}
+		rawRows.Close()
+		attRows, err := tx.Query(ctx, `SELECT a.storage_uri FROM attachments a
+			JOIN messages m ON m.id=a.message_id WHERE m.user_id=$1 AND a.storage_uri<>''`, userID)
+		if err != nil {
+			return nil, err
+		}
+		for attRows.Next() {
+			var uri string
+			if err := attRows.Scan(&uri); err != nil {
+				attRows.Close()
+				return nil, err
+			}
+			uris = append(uris, uri)
+		}
+		attRows.Close()
+		stmts := []string{
+			`DELETE FROM message_notes WHERE user_id=$1`, `DELETE FROM message_collab WHERE user_id=$1`,
+			`DELETE FROM action_cards WHERE user_id=$1`, `DELETE FROM embeddings WHERE user_id=$1`,
+			`DELETE FROM message_bodies WHERE message_id IN (SELECT id FROM messages WHERE user_id=$1)`,
+			`DELETE FROM attachments WHERE message_id IN (SELECT id FROM messages WHERE user_id=$1)`,
+			`DELETE FROM messages WHERE user_id=$1`,
+			`DELETE FROM sync_checkpoints WHERE account_id IN (SELECT id FROM mail_accounts WHERE user_id=$1)`,
+			`DELETE FROM threads WHERE user_id=$1`, `DELETE FROM draft_versions WHERE draft_id IN (SELECT id FROM drafts WHERE user_id=$1)`,
+			`DELETE FROM approvals WHERE user_id=$1`, `DELETE FROM outbound_messages WHERE user_id=$1`,
+			`DELETE FROM drafts WHERE user_id=$1`, `DELETE FROM analyses WHERE user_id=$1`,
+			`DELETE FROM jobs WHERE user_id=$1`, `DELETE FROM mail_rules WHERE user_id=$1`,
+			`DELETE FROM mail_accounts WHERE user_id=$1`,
+		}
+		for _, stmt := range stmts {
+			if _, err := tx.Exec(ctx, stmt, userID); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return uris, nil
+}
 func (s *Store) GetSettings(ctx context.Context) (map[string]string, error) {
 	rows, err := s.pool.Query(ctx, `SELECT key,value FROM system_settings`)
 	if err != nil {

@@ -583,6 +583,84 @@ func (s *Store) DeleteUserSessions(ctx context.Context, userID string) error {
 	return err
 }
 
+func (s *Store) PurgeDeletedUserMailByEmail(ctx context.Context, email string) ([]string, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT a.user_id FROM mail_accounts a
+		JOIN users u ON u.id=a.user_id WHERE lower(a.email)=lower(?) AND u.status='deleted'`, strings.TrimSpace(email))
+	if err != nil {
+		return nil, err
+	}
+	var userIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		userIDs = append(userIDs, id)
+	}
+	rows.Close()
+	if len(userIDs) == 0 {
+		return nil, ErrNotFound
+	}
+	var uris []string
+	for _, userID := range userIDs {
+		rawRows, err := tx.QueryContext(ctx, `SELECT raw_uri FROM messages WHERE user_id=? AND raw_uri<>''`, userID)
+		if err != nil {
+			return nil, err
+		}
+		for rawRows.Next() {
+			var uri string
+			if err := rawRows.Scan(&uri); err != nil {
+				rawRows.Close()
+				return nil, err
+			}
+			uris = append(uris, uri)
+		}
+		rawRows.Close()
+		attRows, err := tx.QueryContext(ctx, `SELECT a.storage_uri FROM attachments a
+			JOIN messages m ON m.id=a.message_id WHERE m.user_id=? AND a.storage_uri<>''`, userID)
+		if err != nil {
+			return nil, err
+		}
+		for attRows.Next() {
+			var uri string
+			if err := attRows.Scan(&uri); err != nil {
+				attRows.Close()
+				return nil, err
+			}
+			uris = append(uris, uri)
+		}
+		attRows.Close()
+		stmts := []string{
+			`DELETE FROM message_notes WHERE user_id=?`, `DELETE FROM message_collab WHERE user_id=?`,
+			`DELETE FROM action_cards WHERE user_id=?`, `DELETE FROM embeddings WHERE user_id=?`,
+			`DELETE FROM message_bodies WHERE message_id IN (SELECT id FROM messages WHERE user_id=?)`,
+			`DELETE FROM attachments WHERE message_id IN (SELECT id FROM messages WHERE user_id=?)`,
+			`DELETE FROM messages WHERE user_id=?`,
+			`DELETE FROM sync_checkpoints WHERE account_id IN (SELECT id FROM mail_accounts WHERE user_id=?)`,
+			`DELETE FROM threads WHERE user_id=?`, `DELETE FROM draft_versions WHERE draft_id IN (SELECT id FROM drafts WHERE user_id=?)`,
+			`DELETE FROM approvals WHERE user_id=?`, `DELETE FROM outbound_messages WHERE user_id=?`,
+			`DELETE FROM drafts WHERE user_id=?`, `DELETE FROM analyses WHERE user_id=?`,
+			`DELETE FROM jobs WHERE user_id=?`, `DELETE FROM mail_rules WHERE user_id=?`,
+			`DELETE FROM mail_accounts WHERE user_id=?`,
+		}
+		for _, stmt := range stmts {
+			if _, err := tx.ExecContext(ctx, stmt, userID); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return uris, nil
+}
+
 func (s *Store) GetSettings(ctx context.Context) (map[string]string, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT key,value FROM system_settings`)
 	if err != nil {

@@ -3,6 +3,7 @@
 <div class="actions" style="justify-content:space-between"><h1>사용자 관리</h1><a class="btn ghost" href="/ui/admin/settings">시스템 설정</a></div>
 {{if .Error}}<div class="warn">{{.Error}}</div>{{end}}
 {{if eq (index . "Provisioned") true}}<div class="ok">SSO 메일 프로비저닝 정책을 저장했습니다.</div>{{end}}
+{{if eq (index . "Purged") true}}<div class="ok">삭제된 사용자의 이전 메일 데이터를 영구 삭제했습니다.</div>{{end}}
 <div class="card"><table>
 <thead><tr><th>사용자</th><th>인증</th><th>역할·상태</th><th>변경</th></tr></thead>
 <tbody>{{range .Users}}<tr>
@@ -31,7 +32,7 @@
 </div></form>
 <h2>SSO 사용자 메일 프로비저닝</h2>
 <form method="post" action="/ui/admin/mail-provision"><div class="card">
-  <p class="small muted">대상을 비우면 조직 공통 정책만 저장합니다. 이후 Keycloak 사용자가 검증된 이메일로 처음 로그인할 때 사용자와 메일 계정이 자동 생성됩니다. Keycloak 비밀번호와 메일 비밀번호는 별개이며 저장 후 다시 표시되지 않습니다.</p>
+  <p class="small muted">대상을 비우면 조직 공통 정책만 저장합니다. 이후 Keycloak이 서명해 제공한 이메일로 처음 로그인할 때 사용자와 메일 계정이 자동 생성되고 즉시 IMAP 동기화를 시작합니다. Keycloak 비밀번호와 메일 비밀번호는 별개이며 저장 후 다시 표시되지 않습니다.</p>
   <div class="grid">
     <div class="field"><label>대상 이메일(선택)</label><input type="email" name="email" placeholder="hong@corp.local"><span class="small muted">입력하면 해당 이메일 사용자에게 즉시 적용합니다. 다른 ID 매핑은 허용하지 않습니다.</span></div>
     <div class="field"><label>IMAP 서버</label><input type="text" name="imap_host" placeholder="imap.corp.local" required></div>
@@ -49,5 +50,14 @@
     <div class="field"><label><input type="checkbox" name="apply_to_all_users" value="true" checked> 모든 SSO 사용자에게 공통 적용</label></div>
   </div>
   <div class="actions"><button type="submit">정책 저장 및 프로비저닝</button></div>
+</div></form>
+<h2>삭제된 사용자 메일 데이터 정리</h2>
+<form method="post" action="/ui/admin/deleted-mail/purge" onsubmit="return confirm('해당 삭제 사용자의 이전 메일 데이터를 영구 삭제하시겠습니까? 복구할 수 없습니다.')"><div class="card">
+  <p class="small muted">삭제 상태인 과거 사용자만 대상으로 합니다. 현재 활성 사용자의 메일은 삭제되지 않습니다. 확인을 위해 같은 이메일을 두 번 입력하세요.</p>
+  <div class="grid">
+    <div class="field"><label>과거 사용자 이메일</label><input type="email" name="email" required placeholder="hong@corp.local"></div>
+    <div class="field"><label>이메일 확인</label><input type="email" name="confirm_email" required placeholder="hong@corp.local"></div>
+  </div>
+  <div class="actions"><button class="danger" type="submit">이전 메일 데이터 영구 삭제</button></div>
 </div></form>
 {{end}}

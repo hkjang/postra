@@ -88,6 +88,7 @@ type sentMail struct {
 
 type fakeSMTP struct {
 	sent          []sentMail
+	lastOpts      domain.SMTPSendOptions
 	uncertain     bool
 	tempFailsLeft int  // return a temporary error this many times, then succeed
 	permFail      bool // return a permanent error
@@ -107,6 +108,7 @@ func (e classifiedErr) Error() string   { return e.msg }
 func (e classifiedErr) Temporary() bool { return e.temp }
 
 func (f *fakeSMTP) Send(ctx context.Context, opts domain.SMTPSendOptions, env domain.Envelope, msg io.Reader) (domain.SendReceipt, error) {
+	f.lastOpts = opts
 	raw, _ := io.ReadAll(msg)
 	if f.permFail {
 		return domain.SendReceipt{}, classifiedErr{"550 permanent", false}
