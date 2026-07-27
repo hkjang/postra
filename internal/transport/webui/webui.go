@@ -591,7 +591,7 @@ func (s *Server) adminMailProvision(w http.ResponseWriter, r *http.Request) {
 	samePassword := r.FormValue("same_password") == "true"
 	automaticSync := r.FormValue("automatic_sync") == "true"
 	_, err := s.app.AdminProvisionMailAccount(r.Context(), application.AdminMailProvisionInput{
-		TargetUser: r.FormValue("target_user"), MailAddress: r.FormValue("mail_address"),
+		Email:    r.FormValue("email"),
 		IMAPHost: r.FormValue("imap_host"), IMAPPort: intForm(r, "imap_port"),
 		IMAPSecurity: r.FormValue("imap_security"),
 		SMTPHost:     r.FormValue("smtp_host"), SMTPPort: intForm(r, "smtp_port"),
@@ -599,6 +599,7 @@ func (s *Server) adminMailProvision(w http.ResponseWriter, r *http.Request) {
 		AuthUsername: r.FormValue("auth_username"),
 		MailPassword: r.FormValue("mail_password"), SamePassword: &samePassword,
 		SMTPPassword: r.FormValue("smtp_password"), AutomaticSync: &automaticSync,
+		ApplyToAllUsers:    r.FormValue("apply_to_all_users") == "true",
 		InsecureSkipVerify: r.FormValue("insecure_skip_verify") == "true",
 	})
 	if err != nil {

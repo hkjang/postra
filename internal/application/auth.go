@@ -275,7 +275,17 @@ func (a *App) AdminListUsers(ctx context.Context) ([]domain.User, error) {
 	if _, err := requireAdmin(ctx); err != nil {
 		return nil, err
 	}
-	return a.Store.ListUsers(ctx)
+	users, err := a.Store.ListUsers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	active := users[:0]
+	for i := range users {
+		if users[i].Status != domain.UserDeleted {
+			active = append(active, users[i])
+		}
+	}
+	return active, nil
 }
 
 func (a *App) AdminUpdateUser(ctx context.Context, id string, role domain.UserRole, status domain.UserStatus) (*domain.User, error) {
@@ -345,13 +355,27 @@ func (a *App) AdminDeleteUser(ctx context.Context, id string) error {
 			return userErrf("cannot delete the last active administrator")
 		}
 	}
-	u.Status = domain.UserDeleted
+	// Tombstone identity fields as well as the status. This makes deletion
+	// visible in the admin UI and releases the email/OIDC identity so the same
+	// Keycloak user can be freshly auto-provisioned during testing or rejoin.
+	// Historical mailbox rows remain attached to the inaccessible tombstone
+	// user and can never leak into the replacement identity.
+	oldLogin := u.LoginID
+	tombstoneUserIdentity(u)
 	if err := a.Store.UpdateUser(ctx, u); err != nil {
 		return err
 	}
 	_ = a.Store.DeleteUserSessions(ctx, id)
-	a.audit(ctx, "user_delete", "user:"+id, "ok", "by="+p.UserID)
+	a.audit(ctx, "user_delete", "user:"+id, "ok", "by="+p.UserID+" login="+oldLogin)
 	return nil
+}
+
+func tombstoneUserIdentity(u *domain.User) {
+	u.Status = domain.UserDeleted
+	u.LoginID = "deleted-" + u.ID
+	u.Email = ""
+	u.OIDCIssuer = ""
+	u.OIDCSubject = ""
 }
 
 func (a *App) AdminResetPassword(ctx context.Context, userID, password string) error {

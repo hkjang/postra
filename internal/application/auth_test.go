@@ -100,17 +100,30 @@ func TestAdminPreprovisionsOIDCUserAndSharedMailSecret(t *testing.T) {
 	}, ""); err != nil {
 		t.Fatal(err)
 	}
+	legacyDeleted := &domain.User{
+		ID: "usr_legacy_deleted", LoginID: "hong@corp.local", DisplayName: "Old Hong",
+		Email: "hong@corp.local", Role: domain.RoleUser, Status: domain.UserDeleted,
+		AuthProvider: "oidc", OIDCIssuer: "https://keycloak.example/realms/postra",
+		OIDCSubject: "old-subject",
+	}
+	if err := app.Store.CreateUser(base, legacyDeleted, ""); err != nil {
+		t.Fatal(err)
+	}
 	result, err := app.AdminProvisionMailAccount(adminCtx, AdminMailProvisionInput{
-		TargetUser: "hong@corp.local", IMAPHost: "127.0.0.1",
+		Email: "hong@corp.local", IMAPHost: "127.0.0.1",
 		IMAPPort: 993, IMAPSecurity: "tls", SMTPHost: "127.0.0.1",
 		SMTPPort: 587, SMTPSecurity: "starttls", AuthUsername: "hong",
-		MailPassword: "mail-password-only",
+		MailPassword: "mail-password-only", ApplyToAllUsers: true,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.User.AuthProvider != "oidc" || result.User.OIDCSubject != "" {
 		t.Fatalf("expected pending OIDC link, got %+v", result.User)
+	}
+	old, err := app.Store.GetUser(base, legacyDeleted.ID)
+	if err != nil || old.Email != "" || old.OIDCSubject != "" || old.LoginID == "hong@corp.local" {
+		t.Fatalf("legacy deleted identity was not released: user=%+v err=%v", old, err)
 	}
 	if result.Account.UserID != result.User.ID || result.Account.InboundProtocol != domain.InboundIMAP {
 		t.Fatalf("account ownership/protocol mismatch: %+v", result.Account)
@@ -123,7 +136,7 @@ func TestAdminPreprovisionsOIDCUserAndSharedMailSecret(t *testing.T) {
 	}
 	separate := false
 	noAuth, err := app.AdminProvisionMailAccount(adminCtx, AdminMailProvisionInput{
-		TargetUser: result.User.ID, IMAPHost: "127.0.0.1", IMAPSecurity: "tls",
+		Email: "hong@corp.local", IMAPHost: "127.0.0.1", IMAPSecurity: "tls",
 		SMTPHost: "127.0.0.1", SMTPSecurity: "none", SMTPAuth: "none",
 		MailPassword: "imap-only-password", SamePassword: &separate,
 	})
@@ -139,6 +152,30 @@ func TestAdminPreprovisionsOIDCUserAndSharedMailSecret(t *testing.T) {
 		oidcClaims{Subject: "kc-subject-1", Email: "hong@corp.local", EmailVerified: true})
 	if linked == nil || linked.ID != result.User.ID || linked.OIDCSubject != "kc-subject-1" {
 		t.Fatalf("first Keycloak login did not complete pending link: %+v", linked)
+	}
+
+	policy, err := app.AdminProvisionMailAccount(adminCtx, AdminMailProvisionInput{
+		IMAPHost: "127.0.0.1", IMAPSecurity: "tls", SMTPHost: "127.0.0.1",
+		SMTPSecurity: "none", SMTPAuth: "none", MailPassword: "organization-password",
+	})
+	if err != nil || policy.User != nil || policy.Account != nil {
+		t.Fatalf("targetless policy failed: result=%+v err=%v", policy, err)
+	}
+	autoUser := &domain.User{
+		ID: "usr_auto", LoginID: "auto", DisplayName: "Auto", Email: "auto@corp.local",
+		Role: domain.RoleUser, Status: domain.UserActive, AuthProvider: "oidc",
+		OIDCIssuer: "https://keycloak.example/realms/postra", OIDCSubject: "auto-sub",
+	}
+	if err := app.Store.CreateUser(base, autoUser, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.autoProvisionOIDCMail(base, autoUser); err != nil {
+		t.Fatal(err)
+	}
+	autoCtx := WithPrincipal(base, principalFor(autoUser, "oidc"))
+	autoAccounts, err := app.ListAccounts(autoCtx)
+	if err != nil || len(autoAccounts) != 1 || autoAccounts[0].Email != autoUser.Email {
+		t.Fatalf("automatic SSO mail provisioning failed: accounts=%+v err=%v", autoAccounts, err)
 	}
 }
 
@@ -202,6 +239,25 @@ func TestAdminManagementAndTenantIsolation(t *testing.T) {
 	if _, err := app.GetAccount(userCtx, adminAccount.ID); err == nil {
 		t.Fatal("user could access another tenant's account")
 	}
+	if _, err := app.GetAccount(adminCtx, userAccount.ID); err == nil {
+		t.Fatal("administrator could access another user's private mail account")
+	}
+	privateMessage := &domain.Message{
+		ID: "msg_private_member", UserID: user.ID, AccountID: userAccount.ID, UIDL: "private-1",
+		Subject: "private", From: domain.Address{Email: "sender@example.test"},
+		RawHash: "private-hash", RawURI: "mem://private", Date: 1, CreatedAt: 1,
+	}
+	if err := app.Store.InsertMessage(base, privateMessage,
+		&domain.MessageBody{MessageID: privateMessage.ID, TextBody: "private body"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.GetMessage(adminCtx, privateMessage.ID, true); err == nil {
+		t.Fatal("administrator could read another user's private message")
+	}
+	if got, err := app.GetMessage(userCtx, privateMessage.ID, true); err != nil ||
+		got.Body == nil || got.Body.TextBody != "private body" {
+		t.Fatalf("owner could not read private message: view=%+v err=%v", got, err)
+	}
 	renamed, newEmail := "Renamed account", "renamed@example.test"
 	if _, err := app.UpdateAccount(adminCtx, UpdateAccountInput{
 		AccountID: adminAccount.ID, Name: &renamed, Email: &newEmail,
@@ -223,6 +279,21 @@ func TestAdminManagementAndTenantIsolation(t *testing.T) {
 	}
 	if _, err := app.AuthenticateLocal(base, "member", "member-password-long"); err == nil {
 		t.Fatal("deleted user could still sign in")
+	}
+	users, err := app.AdminListUsers(adminCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range users {
+		if users[i].ID == user.ID {
+			t.Fatal("deleted user remained visible in administrator list")
+		}
+	}
+	if _, err := app.AdminCreateUser(adminCtx, CreateUserInput{
+		LoginID: "member", DisplayName: "Replacement", Role: domain.RoleUser,
+		Password: "replacement-password-long",
+	}); err != nil {
+		t.Fatalf("deleted identity could not be freshly provisioned: %v", err)
 	}
 }
 

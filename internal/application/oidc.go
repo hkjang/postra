@@ -241,12 +241,25 @@ func (a *App) CompleteOIDC(ctx context.Context, code string, flow OIDCFlow) (*do
 	}
 	u, err := a.Store.GetUserByOIDC(ctx, rt.Issuer, claims.Subject)
 	if err == nil {
-		if u.Status != domain.UserActive {
-			return nil, userErrf("user is disabled")
+		if u.Status == domain.UserDeleted {
+			// Compatibility with users deleted before identity tombstoning:
+			// release the old subject/email, then continue as a fresh login.
+			tombstoneUserIdentity(u)
+			if updateErr := a.Store.UpdateUser(ctx, u); updateErr != nil {
+				return nil, updateErr
+			}
+			err = domain.ErrNotFound
+		} else {
+			if u.Status != domain.UserActive {
+				return nil, userErrf("user is disabled")
+			}
+			u.LastLoginAt = time.Now().Unix()
+			_ = a.Store.UpdateUser(ctx, u)
+			if claims.EmailVerified {
+				a.tryAutoProvisionOIDCMail(ctx, u)
+			}
+			return u, nil
 		}
-		u.LastLoginAt = time.Now().Unix()
-		_ = a.Store.UpdateUser(ctx, u)
-		return u, nil
 	}
 	if !errors.Is(err, domain.ErrNotFound) {
 		return nil, err
@@ -258,6 +271,9 @@ func (a *App) CompleteOIDC(ctx context.Context, code string, flow OIDCFlow) (*do
 	// creating a duplicate. This runs even when auto-provision is off, because
 	// linking an existing account is not provisioning a new one.
 	if linked := a.linkExistingLocalUser(ctx, rt, claims); linked != nil {
+		if claims.EmailVerified {
+			a.tryAutoProvisionOIDCMail(ctx, linked)
+		}
 		return linked, nil
 	}
 
@@ -286,6 +302,9 @@ func (a *App) CompleteOIDC(ctx context.Context, code string, flow OIDCFlow) (*do
 		return nil, err
 	}
 	a.audit(WithPrincipal(ctx, principalFor(u, "oidc")), "user_provision", "user:"+u.ID, "ok", rt.Issuer)
+	if claims.EmailVerified {
+		a.tryAutoProvisionOIDCMail(ctx, u)
+	}
 	return u, nil
 }
 
