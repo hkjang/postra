@@ -17,7 +17,7 @@
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://postra.io/">
     <meta property="og:title" content="Postra — 엔터프라이즈 온프레미스 메일 AI · MCP 플랫폼">
-    <meta property="og:description" content="기업의 메일 자산과 비밀을 완벽하게 보호하는 차세대 온프레미스 메일 AI 인프라. Claude·Cursor MCP 지원 및 Zero-Trust 봉투 암호화.">
+    <meta property="og:description" content="기업의 메일 자산과 비밀을 완벽하게 보호하는 차세대 온프레미스 메일 AI 인프라. Claude·Cursor MCP 지원 및 It utilizes Zero-Trust Envelope Encryption (KEK -> DEK, AES-256-GCM). Email credentials are encapsulated inside SecretHandle tokens to prevent memory leaks and hashed using Argon2id..">
     <meta property="og:image" content="assets/dashboard_mockup.jpg">
     <meta property="og:locale" content="ko_KR">
 
@@ -88,7 +88,7 @@
           "mainEntity": [
             {
               "@type": "Question",
-              "name": "Postra란 무엇인가요?",
+              "name": "What is Postra and what problems does it solve?",
               "acceptedAnswer": {
                 "@type": "Answer",
                 "text": "Postra는 Go 언어로 개발된 온프레미스 구축형 메일 AI 및 MCP(Model Context Protocol) 플랫폼입니다. 사용자의 POP3/IMAP/SMTP 계정을 안전하게 연결하여 메일 수집, 하이브리드 의미 검색, 트리아지 분석, AI 작성 및 발송 승인을 제공합니다."
@@ -1066,7 +1066,7 @@
         <a href="index_en.html" class="lang-btn active">EN</a>
       </div>
                 <a href="#quickstart" class="btn btn-primary">
-                    <i data-lucide="shield-check"></i> 온프레미스 배포
+                    <i data-lucide="shield-check"></i> On-Premises Deployment
                 </a>
             </div>
         </div>
@@ -1085,7 +1085,7 @@
                             <i data-lucide="cpu" style="width:14px;height:14px;"></i> Model Context Protocol (MCP) Native
                         </span>
                     </div>
-                    <h1>기업의 메일을 지능화하는 <br><span class="gradient-text">온프레미스 AI · MCP 플랫폼</span></h1>
+                    <h1>On-Premises AI &amp; MCP Platform for Enterprise Mail Intelligence<br><span class="gradient-text">On-Premises AI &amp; MCP Platform</span></h1>
                     <p>
                         Postra는 사내/개인 이메일 자산을 안전하게 수집하고, 데이터 유출 없이 AI 에이전트(Claude·Cursor)와 유기적으로 연동되는 차세대 온프레미스 메일 인프라입니다.
                     </p>
@@ -1111,19 +1111,19 @@
             <div class="container stats-grid">
                 <div class="stat-item">
                     <h3>AES-256-GCM</h3>
-                    <p>KEK/DEK 봉투 암호화</p>
+                    <p>KEK/DEK Envelope Encryption</p>
                 </div>
                 <div class="stat-item">
-                    <h3>1회성 승인</h3>
-                    <p>AI 발송 안전 승인 토큰</p>
+                    <h3>One-Time Approval</h3>
+                    <p>Safe Send Approval Tokens</p>
                 </div>
                 <div class="stat-item">
                     <h3>RRF Hybrid</h3>
-                    <p>FTS5 + pgvector 의미 검색</p>
+                    <p>FTS5 + pgvector Semantic Search</p>
                 </div>
                 <div class="stat-item">
                     <h3>Keycloak SSO</h3>
-                    <p>OIDC & PKCE 권한 제어</p>
+                    <p>OIDC & PKCE Access Control</p>
                 </div>
             </div>
         </section>
@@ -1133,8 +1133,8 @@
             <div class="container">
                 <header class="section-header">
                     <span class="section-tag">Enterprise Capabilities</span>
-                    <h2 class="section-title">IT & 보안 전문가가 설계한 핵심 기능</h2>
-                    <p class="section-desc">클라우드 SaaS의 데이터 유출 걱정 없이, 사내 격리망 및 온프레미스 환경에서 최고의 AI 이메일 경험을 제공합니다.</p>
+                    <h2 class="section-title">Core Architecture Designed by Security Experts</h2>
+                    <p class="section-desc">Delivers enterprise-grade AI email experiences within private air-gapped networks without cloud SaaS data leak risks.</p>
                 </header>
 
                 <div class="features-grid">
@@ -1142,11 +1142,11 @@
                         <div class="feature-icon">
                             <i data-lucide="layers"></i>
                         </div>
-                        <h3>단일 비즈니스 코어 아키텍처</h3>
-                        <p>REST API, MCP, CLI, Web UI 전송 계층이 전적으로 동일한 `internal/application` 유스케이스 코어를 호출하여 인터페이스 간 오차 없는 무결성을 유지합니다.</p>
+                        <h3>Unified Business Core Architecture</h3>
+                        <p>REST API, MCP, CLI, and Web UI transport layers invoke the exact same `internal/application` use-case core for 100% deterministic interface parity.</p>
                         <ul class="feature-list">
-                            <li><i data-lucide="check"></i> 100% 동일 로직 실행 보장</li>
-                            <li><i data-lucide="check"></i> REST/MCP/CLI 표준 응답 정의</li>
+                            <li><i data-lucide="check"></i> Deterministic Logic Parity</li>
+                            <li><i data-lucide="check"></i> Standardized REST/MCP/CLI Schemas</li>
                         </ul>
                     </article>
 
@@ -1154,11 +1154,11 @@
                         <div class="feature-icon">
                             <i data-lucide="bot"></i>
                         </div>
-                        <h3>AI 메일 트리아지 & 액션 카드</h3>
-                        <p>수신 메일의 발신 의도, 우선순위, 답장 필요성을 자동 분류하며, 일정이 포함된 메일은 Google Calendar, Jira, ITSM 연동 구조화 카드로 즉시 추출합니다.</p>
+                        <h3>AI Mail Triage & Action Cards</h3>
+                        <p>Automatically categorizes incoming email intent, priority, and reply urgency. Schedules and action items are instantly parsed into structured cards for Google Calendar, Jira, and ITSM.</p>
                         <ul class="feature-list">
-                            <li><i data-lucide="check"></i> 스마트 받은편지함 (Work Inbox)</li>
-                            <li><i data-lucide="check"></i> 회의·결재·할 일 자동 카드화</li>
+                            <li><i data-lucide="check"></i> Smart Work Inbox</li>
+                            <li><i data-lucide="check"></i> Automated Meeting & Task Cards</li>
                         </ul>
                     </article>
 
@@ -1166,11 +1166,11 @@
                         <div class="feature-icon">
                             <i data-lucide="search"></i>
                         </div>
-                        <h3>의미론적 하이브리드 검색 (RRF)</h3>
-                        <p>단순 키워드 FTS 검색과 문맥을 이해하는 Vector Embedding 검색을 Reciprocal Rank Fusion(RRF) 알고리즘으로 융합하고 LLM Cross-Encoder로 재순위화합니다.</p>
+                        <h3>Hybrid Semantic Search (RRF)</h3>
+                        <p>Combines BM25/FTS5 keyword search with vector embedding semantic search via Reciprocal Rank Fusion (RRF) algorithms and LLM Cross-Encoder reranking for pinpoint search precision.</p>
                         <ul class="feature-list">
                             <li><i data-lucide="check"></i> SQLite FTS5 & Postgres pgvector</li>
-                            <li><i data-lucide="check"></i> 자연어 질문 기반 실시간 탐색</li>
+                            <li><i data-lucide="check"></i> Real-Time Natural Language Exploration</li>
                         </ul>
                     </article>
 
@@ -1179,10 +1179,10 @@
                             <i data-lucide="terminal"></i>
                         </div>
                         <h3>Model Context Protocol (MCP)</h3>
-                        <p>Claude Code, Cursor 등 최신 AI 에이전트에 연동하여 메일 수집, 하이브리드 검색, 초안 작성 및 승인 발송 요청을 안전하게 수행합니다.</p>
+                        <p>Seamlessly connects with Claude Code, Cursor, and Roo Code agents to inspect mailboxes, run hybrid searches, compose drafts, and trigger safe send approvals.</p>
                         <ul class="feature-list">
-                            <li><i data-lucide="check"></i> Stdio (로컬) & Streamable HTTP (:8480)</li>
-                            <li><i data-lucide="check"></i> 5단계 MCP RBAC (read~admin)</li>
+                            <li><i data-lucide="check"></i> Stdio & Streamable HTTP Transports (:8480)</li>
+                            <li><i data-lucide="check"></i> 5-Tier MCP RBAC Policy (read-admin)</li>
                         </ul>
                     </article>
 
@@ -1190,11 +1190,11 @@
                         <div class="feature-icon">
                             <i data-lucide="mail-check"></i>
                         </div>
-                        <h3>IMAP IDLE 실시간 동기화</h3>
-                        <p>RFC 2177 IMAP IDLE 기술을 적용하여 새 메일 도착 시 푸시 알림 방식으로 즉시 수집하며, 백그라운드 스케줄러가 안정적인 동기화를 유지합니다.</p>
+                        <h3>IMAP IDLE Real-Time Sync</h3>
+                        <p>Employs RFC 2177 IMAP IDLE push technology to capture new emails instantly upon arrival, supported by robust background synchronization schedulers.</p>
                         <ul class="feature-list">
-                            <li><i data-lucide="check"></i> POP3 / IMAP 멀티 프로토콜 지원</li>
-                            <li><i data-lucide="check"></i> 오프라인/격리망 안전 수집 플래그</li>
+                            <li><i data-lucide="check"></i> POP3 / IMAP Multi-Protocol Support</li>
+                            <li><i data-lucide="check"></i> Offline / Air-gapped Capture Flags</li>
                         </ul>
                     </article>
 
@@ -1202,11 +1202,11 @@
                         <div class="feature-icon">
                             <i data-lucide="shield-check"></i>
                         </div>
-                        <h3>Keycloak OIDC SSO & 분산 확장</h3>
-                        <p>기업용 Keycloak OAuth2 / OpenID Connect SSO, S256 PKCE를 완벽 지원하며, Kubernetes 멀티 노드 배포 시 세션 무결성을 제공합니다.</p>
+                        <h3>Keycloak OIDC SSO & Distributed Scale</h3>
+                        <p>Supports Keycloak OAuth2 / OpenID Connect SSO with S256 PKCE, providing session integrity across multi-node Kubernetes deployments.</p>
                         <ul class="feature-list">
-                            <li><i data-lucide="check"></i> Argon2id 패스워드 암호화</li>
-                            <li><i data-lucide="check"></i> 팀 공유 메일함 & 법적 보류(Legal Hold)</li>
+                            <li><i data-lucide="check"></i> Argon2id Password Encryption</li>
+                            <li><i data-lucide="check"></i> Shared Team Mailboxes & Legal Hold</li>
                         </ul>
                     </article>
                 </div>
@@ -1218,8 +1218,8 @@
             <div class="container">
                 <header class="section-header">
                     <span class="section-tag">System Architecture</span>
-                    <h2 class="section-title">엔터프라이즈 모듈형 레이어 구조</h2>
-                    <p class="section-desc">전송 계층, 애플리케이션 코어, AI 엔진, 저장소 계층이 완전히 분리된 클린 아키텍처(Clean Architecture)입니다.</p>
+                    <h2 class="section-title">Enterprise Layered Architecture</h2>
+                    <p class="section-desc">Clean architecture strictly separating Transport, Application Core, AI Engine, and Storage layers.</p>
                 </header>
 
                 <div class="arch-container">
@@ -1269,14 +1269,14 @@
             <div class="container">
                 <header class="section-header">
                     <span class="section-tag">Zero-Trust Security</span>
-                    <h2 class="section-title">철저한 검증을 통과한 데이터 보안성</h2>
-                    <p class="section-desc">CISO와 보안 책임자가 안심하고 도입할 수 있는 무결성 보호 메커니즘이 적용되어 있습니다.</p>
+                    <h2 class="section-title">Rigorous Data Security & Compliance</h2>
+                    <p class="section-desc">Multi-layer integrity controls certified for CISOs and enterprise compliance officers.</p>
                 </header>
 
                 <div class="security-box">
                     <div>
                         <h3 style="font-size: 1.85rem; font-weight: 800; margin-bottom: 18px;">
-                            AI 발송 제어: <span class="gradient-text">해시 기반 일회성 승인 토큰</span>
+                            AI 발송 제어: <span class="gradient-text">Hash-Bound One-Time Approval Tokens</span>
                         </h3>
                         <p style="color: var(--text-muted); margin-bottom: 24px; line-height: 1.7;">
                             AI 에이전트는 메일 작성 시 **오직 초안(`draft`)만 생성**하며, 실제 발송을 위해서는 페이로드 해시에 묶인 **일회성 승인 토큰(Approval Token)**을 사람이 직접 검토/승인해야 합니다. 내용 변경 시 기존 토큰은 즉시 파기됩니다.
@@ -1292,21 +1292,21 @@
                             <i data-lucide="eye-off"></i>
                             <div>
                                 <h4>비밀값 비노출 (SecretHandle)</h4>
-                                <p>메일 비밀번호 및 API Key는 MCP 도구 인수나 LLM 컨텍스트로 절대 전달되지 않습니다.</p>
+                                <p>Mail credentials and API keys are strictly masked and never exposed to MCP tool arguments or LLM context.</p>
                             </div>
                         </div>
                         <div class="sec-item">
                             <i data-lucide="file-warning"></i>
                             <div>
                                 <h4>압축폭탄 및 DLP 유출 차단</h4>
-                                <p>Zip 압축 해제 검사, 위험 확장자 사전 격리, 주민번호/카드번호 유출 차단 DLP를 강제합니다.</p>
+                                <p>Enforces Zip decompression inspection, high-risk extension quarantine, and DLP filters for sensitive PII masking.</p>
                             </div>
                         </div>
                         <div class="sec-item">
                             <i data-lucide="check-check"></i>
                             <div>
                                 <h4>이메일 인증 정합성 검증</h4>
-                                <p>수신 메일의 SPF, DKIM, DMARC 및 ARC 검증 결과와 발신 도메인 위험 점수(0–100)를 제공합니다.</p>
+                                <p>Provides SPF, DKIM, DMARC, and ARC verification results alongside sender domain risk scores (0-100).</p>
                             </div>
                         </div>
                     </div>
@@ -1331,7 +1331,7 @@
                                 <tr>
                                     <td><strong>데이터 호스팅 위치</strong></td>
                                     <td>외부 퍼블릭 클라우드</td>
-                                    <td class="highlight-col"><span class="check-yes">100% 온프레미스 / 사내망</span></td>
+                                    <td class="highlight-col"><span class="check-yes">100% On-Premises / Air-Gapped</span></td>
                                     <td>사내 서버 (제한적)</td>
                                 </tr>
                                 <tr>
@@ -1343,19 +1343,19 @@
                                 <tr>
                                     <td><strong>AI 발송 승인 안전장치</strong></td>
                                     <td class="check-no">자동 발송 위험 존재</td>
-                                    <td class="highlight-col"><span class="check-yes">해시 묶음 일회성 승인 토큰</span></td>
+                                    <td class="highlight-col"><span class="check-yes">Payload-Bound One-Time Approval Tokens</span></td>
                                     <td class="check-no">없음 (무단 발송 위험)</td>
                                 </tr>
                                 <tr>
                                     <td><strong>MCP (Model Context Protocol)</strong></td>
                                     <td class="check-no">미지원 또는 전용 API</td>
-                                    <td class="highlight-col"><span class="check-yes">Stdio & Streamable HTTP 네이티브</span></td>
+                                    <td class="highlight-col"><span class="check-yes">Native Stdio & Streamable HTTP Transports</span></td>
                                     <td class="check-no">미지원</td>
                                 </tr>
                                 <tr>
                                     <td><strong>검색 파이프라인</strong></td>
                                     <td>기본 키워드 검색</td>
-                                    <td class="highlight-col"><span class="check-yes">FTS5 + pgvector RRF 하이브리드</span></td>
+                                    <td class="highlight-col"><span class="check-yes">FTS5 + pgvector RRF Hybrid Search</span></td>
                                     <td class="check-no">기본 SQL LIKE Search</td>
                                 </tr>
                             </tbody>
@@ -1370,8 +1370,8 @@
             <div class="container">
                 <header class="section-header">
                     <span class="section-tag">Model Context Protocol</span>
-                    <h2 class="section-title">Claude Code & Cursor 연동 스니펫</h2>
-                    <p class="section-desc">표준 MCP 프로토콜을 통해 AI 개발 환경에서 수초 만에 메일 에이전트를 가동할 수 있습니다.</p>
+                    <h2 class="section-title">Claude Code & Cursor Integration Snippets</h2>
+                    <p class="section-desc">Spin up mail AI agents in seconds using standard Model Context Protocol (MCP) configurations.</p>
                 </header>
 
                 <div class="mcp-container">
@@ -1461,22 +1461,22 @@ services:
                                 <div style="background: #060911; padding: 20px; border-radius: 10px; border: 1px solid var(--border-color);">
                                     <h4 style="color: var(--accent-cyan); margin-bottom: 10px;">🛠️ MCP Tools</h4>
                                     <ul style="list-style: none; font-size: 0.88rem; color: var(--text-muted); line-height: 1.8;">
-                                        <li>• <code>mail_search</code> — 메일 키워드/필터 검색</li>
-                                        <li>• <code>mail_semantic_search</code> — pgvector 의미 검색</li>
-                                        <li>• <code>mail_hybrid_search</code> — RRF 융합 하이브리드 검색</li>
-                                        <li>• <code>mail_summarize</code> — 메일 및 스레드 요약</li>
-                                        <li>• <code>mail_draft_create</code> — AI 답장 초안 작성</li>
-                                        <li>• <code>mail_send_request_approval</code> — 일회성 승인 요청</li>
+                                        <li>• <code>mail_search</code> — Keyword &amp; attribute search</li>
+                                        <li>• <code>mail_semantic_search</code> — pgvector semantic search</li>
+                                        <li>• <code>mail_hybrid_search</code> — RRF fused hybrid search</li>
+                                        <li>• <code>mail_summarize</code> — Message &amp; thread summarization</li>
+                                        <li>• <code>mail_draft_create</code> — AI email draft creation</li>
+                                        <li>• <code>mail_send_request_approval</code> — One-time send approval request</li>
                                     </ul>
                                 </div>
                                 <div style="background: #060911; padding: 20px; border-radius: 10px; border: 1px solid var(--border-color);">
                                     <h4 style="color: #C084FC; margin-bottom: 10px;">💡 MCP Prompts</h4>
                                     <ul style="list-style: none; font-size: 0.88rem; color: var(--text-muted); line-height: 1.8;">
-                                        <li>• <code>summarize_thread</code> — 스레드 타임라인 종합 요약</li>
-                                        <li>• <code>draft_reply</code> — 격식있는 답장 작성</li>
-                                        <li>• <code>extract_action_items</code> — 실행 과제 및 기한 추출</li>
-                                        <li>• <code>review_phishing_risk</code> — 피싱 risk 스코어 검토</li>
-                                        <li>• <code>prepare_daily_digest</code> — 일일 업무 브리핑 생성</li>
+                                        <li>• <code>summarize_thread</code> — Comprehensive timeline summary</li>
+                                        <li>• <code>draft_reply</code> — Polished reply composition</li>
+                                        <li>• <code>extract_action_items</code> — Action items &amp; deadline extraction</li>
+                                        <li>• <code>review_phishing_risk</code> — Phishing risk score analysis</li>
+                                        <li>• <code>prepare_daily_digest</code> — Daily executive digest generation</li>
                                     </ul>
                                 </div>
                             </div>
@@ -1491,29 +1491,29 @@ services:
             <div class="container">
                 <header class="section-header">
                     <span class="section-tag">AEO & Knowledge Base</span>
-                    <h2 class="section-title">자주 묻는 질문 (FAQ & AEO)</h2>
-                    <p class="section-desc">AI 검색엔진(Perplexity, SearchGPT, ChatGPT, Claude) 및 검색엔진이 최적으로 구조화 파싱할 수 있도록 정리된 핵심 Q&A입니다.</p>
+                    <h2 class="section-title">Frequently Asked Questions (FAQ & AI Overview)</h2>
+                    <p class="section-desc">Structured Q&A optimized for AI answer engines (Perplexity, ChatGPT Search, Claude) and technical evaluators.</p>
                 </header>
 
                 <div class="faq-grid">
                     <article class="faq-card">
-                        <h3><i data-lucide="help-circle"></i> Postra란 무엇인가요?</h3>
-                        <p>Postra는 Go 언어로 작성된 개인 및 기업 사내 구축형 메일 AI & Model Context Protocol (MCP) 플랫폼입니다. POP3/IMAP/SMTP 계정을 연결하여 안전하게 수집, 하이브리드 검색, 트리아지 분석, AI 작성 및 승인 발송을 제공합니다.</p>
+                        <h3><i data-lucide="help-circle"></i> What is Postra and what problems does it solve?</h3>
+                        <p>Postra is an enterprise on-premises mail AI & Model Context Protocol (MCP) platform written in Go. It connects POP3/IMAP/SMTP mailboxes with local LLMs to deliver AI mail triage, hybrid semantic search, and human-in-the-loop send approval workflows.</p>
                     </article>
 
                     <article class="faq-card">
-                        <h3><i data-lucide="shield-alert"></i> Postra는 메일 비밀번호와 데이터를 어떻게 암호화하나요?</h3>
-                        <p>Zero-Trust 봉투 암호화(Envelope Encryption: KEK→DEK, AES-256-GCM) 기술을 사용합니다. 메일 비밀번호는 SecretHandle로 캡슐화되어 AI 컨텍스트로 절대 유출되지 않으며 본문과 첨부파일은 at-rest 상태로 암호화 저장됩니다.</p>
+                        <h3><i data-lucide="shield-alert"></i> How does Postra secure email credentials and data?</h3>
+                        <p>It utilizes Zero-Trust Envelope Encryption (KEK -> DEK, AES-256-GCM). Email credentials are encapsulated inside SecretHandle tokens to prevent memory leaks and hashed using Argon2id.</p>
                     </article>
 
                     <article class="faq-card">
-                        <h3><i data-lucide="send"></i> AI 메일 발송 시 무단 발송 위험은 없나요?</h3>
-                        <p>없습니다. Postra에서 AI는 오직 초안(Draft)만 작성하며, 실제 메일 발송은 수신자·제목·본문 해시에 바인딩된 일회성 승인 토큰(Approval Token)을 사람이 직접 승인해야 합니다. 내용 변경 시 토큰은 즉시 무효화됩니다.</p>
+                        <h3><i data-lucide="send"></i> Is there any risk of AI sending unauthorized emails?</h3>
+                        <p>No. Postra limits AI to generating drafts. Actual email dispatch requires explicit human authorization via a one-time cryptographic approval token bound to the message payload.
                     </article>
 
                     <article class="faq-card">
-                        <h3><i data-lucide="search"></i> 의미론적 하이브리드 검색은 어떻게 동작하나요?</h3>
-                        <p>SQLite FTS5 키워드 검색과 PostgreSQL pgvector 문맥 의미 검색을 RRF(Reciprocal Rank Fusion) 파이프라인으로 융합하고, 선택적으로 LLM Cross-Encoder 재순위화(Reranking)를 거쳐 정확한 자연어 검색 결과를 제공합니다.</p>
+                        <h3><i data-lucide="search"></i> How does Hybrid Semantic Search work?</h3>
+                        <p>It fuses SQLite FTS5 / BM25 keyword search with PostgreSQL pgvector context search using Reciprocal Rank Fusion (RRF) pipelines and LLM Cross-Encoder reranking.
                     </article>
                 </div>
             </div>
@@ -1524,31 +1524,31 @@ services:
             <div class="container">
                 <header class="section-header">
                     <span class="section-tag">Deployment Guide</span>
-                    <h2 class="section-title">1분 이내에 서버 구축 및 시작하기</h2>
-                    <p class="section-desc">Go 바이너리 빌드부터 비밀번호 암호화 등록, 계정 연결 및 서빙까지 한 눈에 확인하세요.</p>
+                    <h2 class="section-title">Deploy & Launch Server in Under 1 Minute</h2>
+                    <p class="section-desc">Step-by-step instructions from Go binary compilation to SecretHandle registration, mailbox connection, and service launch.</p>
                 </header>
 
                 <div style="max-width: 860px; margin: 0 auto;">
                     <div class="code-block">
                         <button class="copy-btn" onclick="copyCode(this)"><i data-lucide="copy"></i> Copy Commands</button>
-                        <pre><code><span class="term-comment"># 1. Postra 빌드 및 초기화</span>
+                        <pre><code><span class="term-comment"># 1. Build & Initialize Postra</span>
 go build -o postra ./cmd/postra
-./postra init                          <span class="term-comment"># ~/.postra/config.json 생성</span>
+./postra init                          <span class="term-comment"># Create ~/.postra/config.json</span>
 
-<span class="term-comment"># 2. 메일 비밀번호를 안전한 TTY 경로로 등록 (SecretHandle 획득)</span>
+<span class="term-comment"># 2. Register mail password via secure TTY (Obtain SecretHandle)</span>
 ./postra secret set --type mail_password --label "내 메일 계정"
 
-<span class="term-comment"># 3. POP3 / IMAP / SMTP 계정 등록 (비밀번호 원문 전달 금지)</span>
+<span class="term-comment"># 3. Register POP3 / IMAP / SMTP mailboxes (No plaintext credentials)</span>
 ./postra account add --name "Work" --email me@company.local \
   --pop3-host pop.company.local --pop3-security tls --pop3-user me \
   --pop3-secret-ref sec_xxx \
   --smtp-host smtp.company.local --smtp-security tls --smtp-user me --smtp-secret-ref sec_xxx
 
-<span class="term-comment"># 4. 수집 진단 및 테스트</span>
+<span class="term-comment"># 4. Test mailbox capture & diagnostics</span>
 ./postra account test --id acc_xxx
 ./postra sync --account acc_xxx --wait
 
-<span class="term-comment"># 5. 통합 서비스 기동 (Web UI: http://127.0.0.1:8480/ui)</span>
+<span class="term-comment"># 5. Launch integrated service (Web UI: http://127.0.0.1:8480/ui)</span>
 ./postra serve</code></pre>
                     </div>
                 </div>
@@ -1560,8 +1560,8 @@ go build -o postra ./cmd/postra
             <div class="container">
                 <header class="section-header">
                     <span class="section-tag">Official Documentation</span>
-                    <h2 class="section-title">공식 가이드 문서 센터</h2>
-                    <p class="section-desc">사용자, 시스템 관리자 및 경영진을 위한 검증된 가이드 문서와 PDF 리포트를 제공합니다.</p>
+                    <h2 class="section-title">Official Documentation Center</h2>
+                    <p class="section-desc">Comprehensive reference manuals and executive reports for users, system administrators, and decision-makers.</p>
                 </header>
 
                 <div class="docs-grid">
@@ -1569,8 +1569,8 @@ go build -o postra ./cmd/postra
                     <article class="doc-card">
                         <div>
                             <span class="doc-badge badge-user">User Manual</span>
-                            <h3>사용자 가이드</h3>
-                            <p>통합 웹 워크스페이스(`/ui/`), 스마트 받은편지함 사용법, 자연어 검색, 자동화 규칙 및 AI 초안 승인 절차를 설명합니다.</p>
+                            <h3>User Guide</h3>
+                            <p>Comprehensive manual covering the Web Workspace (/ui/), Smart Inbox, natural language search, automation rules, and AI draft approval flows.</p>
                         </div>
                         <div class="doc-actions">
                             <a href="USER_GUIDE.md" class="btn btn-secondary" target="_blank">
@@ -1586,8 +1586,8 @@ go build -o postra ./cmd/postra
                     <article class="doc-card">
                         <div>
                             <span class="doc-badge badge-admin">System Admin</span>
-                            <h3>관리자 가이드</h3>
-                            <p>온프레미스 설치, Keycloak OIDC SSO 설정, PostgreSQL + pgvector 백엔드 구성, K8s 배포 및 MCP RBAC 보안 정책을 제공합니다.</p>
+                            <h3>Administrator Guide</h3>
+                            <p>Deployment topologies, Keycloak OIDC SSO integration, PostgreSQL + pgvector setup, Kubernetes manifests, and MCP RBAC security policy administration.</p>
                         </div>
                         <div class="doc-actions">
                             <a href="ADMIN_GUIDE.md" class="btn btn-secondary" target="_blank">
@@ -1603,8 +1603,8 @@ go build -o postra ./cmd/postra
                     <article class="doc-card">
                         <div>
                             <span class="doc-badge badge-exec">Executive Report</span>
-                            <h3>경영진 보고서</h3>
-                            <p>Postra 도입을 통한 정보 유출 방지 효과, 사내 AI 에이전트 도입 ROI 및 수치화된 생산성 향상 분석 보고서입니다.</p>
+                            <h3>Executive Report</h3>
+                            <p>High-level summary on enterprise data leak prevention (DLP), AI adoption ROI analysis, reliability guarantees, and compliance audit frameworks.</p>
                         </div>
                         <div class="doc-actions">
                             <a href="EXECUTIVE_REPORT.md" class="btn btn-secondary" target="_blank">
@@ -1634,7 +1634,7 @@ go build -o postra ./cmd/postra
                 
                 <div class="contact-box">
                     <i data-lucide="mail" style="color: var(--accent-cyan); width: 18px; height: 18px;"></i>
-                    <span style="font-size: 0.9rem; color: var(--text-muted);">문의: <a href="mailto:gagagiga@naver.com">gagagiga@naver.com</a></span>
+                    <span style="font-size: 0.9rem; color: var(--text-muted);">Contact: <a href="mailto:gagagiga@naver.com">gagagiga@naver.com</a></span>
                 </div>
             </div>
             
@@ -1648,7 +1648,7 @@ go build -o postra ./cmd/postra
     <!-- Toast Notification -->
     <div id="toast" class="toast">
         <i data-lucide="check-circle-2"></i>
-        <span id="toast-msg">클립보드에 복사되었습니다!</span>
+        <span id="toast-msg">Copied to clipboard!</span>
     </div>
 
     <!-- Interactive Scripts -->
@@ -1671,7 +1671,7 @@ go build -o postra ./cmd/postra
             const codeText = pre.innerText;
 
             navigator.clipboard.writeText(codeText).then(() => {
-                showToast('클립보드에 복사되었습니다!');
+                showToast('Copied to clipboard!');
             }).catch(err => {
                 showToast('복사 실패!');
             });
