@@ -964,6 +964,38 @@
   }
 }
 </style>
+<style>
+/* Language Switcher Styling */
+.lang-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  background: rgba(255, 255, 255, 0.08);
+  padding: 3px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+.lang-btn {
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  padding: 4px 10px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  border-radius: 4px;
+  cursor: pointer;
+  text-decoration: none;
+  transition: all 0.2s ease;
+  line-height: 1.2;
+}
+.lang-btn:hover {
+  color: #ffffff;
+}
+.lang-btn.active {
+  background: #3b82f6;
+  color: #ffffff;
+}
+</style>
 </head>
 <body>
 
@@ -990,6 +1022,10 @@
           <svg width="24" height="24" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>
         </button>
             <div class="nav-cta">
+      <div class="lang-switch">
+        <a href="index.html" class="lang-btn active">KO</a>
+        <a href="index_en.html" class="lang-btn">EN</a>
+      </div>
                 <a href="#quickstart" class="btn btn-primary">
                     <i data-lucide="shield-check"></i> 온프레미스 배포
                 </a>
