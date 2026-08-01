@@ -1,1688 +1,475 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Postra — Enterprise On-Premises Mail AI &amp; MCP Platform</title>
-    
-    <!-- Core SEO Meta Tags -->
-    <meta name="description" content="Postra is a next-generation on-premise mail AI and Model Context Protocol (MCP) platform built in Go. Zero-Trust AES-256 Envelope encryption, pgvector hybrid semantic search, Keycloak OIDC, and Claude/Cursor AI integration.">
-    <meta name="keywords" content="Postra, Mail AI, MCP, Model Context Protocol, On-Premise Mail, Email Encryption, Envelope Encryption, pgvector, Semantic Search, Keycloak OIDC, Claude Code, Cursor, AI Email Client">
-    <meta name="author" content="Postra Team">
-    <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1">
-    <link rel="canonical" href="https://postra.io/">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Postra — Self-Hosted Email Intelligence &amp; MCP</title>
+  <meta name="description" content="Postra is a self-hosted email workspace for securely collecting, searching, analyzing, drafting, and sending mail through Web, CLI, REST, and MCP interfaces.">
+  <meta name="author" content="Postra Project">
+  <meta name="robots" content="index,follow,max-image-preview:large">
+  <link rel="canonical" href="https://hkjang.github.io/postra/index_en.html">
+  <link rel="alternate" hreflang="ko" href="https://hkjang.github.io/postra/">
+  <link rel="alternate" hreflang="en" href="https://hkjang.github.io/postra/index_en.html">
+  <link rel="icon" type="image/png" href="assets/favicon.png">
 
-    <!-- Open Graph / Facebook / Kakao -->
-    <meta property="og:site_name" content="Postra Enterprise">
-    <meta property="og:type" content="website">
-    <meta property="og:url" content="https://postra.io/">
-    <meta property="og:title" content="Postra — Enterprise On-Premises Mail AI &amp; MCP Platform">
-    <meta property="og:description" content="Next-generation on-premise mail AI infrastructure fully protecting enterprise email assets and secrets. Claude/Cursor MCP support with Zero-Trust envelope encryption.">
-    <meta property="og:image" content="assets/dashboard_mockup.jpg">
-    <meta property="og:locale" content="ko_KR">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Postra">
+  <meta property="og:url" content="https://hkjang.github.io/postra/index_en.html">
+  <meta property="og:title" content="Postra — Self-Hosted Email Intelligence &amp; MCP">
+  <meta property="og:description" content="Bring search, triage, drafting, and AI assistance to email while keeping deployment and access under your control.">
+  <meta property="og:image" content="https://hkjang.github.io/postra/assets/dashboard_mockup.jpg">
+  <meta name="twitter:card" content="summary_large_image">
 
-    <!-- Twitter Cards -->
-    <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="Postra — Enterprise On-Premises Mail AI &amp; MCP Platform">
-    <meta name="twitter:description" content="Go-based on-premise mail AI & MCP platform. Envelope encryption, pgvector RRF hybrid search, Keycloak SSO.">
-    <meta name="twitter:image" content="assets/dashboard_mockup.jpg">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "Postra",
+    "applicationCategory": "BusinessApplication",
+    "operatingSystem": "Linux, macOS, Windows, Docker",
+    "url": "https://hkjang.github.io/postra/index_en.html",
+    "downloadUrl": "https://github.com/hkjang/postra",
+    "description": "A self-hosted email intelligence workspace with POP3 and IMAP collection, SMTP sending, hybrid search, human approval, and Model Context Protocol interfaces."
+  }
+  </script>
 
-    <!-- Favicon -->
-    <link rel="icon" type="image/png" href="assets/favicon.png">
-    
-    <!-- Google Fonts -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,600;0,700;1,400&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
-    
-    <!-- Lucide Icons -->
-    <script src="https://unpkg.com/lucide@latest"></script>
-
-    <!-- Structured Data / JSON-LD for SEO & AEO (AI Engine Optimization) -->
-    <script type="application/ld+json">
-    {
-      "@context": "https://schema.org",
-      "@graph": [
-        {
-          "@type": "SoftwareApplication",
-          "@id": "https://postra.io/#software",
-          "name": "Postra",
-          "operatingSystem": "Linux, macOS, Windows",
-          "applicationCategory": "BusinessApplication",
-          "description": "Go Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System AI Enterprise Mail Intelligence System Model Context Protocol (MCP) Enterprise Mail Intelligence System. POP3/IMAP/SMTP Enterprise Mail Intelligence System Enterprise Mail Intelligence System, Envelope AES-256-GCM Enterprise Mail Intelligence System, pgvector Hybrid Search (RRF) Enterprise Mail Intelligence System.",
-          "softwareVersion": "0.10.5",
-          "author": {
-            "@type": "Organization",
-            "name": "Postra Engineering Team",
-            "email": "gagagiga@naver.com"
-          },
-          "offers": {
-            "@type": "Offer",
-            "price": "0",
-            "priceCurrency": "USD"
-          },
-          "featureList": [
-            "Single Business Core for REST, MCP, CLI, Web UI",
-            "Zero-Trust Envelope Encryption (KEK/DEK AES-256-GCM)",
-            "One-time Approval Token for AI Email Sending",
-            "RRF Hybrid Search (SQLite FTS5 + Postgres pgvector)",
-            "Model Context Protocol (Stdio & Streamable HTTP)",
-            "Keycloak OIDC SSO & MCP RBAC"
-          ]
-        },
-        {
-          "@type": "Organization",
-          "@id": "https://postra.io/#organization",
-          "name": "Postra Project",
-          "url": "https://postra.io/",
-          "logo": "https://postra.io/assets/logo.png",
-          "contactPoint": {
-            "@type": "ContactPoint",
-            "email": "gagagiga@naver.com",
-            "contactType": "customer service"
-          }
-        },
-        {
-          "@type": "FAQPage",
-          "@id": "https://postra.io/#faq",
-          "mainEntity": [
-            {
-              "@type": "Question",
-              "name": "PostraEnterprise Mail Intelligence System Enterprise Mail Intelligence System?",
-              "acceptedAnswer": {
-                "@type": "Answer",
-                "text": "PostraEnterprise Mail Intelligence System Go Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System AI Enterprise Mail Intelligence System MCP(Model Context Protocol) Enterprise Mail Intelligence System. Enterprise Mail Intelligence System POP3/IMAP/SMTP Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System, Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System, Enterprise Mail Intelligence System Enterprise Mail Intelligence System, AI Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System."
-              }
-            },
-            {
-              "@type": "Question",
-              "name": "PostraEnterprise Mail Intelligence System AI Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System?",
-              "acceptedAnswer": {
-                "@type": "Answer",
-                "text": "PostraEnterprise Mail Intelligence System AIEnterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System(Draft)Enterprise Mail Intelligence System Enterprise Mail Intelligence System, Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System One-Time Approval Token(Approval Token)Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System. Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System."
-              }
-            },
-            {
-              "@type": "Question",
-              "name": "Claude CodeEnterprise Mail Intelligence System CursorEnterprise Mail Intelligence System Enterprise Mail Intelligence System AI Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System?",
-              "acceptedAnswer": {
-                "@type": "Answer",
-                "text": "PostraEnterprise Mail Intelligence System Enterprise Mail Intelligence System Model Context Protocol (MCP)Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System. Enterprise Mail Intelligence System stdio Enterprise Mail Intelligence System Enterprise Mail Intelligence System Streamable HTTP (:8480/mcp) Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System 5Enterprise Mail Intelligence System RBAC Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System."
-              }
-            },
-            {
-              "@type": "Question",
-              "name": "Enterprise Mail Intelligence System Enterprise Mail Intelligence System(Semantic Search)Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System?",
-              "acceptedAnswer": {
-                "@type": "Answer",
-                "text": "SQLite(FTS5 Enterprise Mail Intelligence System Enterprise Mail Intelligence System)Enterprise Mail Intelligence System PostgreSQL(pgvector Enterprise Mail Intelligence System Enterprise Mail Intelligence System)Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System. FTS Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System RRF(Reciprocal Rank Fusion) Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System."
-              }
-            }
-          ]
-        }
-      ]
+  <style>
+    :root {
+      color-scheme: dark;
+      --ink: #071412;
+      --bg: #091916;
+      --bg-2: #0c211d;
+      --panel: #102a25;
+      --panel-high: #14342e;
+      --line: rgba(184, 226, 213, .15);
+      --line-high: rgba(99, 230, 190, .32);
+      --text: #f5fbf8;
+      --muted: #abc4bc;
+      --quiet: #6f9489;
+      --mint: #6ce6bd;
+      --mint-strong: #32c995;
+      --coral: #ff9b83;
+      --yellow: #f4ce79;
+      --blue: #7dc7ff;
+      --shadow: 0 30px 90px rgba(0, 0, 0, .36);
+      --radius: 22px;
+      --max: 1180px;
     }
-    </script>
 
-    <style>
-        :root {
-            --bg-primary: #05070C;
-            --bg-secondary: #0A0E17;
-            --bg-card: rgba(15, 22, 36, 0.65);
-            --bg-card-hover: rgba(24, 34, 54, 0.85);
-            --border-color: rgba(255, 255, 255, 0.08);
-            --border-hover: rgba(0, 242, 254, 0.35);
-            
-            --text-main: #F3F4F6;
-            --text-muted: #9CA3AF;
-            --text-dim: #6B7280;
-            
-            --accent-cyan: #00F2FE;
-            --accent-blue: #3B82F6;
-            --accent-purple: #8B5CF6;
-            --accent-green: #10B981;
-            --accent-amber: #F59E0B;
-            --accent-red: #EF4444;
-            
-            --gradient-primary: linear-gradient(135deg, #00F2FE 0%, #3B82F6 100%);
-            --gradient-purple: linear-gradient(135deg, #A855F7 0%, #6366F1 100%);
-            
-            --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
-            --font-mono: 'JetBrains Mono', monospace;
-            
-            --radius-sm: 8px;
-            --radius-md: 14px;
-            --radius-lg: 20px;
-            --shadow-glow: 0 0 40px rgba(0, 242, 254, 0.12);
-        }
-
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-        }
-
-        html {
-            scroll-behavior: smooth;
-            font-family: var(--font-sans);
-            background-color: var(--bg-primary);
-            color: var(--text-main);
-            line-height: 1.6;
-        }
-
-        body {
-            overflow-x: hidden;
-            background: 
-                radial-gradient(circle at 50% -10%, rgba(59, 130, 246, 0.12) 0%, transparent 60%),
-                radial-gradient(circle at 85% 30%, rgba(139, 92, 246, 0.08) 0%, transparent 50%),
-                radial-gradient(circle at 15% 70%, rgba(0, 242, 254, 0.06) 0%, transparent 50%);
-            min-height: 100vh;
-        }
-
-        .container {
-            max-width: 1280px;
-            margin: 0 auto;
-            padding: 0 24px;
-        }
-
-        .gradient-text {
-            background: var(--gradient-primary);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
-
-        header {
-            position: sticky;
-            top: 0;
-            z-index: 100;
-            backdrop-filter: blur(20px);
-            -webkit-backdrop-filter: blur(20px);
-            background: rgba(5, 7, 12, 0.82);
-            border-bottom: 1px solid var(--border-color);
-        }
-
-        .nav-container {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            height: 76px;
-        }
-
-        .brand {
-            display: flex;
-            align-items: center;
-            gap: 14px;
-            text-decoration: none;
-            color: var(--text-main);
-        }
-
-        .brand img {
-            width: 40px;
-            height: 40px;
-            object-fit: cover;
-            border-radius: 10px;
-            box-shadow: 0 0 16px rgba(0, 242, 254, 0.4);
-            border: 1px solid rgba(0, 242, 254, 0.25);
-            transition: transform 0.3s ease;
-        }
-        .brand img:hover {
-            transform: scale(1.08);
-        }
-
-        .brand-title {
-            font-size: 1.4rem;
-            font-weight: 800;
-            letter-spacing: -0.03em;
-        }
-
-        .brand-badge {
-            font-family: var(--font-mono);
-            font-size: 0.72rem;
-            font-weight: 600;
-            padding: 3px 9px;
-            border-radius: 20px;
-            background: rgba(0, 242, 254, 0.1);
-            color: var(--accent-cyan);
-            border: 1px solid rgba(0, 242, 254, 0.3);
-        }
-
-        .nav-links {
-            display: flex;
-            align-items: center;
-            gap: 16px;
-            list-style: none;
-        }
-
-        .nav-links a {
-            white-space: nowrap;
-            font-size: 0.92rem;
-            text-decoration: none;
-            color: var(--text-muted);
-            font-size: 0.95rem;
-            font-weight: 500;
-            transition: all 0.2s ease;
-        }
-
-        .nav-links a:hover {
-            color: var(--accent-cyan);
-        }
-
-        .btn {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            gap: 9px;
-            padding: 11px 22px;
-            border-radius: var(--radius-sm);
-            font-size: 0.92rem;
-            font-weight: 600;
-            text-decoration: none;
-            transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
-            cursor: pointer;
-            border: none;
-        }
-
-        .btn-primary {
-            background: var(--gradient-primary);
-            color: #030712;
-            box-shadow: 0 4px 16px rgba(0, 242, 254, 0.3);
-        }
-
-        .btn-primary:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 6px 24px rgba(0, 242, 254, 0.45);
-        }
-
-        .btn-secondary {
-            background: rgba(255, 255, 255, 0.05);
-            color: var(--text-main);
-            border: 1px solid var(--border-color);
-        }
-
-        .btn-secondary:hover {
-            background: rgba(255, 255, 255, 0.1);
-            border-color: rgba(255, 255, 255, 0.25);
-            transform: translateY(-2px);
-        }
-
-        .hero {
-            padding: 90px 0 80px;
-        }
-
-        .hero-badge-wrap {
-            display: flex;
-            gap: 10px;
-            margin-bottom: 24px;
-            flex-wrap: wrap;
-        }
-
-        .hero-badge {
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-            padding: 6px 16px;
-            border-radius: 30px;
-            font-size: 0.85rem;
-            font-weight: 600;
-        }
-
-        .badge-security {
-            background: rgba(16, 185, 129, 0.12);
-            border: 1px solid rgba(16, 185, 129, 0.3);
-            color: var(--accent-green);
-        }
-
-        .badge-mcp {
-            background: rgba(139, 92, 246, 0.12);
-            border: 1px solid rgba(139, 92, 246, 0.3);
-            color: #C084FC;
-        }
-
-        .hero-grid {
-            display: grid;
-            grid-template-columns: 1.1fr 0.9fr;
-            gap: 48px;
-            align-items: center;
-        }
-
-        .hero-content h1 {
-            font-size: 3.3rem;
-            font-weight: 800;
-            line-height: 1.18;
-            letter-spacing: -0.03em;
-            margin-bottom: 22px;
-        }
-
-        .hero-content p {
-            font-size: 1.15rem;
-            color: var(--text-muted);
-            margin-bottom: 38px;
-            line-height: 1.7;
-        }
-
-        .hero-buttons {
-            display: flex;
-            gap: 16px;
-            flex-wrap: wrap;
-        }
-
-        .hero-image-wrap {
-            border-radius: var(--radius-lg);
-            overflow: hidden;
-            border: 1px solid rgba(0, 242, 254, 0.25);
-            box-shadow: var(--shadow-glow);
-            background: #000;
-        }
-
-        .hero-image-wrap img {
-            width: 100%;
-            height: auto;
-            display: block;
-        }
-
-        .stats-bar {
-            margin-top: 20px;
-            padding: 32px 0;
-            background: var(--bg-secondary);
-            border-y: 1px solid var(--border-color);
-            border-top: 1px solid var(--border-color);
-            border-bottom: 1px solid var(--border-color);
-        }
-
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 24px;
-            text-align: center;
-        }
-
-        .stat-item h3 {
-            font-size: 2.1rem;
-            font-weight: 800;
-            color: var(--accent-cyan);
-            margin-bottom: 4px;
-            font-family: var(--font-mono);
-        }
-
-        .stat-item p {
-            font-size: 0.9rem;
-            color: var(--text-muted);
-        }
-
-        section {
-            padding: 100px 0;
-        }
-
-        .section-header {
-            text-align: center;
-            max-width: 800px;
-            margin: 0 auto 60px;
-        }
-
-        .section-tag {
-            font-size: 0.85rem;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 0.12em;
-            color: var(--accent-cyan);
-            margin-bottom: 14px;
-            display: block;
-        }
-
-        .section-title {
-            font-size: 2.4rem;
-            font-weight: 800;
-            letter-spacing: -0.03em;
-            margin-bottom: 18px;
-        }
-
-        .section-desc {
-            font-size: 1.1rem;
-            color: var(--text-muted);
-            line-height: 1.7;
-        }
-
-        .features-grid {
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 28px;
-        }
-
-        .feature-card {
-            background: var(--bg-card);
-            border: 1px solid var(--border-color);
-            border-radius: var(--radius-lg);
-            padding: 36px;
-            transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-            display: flex;
-            flex-direction: column;
-        }
-
-        .feature-card:hover {
-            background: var(--bg-card-hover);
-            border-color: var(--border-hover);
-            transform: translateY(-6px);
-            box-shadow: 0 16px 36px rgba(0, 0, 0, 0.4);
-        }
-
-        .feature-icon {
-            width: 56px;
-            height: 56px;
-            border-radius: var(--radius-md);
-            background: rgba(0, 242, 254, 0.08);
-            border: 1px solid rgba(0, 242, 254, 0.2);
-            color: var(--accent-cyan);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            margin-bottom: 24px;
-        }
-
-        .feature-purple .feature-icon {
-            background: rgba(139, 92, 246, 0.1);
-            border-color: rgba(139, 92, 246, 0.25);
-            color: #C084FC;
-        }
-
-        .feature-green .feature-icon {
-            background: rgba(16, 185, 129, 0.1);
-            border-color: rgba(16, 185, 129, 0.25);
-            color: var(--accent-green);
-        }
-
-        .feature-card h3 {
-            font-size: 1.3rem;
-            font-weight: 700;
-            margin-bottom: 14px;
-        }
-
-        .feature-card p {
-            font-size: 0.96rem;
-            color: var(--text-muted);
-            line-height: 1.65;
-            flex-grow: 1;
-        }
-
-        .feature-list {
-            margin-top: 20px;
-            list-style: none;
-            font-size: 0.88rem;
-            color: var(--text-dim);
-        }
-
-        .feature-list li {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            margin-bottom: 8px;
-        }
-
-        .feature-list i {
-            color: var(--accent-cyan);
-            width: 16px;
-            height: 16px;
-            flex-shrink: 0;
-        }
-
-        /* Architecture Visual */
-        .arch-container {
-            background: var(--bg-secondary);
-            border: 1px solid var(--border-color);
-            border-radius: var(--radius-lg);
-            padding: 44px;
-            margin-top: 40px;
-            box-shadow: var(--shadow-glow);
-        }
-
-        .arch-diagram {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 20px;
-            margin-top: 32px;
-        }
-
-        .arch-layer {
-            background: rgba(15, 22, 36, 0.8);
-            border: 1px solid var(--border-color);
-            border-radius: var(--radius-md);
-            padding: 24px;
-            text-align: center;
-        }
-
-        .arch-layer-header {
-            font-size: 0.82rem;
-            font-weight: 700;
-            text-transform: uppercase;
-            color: var(--accent-cyan);
-            margin-bottom: 12px;
-            display: block;
-        }
-
-        .arch-layer h4 {
-            font-size: 1.1rem;
-            font-weight: 700;
-            margin-bottom: 12px;
-        }
-
-        .arch-item-tag {
-            display: block;
-            background: rgba(255, 255, 255, 0.04);
-            border: 1px solid var(--border-color);
-            padding: 6px 10px;
-            border-radius: 6px;
-            font-family: var(--font-mono);
-            font-size: 0.78rem;
-            color: var(--text-muted);
-            margin-bottom: 8px;
-        }
-
-        /* Security Box */
-        .security-box {
-            background: linear-gradient(135deg, rgba(10, 14, 23, 0.95) 0%, rgba(20, 28, 48, 0.95) 100%);
-            border: 1px solid rgba(0, 242, 254, 0.25);
-            border-radius: var(--radius-lg);
-            padding: 48px;
-            display: grid;
-            grid-template-columns: 1.1fr 0.9fr;
-            gap: 48px;
-            align-items: center;
-        }
-
-        .sec-item {
-            display: flex;
-            align-items: flex-start;
-            gap: 18px;
-            background: rgba(255, 255, 255, 0.03);
-            padding: 20px;
-            border-radius: var(--radius-md);
-            border: 1px solid var(--border-color);
-            margin-bottom: 16px;
-        }
-
-        .sec-item i {
-            color: var(--accent-cyan);
-            margin-top: 2px;
-            flex-shrink: 0;
-        }
-
-        .sec-item h4 {
-            font-size: 1.05rem;
-            font-weight: 700;
-            margin-bottom: 4px;
-        }
-
-        .sec-item p {
-            font-size: 0.9rem;
-            color: var(--text-muted);
-            line-height: 1.5;
-        }
-
-        /* Comparison Table */
-        .comparison-table-wrap {
-            overflow-x: auto;
-            margin-top: 40px;
-        }
-
-        .comparison-table {
-            width: 100%;
-            border-collapse: collapse;
-            text-align: left;
-            font-size: 0.95rem;
-        }
-
-        .comparison-table th, .comparison-table td {
-            padding: 18px 24px;
-            border-bottom: 1px solid var(--border-color);
-        }
-
-        .comparison-table th {
-            background: rgba(15, 22, 36, 0.9);
-            font-weight: 700;
-            color: var(--text-main);
-        }
-
-        .comparison-table tbody tr {
-            background: var(--bg-card);
-        }
-
-        .highlight-col {
-            background: rgba(0, 242, 254, 0.04) !important;
-            border-x: 1px solid rgba(0, 242, 254, 0.2);
-            font-weight: 600;
-        }
-
-        .check-yes { color: var(--accent-green); font-weight: bold; }
-        .check-no { color: var(--accent-red); opacity: 0.6; }
-
-        /* MCP Tabs */
-        .mcp-container {
-            background: var(--bg-card);
-            border: 1px solid var(--border-color);
-            border-radius: var(--radius-lg);
-            overflow: hidden;
-            box-shadow: var(--shadow-glow);
-        }
-
-        .mcp-tabs {
-            display: flex;
-            background: #070A12;
-            border-bottom: 1px solid var(--border-color);
-            overflow-x: auto;
-        }
-
-        .mcp-tab {
-            padding: 18px 30px;
-            background: transparent;
-            border: none;
-            color: var(--text-muted);
-            font-family: var(--font-sans);
-            font-size: 0.95rem;
-            font-weight: 600;
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            border-bottom: 2px solid transparent;
-            white-space: nowrap;
-        }
-
-        .mcp-tab.active {
-            color: var(--accent-cyan);
-            background: rgba(0, 242, 254, 0.06);
-            border-bottom-color: var(--accent-cyan);
-        }
-
-        .mcp-content {
-            padding: 36px;
-        }
-
-        .mcp-panel {
-            display: none;
-        }
-
-        .mcp-panel.active {
-            display: block;
-        }
-
-        .code-block {
-            background: #060911;
-            border-radius: var(--radius-md);
-            padding: 24px;
-            font-family: var(--font-mono);
-            font-size: 0.9rem;
-            color: #E5E7EB;
-            overflow-x: auto;
-            position: relative;
-            border: 1px solid var(--border-color);
-            line-height: 1.7;
-        }
-
-        .copy-btn {
-            position: absolute;
-            top: 14px;
-            right: 14px;
-            padding: 7px 14px;
-            font-size: 0.8rem;
-            border-radius: var(--radius-sm);
-            background: rgba(255, 255, 255, 0.08);
-            color: var(--text-muted);
-            border: 1px solid var(--border-color);
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            gap: 6px;
-        }
-
-        /* FAQ Section for AEO */
-        .faq-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 24px;
-            margin-top: 40px;
-        }
-
-        .faq-card {
-            background: var(--bg-card);
-            border: 1px solid var(--border-color);
-            border-radius: var(--radius-md);
-            padding: 28px;
-        }
-
-        .faq-card h3 {
-            font-size: 1.15rem;
-            font-weight: 700;
-            color: var(--accent-cyan);
-            margin-bottom: 12px;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-
-        .faq-card p {
-            font-size: 0.95rem;
-            color: var(--text-muted);
-            line-height: 1.65;
-        }
-
-        /* Documentation Cards */
-        .docs-grid {
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 30px;
-        }
-
-        .doc-card {
-            background: var(--bg-card);
-            border: 1px solid var(--border-color);
-            border-radius: var(--radius-lg);
-            padding: 36px;
-            display: flex;
-            flex-direction: column;
-            justify-content: space-between;
-        }
-
-        .doc-card:hover {
-            border-color: var(--accent-blue);
-            transform: translateY(-6px);
-            background: var(--bg-card-hover);
-        }
-
-        .doc-badge {
-            font-size: 0.75rem;
-            font-weight: 700;
-            padding: 5px 12px;
-            border-radius: 12px;
-            text-transform: uppercase;
-            width: fit-content;
-            margin-bottom: 18px;
-        }
-
-        .badge-user { background: rgba(0, 242, 254, 0.15); color: var(--accent-cyan); }
-        .badge-admin { background: rgba(139, 92, 246, 0.15); color: #C084FC; }
-        .badge-exec { background: rgba(245, 158, 11, 0.15); color: var(--accent-amber); }
-
-        .doc-card h3 {
-            font-size: 1.35rem;
-            font-weight: 700;
-            margin-bottom: 14px;
-        }
-
-        .doc-card p {
-            font-size: 0.95rem;
-            color: var(--text-muted);
-            margin-bottom: 28px;
-            line-height: 1.65;
-        }
-
-        .doc-actions {
-            display: flex;
-            gap: 12px;
-        }
-
-        .doc-actions a {
-            flex: 1;
-            font-size: 0.88rem;
-            padding: 10px 14px;
-        }
-
-        footer {
-            background: #030509;
-            border-top: 1px solid var(--border-color);
-            padding: 70px 0 40px;
-            color: var(--text-muted);
-            font-size: 0.92rem;
-        }
-
-        .footer-top {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 50px;
-            flex-wrap: wrap;
-            gap: 24px;
-        }
-
-        .footer-bottom {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding-top: 28px;
-            border-top: 1px solid rgba(255, 255, 255, 0.06);
-            font-size: 0.85rem;
-            color: var(--text-dim);
-        }
-
-        .contact-box {
-            background: rgba(0, 242, 254, 0.05);
-            border: 1px solid rgba(0, 242, 254, 0.2);
-            padding: 12px 20px;
-            border-radius: var(--radius-sm);
-            display: inline-flex;
-            align-items: center;
-            gap: 10px;
-        }
-
-        .contact-box a {
-            color: var(--accent-cyan);
-            text-decoration: none;
-            font-weight: 700;
-            font-family: var(--font-mono);
-        }
-
-        .toast {
-            position: fixed;
-            bottom: 28px;
-            right: 28px;
-            background: #10B981;
-            color: #FFF;
-            padding: 14px 22px;
-            border-radius: var(--radius-sm);
-            font-weight: 600;
-            font-size: 0.92rem;
-            transform: translateY(100px);
-            opacity: 0;
-            transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-            z-index: 1000;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-
-        .toast.show {
-            transform: translateY(0);
-            opacity: 1;
-        }
-
-        @media (max-width: 1024px) {
-            .hero-grid, .security-box, .arch-diagram, .faq-grid {
-                grid-template-columns: 1fr;
-            }
-            .features-grid, .docs-grid {
-                grid-template-columns: 1fr 1fr;
-            }
-            .stats-grid {
-                grid-template-columns: repeat(2, 1fr);
-            }
-            .hero-content h1 {
-                font-size: 2.6rem;
-            }
-        }
-
-        @media (max-width: 640px) {
-            .features-grid, .docs-grid, .stats-grid {
-                grid-template-columns: 1fr;
-            }
-            .nav-links {
-                display: none;
-            }
-            .hero-content h1 {
-                font-size: 2rem;
-            }
-        }
-    </style>
-<style>
-.mobile-menu-btn {
-  display: none;
-  background: transparent;
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  color: #f8fafc;
-  padding: 6px 10px;
-  border-radius: 6px;
-  cursor: pointer;
-}
-
-@media (max-width: 768px) {
-  .mobile-menu-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-  header .container, nav, .navbar {
-    position: relative;
-  }
-  .nav-links, .nav-menu, .nav-list {
-    display: none;
-    position: absolute;
-    top: 100%;
-    left: 0;
-    right: 0;
-    background: rgba(15, 23, 42, 0.98);
-    backdrop-filter: blur(12px);
-    flex-direction: column;
-    padding: 1.25rem;
-    gap: 1rem;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-    box-shadow: 0 10px 25px rgba(0,0,0,0.5);
-    z-index: 999;
-  }
-  .nav-links.active, .nav-menu.active, .nav-list.active {
-    display: flex;
-  }
-  body {
-    overflow-x: hidden;
-  }
-  .grid, .features-grid, .cards-grid {
-    grid-template-columns: 1fr !important;
-  }
-}
-</style>
-<style>
-/* Language Switcher Styling */
-.lang-switch {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  background: rgba(255, 255, 255, 0.08);
-  padding: 3px;
-  border-radius: 6px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-}
-.lang-btn {
-  background: transparent;
-  border: none;
-  color: #94a3b8;
-  padding: 4px 10px;
-  font-size: 0.8rem;
-  font-weight: 600;
-  border-radius: 4px;
-  cursor: pointer;
-  text-decoration: none;
-  transition: all 0.2s ease;
-  line-height: 1.2;
-}
-.lang-btn:hover {
-  color: #ffffff;
-}
-.lang-btn.active {
-  background: #3b82f6;
-  color: #ffffff;
-}
-</style>
-<script id="auto-lang-detector">
-(function() {
-  var SAVED_KEY = 'user_lang_pref';
-  var userPref = localStorage.getItem(SAVED_KEY);
-  if (!userPref) {
-    var navLang = (navigator.language || (navigator.languages && navigator.languages[0]) || '').toLowerCase();
-    var isKoBrowser = navLang.indexOf('ko') === 0;
-    var isEnPage = window.location.pathname.indexOf('index_en.html') !== -1;
-    if (!isKoBrowser && !isEnPage) {
-      var target = window.location.href.replace(/index\.html$/, 'index_en.html');
-      if (target === window.location.href) target = 'index_en.html';
-      window.location.replace(target);
-    } else if (isKoBrowser && isEnPage) {
-      var target = window.location.href.replace(/index_en\.html$/, 'index.html');
-      if (target === window.location.href) target = 'index.html';
-      window.location.replace(target);
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      min-width: 320px;
+      background:
+        radial-gradient(circle at 85% 4%, rgba(108, 230, 189, .13), transparent 31rem),
+        radial-gradient(circle at 5% 35%, rgba(255, 155, 131, .075), transparent 27rem),
+        var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
     }
-  }
 
-  document.addEventListener('DOMContentLoaded', function() {
-    var langBtns = document.querySelectorAll('.lang-btn, [data-lang], #btn-ko, #btn-en, #localeToggle, #btn-lang-toggle');
-    langBtns.forEach(function(btn) {
-      btn.addEventListener('click', function() {
-        var lang = btn.getAttribute('data-lang') || (btn.textContent || '').trim().toLowerCase();
-        if (lang.indexOf('en') !== -1) {
-          localStorage.setItem(SAVED_KEY, 'en');
-        } else if (lang.indexOf('ko') !== -1 || lang.indexOf('Enterprise Mail Intelligence System') !== -1) {
-          localStorage.setItem(SAVED_KEY, 'ko');
-        }
-      });
-    });
-  });
-})();
-</script>
+    a { color: inherit; }
+    button { font: inherit; }
+    code, pre { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
+    section { scroll-margin-top: 86px; }
+    .container { width: min(calc(100% - 40px), var(--max)); margin-inline: auto; }
+    .skip-link { position: fixed; left: 12px; top: -70px; z-index: 1000; padding: 10px 14px; border-radius: 10px; background: white; color: var(--ink); }
+    .skip-link:focus { top: 12px; }
+
+    .site-header { position: sticky; top: 0; z-index: 100; border-bottom: 1px solid var(--line); background: rgba(7, 20, 18, .8); backdrop-filter: blur(18px); }
+    .nav { min-height: 72px; display: flex; align-items: center; justify-content: space-between; gap: 24px; }
+    .brand { display: flex; align-items: center; gap: 11px; text-decoration: none; font-size: 1.16rem; font-weight: 850; letter-spacing: -.03em; }
+    .brand img { width: 37px; height: 37px; border-radius: 10px; object-fit: cover; box-shadow: 0 8px 22px rgba(50,201,149,.2); }
+    .nav-links { display: flex; align-items: center; gap: 27px; margin: 0; padding: 0; list-style: none; }
+    .nav-links a { color: var(--muted); font-size: .9rem; font-weight: 650; text-decoration: none; }
+    .nav-links a:hover, .nav-links a:focus-visible { color: var(--text); }
+    .nav-actions { display: flex; align-items: center; gap: 9px; }
+    .language { display: inline-flex; padding: 4px; border: 1px solid var(--line); border-radius: 999px; }
+    .language a { min-width: 34px; padding: 4px 8px; border-radius: 999px; color: var(--quiet); font-size: .72rem; font-weight: 800; text-align: center; text-decoration: none; }
+    .language a[aria-current="page"] { background: rgba(108,230,189,.12); color: var(--mint); }
+    .mobile-toggle { display: none; width: 42px; height: 42px; border: 1px solid var(--line); border-radius: 11px; background: var(--panel); color: var(--text); cursor: pointer; }
+
+    .button { display: inline-flex; min-height: 46px; align-items: center; justify-content: center; gap: 9px; padding: 0 18px; border: 1px solid transparent; border-radius: 12px; font-size: .9rem; font-weight: 780; text-decoration: none; transition: transform .2s ease, border-color .2s ease, background .2s ease; }
+    .button:hover { transform: translateY(-2px); }
+    .button-primary { background: linear-gradient(135deg, #83edc9, #42d6a5); color: var(--ink); box-shadow: 0 14px 35px rgba(50,201,149,.2); }
+    .button-secondary { border-color: var(--line); background: rgba(255,255,255,.035); }
+    .button-secondary:hover { border-color: var(--line-high); background: rgba(108,230,189,.06); }
+
+    .hero { padding: 95px 0 78px; }
+    .hero-grid { display: grid; grid-template-columns: 1.03fr .97fr; align-items: center; gap: 66px; }
+    .eyebrow { display: inline-flex; align-items: center; gap: 10px; margin: 0 0 21px; color: var(--mint); font-size: .77rem; font-weight: 850; letter-spacing: .1em; text-transform: uppercase; }
+    .eyebrow::before { content: ""; width: 27px; height: 1px; background: currentColor; }
+    h1 { margin: 0; font-size: clamp(2.8rem, 5.8vw, 5.15rem); line-height: 1; letter-spacing: -.064em; }
+    h1 em { color: var(--mint); font-style: normal; }
+    .hero-copy { max-width: 670px; margin: 26px 0 0; color: var(--muted); font-size: clamp(1.03rem, 2vw, 1.18rem); }
+    .hero-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 32px; }
+    .trust-row { display: flex; flex-wrap: wrap; gap: 10px 20px; margin-top: 30px; color: var(--quiet); font-size: .82rem; font-weight: 650; }
+    .trust-row span { display: inline-flex; align-items: center; gap: 7px; }
+    .trust-row span::before { content: "✓"; color: var(--mint); }
+
+    .mail-app { position: relative; min-height: 510px; border: 1px solid var(--line-high); border-radius: 24px; overflow: hidden; background: #0b1d1a; box-shadow: var(--shadow); }
+    .mail-app::before { content: ""; position: absolute; width: 250px; height: 250px; right: -70px; top: -80px; border-radius: 50%; background: rgba(108,230,189,.12); filter: blur(45px); }
+    .app-bar { position: relative; height: 54px; display: flex; align-items: center; justify-content: space-between; padding: 0 17px; border-bottom: 1px solid var(--line); color: var(--quiet); font-size: .72rem; }
+    .app-brand { display: flex; align-items: center; gap: 8px; color: var(--text); font-weight: 800; }
+    .app-brand i { width: 9px; height: 9px; border-radius: 3px; background: var(--mint); box-shadow: 0 0 0 5px rgba(108,230,189,.09); }
+    .mail-layout { position: relative; display: grid; grid-template-columns: 124px 1fr; min-height: 456px; }
+    .mail-sidebar { padding: 16px 12px; border-right: 1px solid var(--line); color: var(--quiet); font-size: .69rem; }
+    .compose { margin-bottom: 17px; padding: 9px 10px; border-radius: 9px; background: var(--mint); color: var(--ink); font-weight: 800; text-align: center; }
+    .side-item { padding: 8px 7px; border-radius: 7px; }
+    .side-item.active { background: rgba(108,230,189,.08); color: var(--mint); }
+    .mail-content { padding: 18px; }
+    .mail-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+    .mail-heading strong { font-size: .9rem; }
+    .mail-heading span { color: var(--quiet); font-size: .65rem; }
+    .message { display: grid; grid-template-columns: 31px 1fr auto; gap: 11px; padding: 13px 0; border-top: 1px solid rgba(184,226,213,.1); }
+    .avatar { width: 31px; height: 31px; display: grid; place-items: center; border-radius: 9px; background: #1d4038; color: var(--mint); font-size: .66rem; font-weight: 800; }
+    .message strong { display: block; font-size: .72rem; }
+    .message p { margin: 3px 0 0; color: var(--quiet); font-size: .62rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 240px; }
+    .message time { color: var(--quiet); font-size: .58rem; }
+    .approval-card { position: absolute; left: 96px; right: 18px; bottom: 18px; padding: 16px; border: 1px solid rgba(255,155,131,.33); border-radius: 14px; background: rgba(18, 42, 37, .96); box-shadow: 0 18px 40px rgba(0,0,0,.3); }
+    .approval-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .approval-top strong { font-size: .76rem; }
+    .approval-tag { padding: 3px 7px; border-radius: 999px; background: rgba(255,155,131,.1); color: var(--coral); font-family: monospace; font-size: .55rem; }
+    .approval-card p { margin: 8px 0 12px; color: var(--muted); font-size: .64rem; }
+    .approval-actions { display: flex; gap: 7px; }
+    .mini-button { padding: 6px 10px; border-radius: 7px; background: var(--mint); color: var(--ink); font-size: .59rem; font-weight: 800; }
+    .mini-button.ghost { background: rgba(255,255,255,.05); color: var(--muted); }
+
+    .proof { padding-bottom: 88px; }
+    .proof-grid { display: grid; grid-template-columns: repeat(4, 1fr); border: 1px solid var(--line); border-radius: 18px; overflow: hidden; background: rgba(16,42,37,.5); }
+    .proof-item { padding: 24px; border-left: 1px solid var(--line); }
+    .proof-item:first-child { border-left: 0; }
+    .proof-item strong { display: block; margin-bottom: 4px; font-size: 1.03rem; letter-spacing: -.02em; }
+    .proof-item span { color: var(--quiet); font-size: .76rem; }
+
+    .section { padding: 94px 0; }
+    .section-soft { border-block: 1px solid var(--line); background: rgba(5,15,13,.35); }
+    .section-head { max-width: 745px; margin-bottom: 44px; }
+    .kicker { margin: 0 0 10px; color: var(--mint); font-size: .74rem; font-weight: 850; letter-spacing: .12em; text-transform: uppercase; }
+    h2 { margin: 0; font-size: clamp(2rem, 4vw, 3.2rem); line-height: 1.09; letter-spacing: -.045em; }
+    .section-lead { margin: 17px 0 0; color: var(--muted); }
+    .feature-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+    .card { min-height: 252px; padding: 25px; border: 1px solid var(--line); border-radius: var(--radius); background: linear-gradient(145deg, rgba(20,52,46,.84), rgba(10,28,24,.7)); }
+    .card-mark { width: 39px; height: 39px; display: grid; place-items: center; margin-bottom: 29px; border: 1px solid var(--line-high); border-radius: 11px; background: rgba(108,230,189,.075); color: var(--mint); font-family: monospace; font-size: .72rem; font-weight: 800; }
+    .card h3 { margin: 0 0 10px; font-size: 1.08rem; letter-spacing: -.02em; }
+    .card p { margin: 0; color: var(--muted); font-size: .88rem; }
+
+    .security-grid { display: grid; grid-template-columns: .78fr 1.22fr; gap: 58px; align-items: start; }
+    .security-notes { display: grid; gap: 12px; }
+    .security-note { display: grid; grid-template-columns: 38px 1fr; gap: 14px; padding: 19px; border: 1px solid var(--line); border-radius: 15px; background: rgba(16,42,37,.62); }
+    .security-note b:first-child { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 10px; background: rgba(108,230,189,.08); color: var(--mint); font-family: monospace; font-size: .7rem; }
+    .security-note h3 { margin: 0 0 4px; font-size: .92rem; }
+    .security-note p { margin: 0; color: var(--muted); font-size: .79rem; }
+    .security-caveat { margin-top: 18px; padding: 15px 17px; border-left: 2px solid var(--yellow); background: rgba(244,206,121,.055); color: var(--muted); font-size: .78rem; }
+
+    .architecture { display: grid; grid-template-columns: repeat(4, 1fr); gap: 13px; }
+    .layer { position: relative; min-height: 260px; padding: 23px; border: 1px solid var(--line); border-radius: 17px; background: var(--panel); }
+    .layer-number { color: var(--mint); font-family: monospace; font-size: .67rem; }
+    .layer h3 { margin: 26px 0 13px; font-size: 1rem; }
+    .layer ul { margin: 0; padding: 0; list-style: none; color: var(--muted); font-size: .75rem; }
+    .layer li { padding: 6px 0; border-top: 1px solid rgba(184,226,213,.09); }
+
+    .mcp-grid { display: grid; grid-template-columns: .8fr 1.2fr; gap: 52px; align-items: center; }
+    .mcp-copy p { color: var(--muted); }
+    .tool-list { display: flex; flex-wrap: wrap; gap: 7px; margin: 25px 0 29px; }
+    .tool-list code { padding: 6px 9px; border: 1px solid var(--line); border-radius: 8px; background: rgba(255,255,255,.025); color: var(--mint); font-size: .68rem; }
+    .code-shell { border: 1px solid var(--line); border-radius: 18px; overflow: hidden; background: #050e0c; box-shadow: var(--shadow); }
+    .code-head { min-height: 47px; display: flex; align-items: center; justify-content: space-between; padding: 0 15px; border-bottom: 1px solid var(--line); color: var(--quiet); font-size: .74rem; }
+    .copy-button { border: 1px solid var(--line); border-radius: 8px; background: rgba(255,255,255,.035); color: var(--muted); padding: 5px 10px; cursor: pointer; }
+    .copy-button:hover { border-color: var(--line-high); color: var(--text); }
+    pre { margin: 0; padding: 21px; overflow-x: auto; color: #c6dcd5; font-size: .73rem; line-height: 1.72; }
+    pre .comment { color: #5f8178; }
+    pre .cmd { color: var(--mint); }
+
+    .docs-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; }
+    .doc { display: flex; flex-direction: column; min-height: 220px; padding: 24px; border: 1px solid var(--line); border-radius: 18px; background: rgba(16,42,37,.62); text-decoration: none; transition: transform .2s ease, border-color .2s ease; }
+    .doc:hover { transform: translateY(-3px); border-color: var(--line-high); }
+    .doc small { color: var(--mint); font-family: monospace; font-size: .66rem; text-transform: uppercase; }
+    .doc h3 { margin: 25px 0 8px; font-size: 1.05rem; }
+    .doc p { margin: 0; color: var(--muted); font-size: .83rem; }
+    .doc span { margin-top: auto; padding-top: 20px; color: var(--mint); font-size: .8rem; font-weight: 760; }
+
+    .faq { display: grid; grid-template-columns: .72fr 1.28fr; gap: 60px; align-items: start; }
+    .faq-list { border-top: 1px solid var(--line); }
+    details { border-bottom: 1px solid var(--line); }
+    summary { display: flex; justify-content: space-between; gap: 20px; padding: 21px 0; cursor: pointer; font-weight: 730; list-style: none; }
+    summary::-webkit-details-marker { display: none; }
+    summary::after { content: "+"; color: var(--mint); font-family: monospace; font-size: 1.15rem; }
+    details[open] summary::after { content: "−"; }
+    details p { margin: -6px 0 22px; color: var(--muted); font-size: .89rem; }
+
+    .final-cta { padding: 88px 0; }
+    .cta-panel { position: relative; overflow: hidden; padding: 55px; border: 1px solid var(--line-high); border-radius: 25px; background: linear-gradient(130deg, rgba(108,230,189,.13), rgba(255,155,131,.06) 60%, rgba(16,42,37,.84)); }
+    .cta-panel::after { content: "@"; position: absolute; right: 35px; bottom: -75px; color: rgba(255,255,255,.025); font-size: 15rem; font-weight: 900; pointer-events: none; }
+    .cta-panel h2 { max-width: 760px; }
+    .cta-panel p { max-width: 660px; margin: 17px 0 28px; color: var(--muted); }
+    .site-footer { padding: 30px 0 42px; border-top: 1px solid var(--line); color: var(--quiet); font-size: .78rem; }
+    .footer-row { display: flex; justify-content: space-between; gap: 20px; }
+    .footer-links { display: flex; flex-wrap: wrap; gap: 18px; }
+    .footer-links a { text-decoration: none; }
+    .footer-links a:hover { color: var(--text); }
+    :focus-visible { outline: 2px solid var(--mint); outline-offset: 3px; }
+
+    @media (max-width: 970px) {
+      .hero-grid, .security-grid, .mcp-grid, .faq { grid-template-columns: 1fr; }
+      .hero-grid { gap: 50px; }
+      .feature-grid, .docs-grid { grid-template-columns: repeat(2, 1fr); }
+      .architecture { grid-template-columns: repeat(2, 1fr); }
+      .proof-grid { grid-template-columns: repeat(2, 1fr); }
+      .proof-item:nth-child(3) { border-left: 0; border-top: 1px solid var(--line); }
+      .proof-item:nth-child(4) { border-top: 1px solid var(--line); }
+    }
+
+    @media (max-width: 760px) {
+      .container { width: min(calc(100% - 28px), var(--max)); }
+      .mobile-toggle { display: grid; place-items: center; }
+      .nav-actions .button { display: none; }
+      .nav-links { display: none; position: absolute; top: 64px; left: 14px; right: 14px; padding: 14px; border: 1px solid var(--line); border-radius: 14px; background: #0b1f1b; box-shadow: var(--shadow); }
+      .nav-links.open { display: grid; gap: 4px; }
+      .nav-links a { display: block; padding: 11px; }
+      .hero { padding-top: 68px; }
+      h1 { font-size: clamp(2.65rem, 14vw, 4rem); }
+      .feature-grid, .docs-grid, .architecture { grid-template-columns: 1fr; }
+      .card { min-height: auto; }
+      .proof-grid { grid-template-columns: 1fr; }
+      .proof-item, .proof-item:nth-child(3) { border-left: 0; border-top: 1px solid var(--line); }
+      .proof-item:first-child { border-top: 0; }
+      .mail-app { min-height: 475px; }
+      .mail-layout { grid-template-columns: 92px 1fr; }
+      .mail-sidebar { padding-inline: 8px; }
+      .approval-card { left: 12px; }
+      .message p { max-width: 130px; }
+      .section { padding: 72px 0; }
+      .cta-panel { padding: 34px 25px; }
+      .footer-row { flex-direction: column; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      *, *::before, *::after { transition-duration: .01ms !important; }
+    }
+  </style>
 </head>
 <body>
+  <a class="skip-link" href="#main">Skip to content</a>
 
-    <!-- Header Navigation -->
-    <header>
-        <div class="container nav-container">
-            <a href="#" class="brand">
-                <img src="assets/logo.png" alt="Postra AI Mail Platform Official Logo" width="40" height="40">
-                <span class="brand-title">Postra</span>
-                <span class="brand-badge">Enterprise v0.10.5</span>
-            </a>
-            <nav>
-                <ul class="nav-links">
-                    <li><a href="#features">Features</a></li>
-                    <li><a href="#architecture">Architecture</a></li>
-                    <li><a href="#security">Security & MCP</a></li>
-                    <li><a href="#quickstart">Quickstart</a></li>
-                    <li><a href="#faq">FAQ</a></li>
-                </ul>
-            </nav>
-<button id="mobile-menu-btn" class="mobile-menu-btn" aria-label="Open/Close Menu">
-          <svg width="24" height="24" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>
-        </button>
-            <div class="nav-cta">
-      <div class="lang-switch">
-        <a href="index.html" class="lang-btn">KO</a>
-        <a href="index_en.html" class="lang-btn active">EN</a>
+  <header class="site-header">
+    <nav class="nav container" aria-label="Primary navigation">
+      <a class="brand" href="#top" aria-label="Postra home"><img src="assets/logo.png" alt=""><span>Postra</span></a>
+      <ul class="nav-links" id="nav-links">
+        <li><a href="#capabilities">Capabilities</a></li>
+        <li><a href="#security">Security</a></li>
+        <li><a href="#architecture">Architecture</a></li>
+        <li><a href="#mcp">MCP</a></li>
+        <li><a href="#docs">Docs</a></li>
+      </ul>
+      <div class="nav-actions">
+        <div class="language" aria-label="Language"><a href="index.html" lang="ko">KO</a><a href="index_en.html" lang="en" aria-current="page">EN</a></div>
+        <a class="button button-secondary" href="https://github.com/hkjang/postra" target="_blank" rel="noopener">GitHub ↗</a>
+        <button class="mobile-toggle" id="mobile-toggle" type="button" aria-expanded="false" aria-controls="nav-links" aria-label="Open navigation">☰</button>
       </div>
-                <a href="#quickstart" class="btn btn-primary">
-                    <i data-lucide="shield-check"></i> On-Premises Deployment
-                </a>
-            </div>
+    </nav>
+  </header>
+
+  <main id="main">
+    <section class="hero" id="top">
+      <div class="container hero-grid">
+        <div>
+          <p class="eyebrow">Self-hosted email intelligence</p>
+          <h1>Put AI to work on email—<em>under your control.</em></h1>
+          <p class="hero-copy">Postra collects mail from your existing POP3 or IMAP accounts, makes it searchable and actionable, and exposes the same workflows through Web, CLI, REST, and MCP. Drafts stay drafts until a person approves the exact message to send.</p>
+          <div class="hero-actions">
+            <a class="button button-primary" href="#quickstart">Start locally <span aria-hidden="true">↓</span></a>
+            <a class="button button-secondary" href="https://github.com/hkjang/postra" target="_blank" rel="noopener">Explore the source ↗</a>
+          </div>
+          <div class="trust-row" aria-label="Postra highlights"><span>Self-hosted deployment</span><span>Human-approved sending</span><span>MCP-native workflows</span></div>
         </div>
-    </header>
 
-    <main>
-        <!-- Hero Section -->
-        <section class="hero">
-            <div class="container hero-grid">
-                <article class="hero-content">
-                    <div class="hero-badge-wrap">
-                        <span class="hero-badge badge-security">
-                            <i data-lucide="lock" style="width:14px;height:14px;"></i> Zero-Trust Envelope Encryption
-                        </span>
-                        <span class="hero-badge badge-mcp">
-                            <i data-lucide="cpu" style="width:14px;height:14px;"></i> Model Context Protocol (MCP) Native
-                        </span>
-                    </div>
-                    <h1>Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System <br><span class="gradient-text">Enterprise Mail Intelligence System AI · MCP Enterprise Mail Intelligence System</span></h1>
-                    <p>
-                        PostraEnterprise Mail Intelligence System Enterprise Mail Intelligence System/Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System, Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System AI Enterprise Mail Intelligence System(Claude·Cursor)Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System.
-                    </p>
-                    <div class="hero-buttons">
-                        <a href="#quickstart" class="btn btn-primary">
-                            <i data-lucide="zap"></i> Launch in 1 Minute
-                        </a>
-                        <a href="#docs" class="btn btn-secondary">
-                            <i data-lucide="book-open"></i> Official Technical Documentation
-                        </a>
-                    </div>
-                </article>
-                <aside class="hero-visual">
-                    <div class="hero-image-wrap">
-                        <img src="assets/dashboard_mockup.jpg" alt="Postra Enterprise Email AI Workspace Interface Showcase" width="1280" height="720">
-                    </div>
-                </aside>
+        <div class="mail-app" aria-label="Postra inbox and approval preview">
+          <div class="app-bar"><span class="app-brand"><i></i> Postra</span><span>Work mailbox · synced now</span></div>
+          <div class="mail-layout">
+            <aside class="mail-sidebar" aria-hidden="true"><div class="compose">+ Compose</div><div class="side-item active">Work inbox</div><div class="side-item">Important</div><div class="side-item">Snoozed</div><div class="side-item">Drafts</div><div class="side-item">Archive</div></aside>
+            <div class="mail-content">
+              <div class="mail-heading"><strong>Work inbox</strong><span>AI triage on</span></div>
+              <div class="message"><span class="avatar">AC</span><div><strong>Alex Chen · Q3 contract review</strong><p>Please review the updated terms before Thursday…</p></div><time>09:42</time></div>
+              <div class="message"><span class="avatar">OP</span><div><strong>Operations · Maintenance window</strong><p>Planned database maintenance for this weekend…</p></div><time>08:18</time></div>
+              <div class="message"><span class="avatar">FI</span><div><strong>Finance · Invoice exception</strong><p>Action required: confirm the purchase order…</p></div><time>Yesterday</time></div>
+              <div class="approval-card">
+                <div class="approval-top"><strong>Reply ready for review</strong><span class="approval-tag">APPROVAL REQUIRED</span></div>
+                <p>The approval token is bound to this recipient, subject, and body. Editing the draft invalidates it.</p>
+                <div class="approval-actions"><span class="mini-button">Review &amp; approve</span><span class="mini-button ghost">Keep as draft</span></div>
+              </div>
             </div>
-        </section>
+          </div>
+        </div>
+      </div>
+    </section>
 
-        <!-- Key Metrics Bar -->
-        <section class="stats-bar">
-            <div class="container stats-grid">
-                <div class="stat-item">
-                    <h3>AES-256-GCM</h3>
-                    <p>KEK/DEK Envelope Encryption</p>
-                </div>
-                <div class="stat-item">
-                    <h3>One-Time Approval</h3>
-                    <p>AI Email Safety Approval Tokens</p>
-                </div>
-                <div class="stat-item">
-                    <h3>RRF Hybrid</h3>
-                    <p>FTS5 + pgvector Enterprise Mail Intelligence System Enterprise Mail Intelligence System</p>
-                </div>
-                <div class="stat-item">
-                    <h3>Keycloak SSO</h3>
-                    <p>OIDC & PKCE Enterprise Mail Intelligence System Enterprise Mail Intelligence System</p>
-                </div>
-            </div>
-        </section>
+    <section class="proof" aria-label="Technical highlights">
+      <div class="container proof-grid">
+        <div class="proof-item"><strong>POP3 · IMAP · SMTP</strong><span>Use the mail infrastructure you already operate</span></div>
+        <div class="proof-item"><strong>Web · CLI · REST · MCP</strong><span>One application core behind every interface</span></div>
+        <div class="proof-item"><strong>AES-256-GCM</strong><span>Envelope encryption for secrets and stored content</span></div>
+        <div class="proof-item"><strong>FTS + vectors</strong><span>Keyword, semantic, and optional hybrid search</span></div>
+      </div>
+    </section>
 
-        <!-- Core Features Grid -->
-        <section id="features">
-            <div class="container">
-                <header class="section-header">
-                    <span class="section-tag">Enterprise Capabilities</span>
-                    <h2 class="section-title">IT & Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Features</h2>
-                    <p class="section-desc">Enterprise Mail Intelligence System SaaSEnterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System, Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System AI Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System.</p>
-                </header>
+    <section class="section section-soft" id="capabilities">
+      <div class="container">
+        <header class="section-head"><p class="kicker">A complete mail workflow</p><h2>From collection to action, without a patchwork of wrappers.</h2><p class="section-lead">Postra keeps business behavior in one application core, so the web workspace, automation scripts, and AI agents follow the same policies.</p></header>
+        <div class="feature-grid">
+          <article class="card"><div class="card-mark">IN</div><h3>Secure account collection</h3><p>Connect POP3 or IMAP for inbound mail and SMTP for sending. Credentials are registered through an encrypted secret store rather than passed to AI tools.</p></article>
+          <article class="card"><div class="card-mark">AI</div><h3>Triage &amp; action cards</h3><p>Structure intent, priority, deadlines, reply needs, and next steps. Action cards can produce hand-off payloads for calendar, Jira, or ITSM integrations.</p></article>
+          <article class="card"><div class="card-mark">RRF</div><h3>Hybrid search</h3><p>Combine full-text and embedding results with Reciprocal Rank Fusion, group by thread, and optionally rerank with an AI model.</p></article>
+          <article class="card"><div class="card-mark">OK</div><h3>Approval-bound sending</h3><p>AI can create a draft, but sending requires a one-time token bound to the exact recipient, subject, and body payload.</p></article>
+          <article class="card"><div class="card-mark">SSO</div><h3>Identity &amp; isolation</h3><p>Use local Argon2id accounts or Keycloak OIDC with Authorization Code Flow and S256 PKCE. User mailboxes and related data are isolated.</p></article>
+          <article class="card"><div class="card-mark">OPS</div><h3>Operations built in</h3><p>Run scheduled sync, automation rules, team inboxes, legal hold, audit search, health probes, metrics, and backup workflows from one service.</p></article>
+        </div>
+      </div>
+    </section>
 
-                <div class="features-grid">
-                    <article class="feature-card">
-                        <div class="feature-icon">
-                            <i data-lucide="layers"></i>
-                        </div>
-                        <h3>Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System</h3>
-                        <p>REST API, MCP, CLI, Web UI Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System `internal/application` Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System.</p>
-                        <ul class="feature-list">
-                            <li><i data-lucide="check"></i> 100% Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System</li>
-                            <li><i data-lucide="check"></i> REST/MCP/CLI Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System</li>
-                        </ul>
-                    </article>
+    <section class="section" id="security">
+      <div class="container security-grid">
+        <header class="section-head"><p class="kicker">Security model</p><h2>Treat messages as data, not instructions.</h2><p class="section-lead">Email is untrusted input. Postra separates it from system prompts, keeps secrets out of tool arguments, and places a human checkpoint before consequential actions.</p><div class="security-caveat"><strong>Deployment note:</strong> when full-text search is enabled, its index contains searchable message text. Disable FTS if your policy requires the search index itself to remain encrypted.</div></header>
+        <div class="security-notes">
+          <article class="security-note"><b>01</b><div><h3>Envelope-encrypted secrets</h3><p>Mail passwords and API keys are stored through KEK/DEK encryption. Secret handles are not serializable into MCP or LLM context.</p></div></article>
+          <article class="security-note"><b>02</b><div><h3>Encrypted content at rest</h3><p>With encryption enabled, raw MIME, attachments, and parsed message bodies are encrypted with AES-256-GCM. Search and sorting metadata remain queryable.</p></div></article>
+          <article class="security-note"><b>03</b><div><h3>Attachment &amp; DLP policy</h3><p>Inspect archive limits, risky extensions, quarantine states, and configured sensitive-data patterns before download or external sending.</p></div></article>
+          <article class="security-note"><b>04</b><div><h3>Fail-safe MCP access</h3><p>Tools are classified by risk level. Role ceilings, allowlists, and denylists apply before a call reaches the shared application core.</p></div></article>
+        </div>
+      </div>
+    </section>
 
-                    <article class="feature-card feature-purple">
-                        <div class="feature-icon">
-                            <i data-lucide="bot"></i>
-                        </div>
-                        <h3>AI Enterprise Mail Intelligence System Enterprise Mail Intelligence System & Enterprise Mail Intelligence System Enterprise Mail Intelligence System</h3>
-                        <p>Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System, Enterprise Mail Intelligence System, Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System, Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Google Calendar, Jira, ITSM Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System.</p>
-                        <ul class="feature-list">
-                            <li><i data-lucide="check"></i> Enterprise Mail Intelligence System Enterprise Mail Intelligence System (Work Inbox)</li>
-                            <li><i data-lucide="check"></i> Enterprise Mail Intelligence System·Enterprise Mail Intelligence System·Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System</li>
-                        </ul>
-                    </article>
+    <section class="section section-soft" id="architecture">
+      <div class="container">
+        <header class="section-head"><p class="kicker">Architecture</p><h2>One business core, multiple ways to work.</h2><p class="section-lead">Transport code stays thin. Web, REST, CLI, and MCP all call the same application use cases and domain policies.</p></header>
+        <div class="architecture">
+          <article class="layer"><span class="layer-number">01 / TRANSPORT</span><h3>Interfaces</h3><ul><li>Web workspace</li><li>REST API</li><li>CLI commands</li><li>MCP stdio &amp; HTTP</li></ul></article>
+          <article class="layer"><span class="layer-number">02 / CORE</span><h3>Application</h3><ul><li>Mail use cases</li><li>Rules &amp; team workflow</li><li>Approval validation</li><li>Untrusted-mail guard</li></ul></article>
+          <article class="layer"><span class="layer-number">03 / INTELLIGENCE</span><h3>AI &amp; search</h3><ul><li>OpenAI-compatible gateway</li><li>Task model routing</li><li>FTS &amp; vector search</li><li>Triage &amp; action cards</li></ul></article>
+          <article class="layer"><span class="layer-number">04 / ADAPTERS</span><h3>Storage &amp; mail</h3><ul><li>SQLite or PostgreSQL</li><li>Object &amp; secret stores</li><li>POP3 / IMAP / SMTP</li><li>Policy scanners</li></ul></article>
+        </div>
+      </div>
+    </section>
 
-                    <article class="feature-card feature-green">
-                        <div class="feature-icon">
-                            <i data-lucide="search"></i>
-                        </div>
-                        <h3>Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System (RRF)</h3>
-                        <p>Enterprise Mail Intelligence System Enterprise Mail Intelligence System FTS Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Vector Embedding Enterprise Mail Intelligence System Reciprocal Rank Fusion(RRF) Enterprise Mail Intelligence System Enterprise Mail Intelligence System LLM Cross-EncoderEnterprise Mail Intelligence System Enterprise Mail Intelligence System.</p>
-                        <ul class="feature-list">
-                            <li><i data-lucide="check"></i> SQLite FTS5 & Postgres pgvector</li>
-                            <li><i data-lucide="check"></i> Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System</li>
-                        </ul>
-                    </article>
-
-                    <article class="feature-card feature-green">
-                        <div class="feature-icon">
-                            <i data-lucide="terminal"></i>
-                        </div>
-                        <h3>Model Context Protocol (MCP)</h3>
-                        <p>Claude Code, Cursor Enterprise Mail Intelligence System Enterprise Mail Intelligence System AI Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System, Enterprise Mail Intelligence System Enterprise Mail Intelligence System, Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System.</p>
-                        <ul class="feature-list">
-                            <li><i data-lucide="check"></i> Stdio (Enterprise Mail Intelligence System) & Streamable HTTP (:8480)</li>
-                            <li><i data-lucide="check"></i> 5Enterprise Mail Intelligence System MCP RBAC (read~admin)</li>
-                        </ul>
-                    </article>
-
-                    <article class="feature-card">
-                        <div class="feature-icon">
-                            <i data-lucide="mail-check"></i>
-                        </div>
-                        <h3>IMAP IDLE Real-Time Sync</h3>
-                        <p>RFC 2177 IMAP IDLE Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System, Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System.</p>
-                        <ul class="feature-list">
-                            <li><i data-lucide="check"></i> POP3 / IMAP Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System</li>
-                            <li><i data-lucide="check"></i> Enterprise Mail Intelligence System/Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System</li>
-                        </ul>
-                    </article>
-
-                    <article class="feature-card feature-purple">
-                        <div class="feature-icon">
-                            <i data-lucide="shield-check"></i>
-                        </div>
-                        <h3>Keycloak OIDC SSO & Enterprise Mail Intelligence System Enterprise Mail Intelligence System</h3>
-                        <p>Enterprise Mail Intelligence System Keycloak OAuth2 / OpenID Connect SSO, S256 PKCEEnterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System, Kubernetes Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System.</p>
-                        <ul class="feature-list">
-                            <li><i data-lucide="check"></i> Argon2id Enterprise Mail Intelligence System Enterprise Mail Intelligence System</li>
-                            <li><i data-lucide="check"></i> Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System & Enterprise Mail Intelligence System Enterprise Mail Intelligence System(Legal Hold)</li>
-                        </ul>
-                    </article>
-                </div>
-            </div>
-        </section>
-
-        <!-- System Architecture Visual Section -->
-        <section id="architecture" style="background: rgba(10, 14, 23, 0.6); border-y: 1px solid var(--border-color);">
-            <div class="container">
-                <header class="section-header">
-                    <span class="section-tag">System Architecture</span>
-                    <h2 class="section-title">Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System</h2>
-                    <p class="section-desc">Enterprise Mail Intelligence System Enterprise Mail Intelligence System, Enterprise Mail Intelligence System Enterprise Mail Intelligence System, AI Enterprise Mail Intelligence System, Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System(Clean Architecture)Enterprise Mail Intelligence System.</p>
-                </header>
-
-                <div class="arch-container">
-                    <div class="arch-diagram">
-                        <div class="arch-layer">
-                            <span class="arch-layer-header">1. Transport Layer</span>
-                            <h4>Enterprise Mail Intelligence System Enterprise Mail Intelligence System</h4>
-                            <span class="arch-item-tag">Web UI (/ui)</span>
-                            <span class="arch-item-tag">REST API (/api)</span>
-                            <span class="arch-item-tag">MCP Streamable HTTP</span>
-                            <span class="arch-item-tag">CLI / MCP Stdio</span>
-                        </div>
-
-                        <div class="arch-layer" style="border-color: rgba(0, 242, 254, 0.4); background: rgba(0, 242, 254, 0.04);">
-                            <span class="arch-layer-header" style="color: var(--accent-cyan);">2. Application Core</span>
-                            <h4>Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System</h4>
-                            <span class="arch-item-tag">Envelope Encryption</span>
-                            <span class="arch-item-tag">Approval Token Validator</span>
-                            <span class="arch-item-tag">Mail Rules Engine</span>
-                            <span class="arch-item-tag">Untrusted Mail Guard</span>
-                        </div>
-
-                        <div class="arch-layer">
-                            <span class="arch-layer-header">3. AI & Search Gateway</span>
-                            <h4>AI Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System</h4>
-                            <span class="arch-item-tag">OpenAI Compatible Gateway</span>
-                            <span class="arch-item-tag">RRF Hybrid Search Engine</span>
-                            <span class="arch-item-tag">Task Model Router</span>
-                            <span class="arch-item-tag">Action Card Extractor</span>
-                        </div>
-
-                        <div class="arch-layer">
-                            <span class="arch-layer-header">4. Storage & Security</span>
-                            <h4>Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System</h4>
-                            <span class="arch-item-tag">SQLite (FTS5) / Postgres</span>
-                            <span class="arch-item-tag">pgvector Embedding Store</span>
-                            <span class="arch-item-tag">SecretStore (KEK/DEK)</span>
-                            <span class="arch-item-tag">ClamAV / Policy Scanner</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <!-- Security & Trust Section -->
-        <section id="security">
-            <div class="container">
-                <header class="section-header">
-                    <span class="section-tag">Zero-Trust Security</span>
-                    <h2 class="section-title">Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System</h2>
-                    <p class="section-desc">CISOEnterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System.</p>
-                </header>
-
-                <div class="security-box">
-                    <div>
-                        <h3 style="font-size: 1.85rem; font-weight: 800; margin-bottom: 18px;">
-                            AI Enterprise Mail Intelligence System Enterprise Mail Intelligence System: <span class="gradient-text">Enterprise Mail Intelligence System Enterprise Mail Intelligence System One-Time Approval Token</span>
-                        </h3>
-                        <p style="color: var(--text-muted); margin-bottom: 24px; line-height: 1.7;">
-                            AI Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System **Enterprise Mail Intelligence System Enterprise Mail Intelligence System(`draft`)Enterprise Mail Intelligence System Enterprise Mail Intelligence System**Enterprise Mail Intelligence System, Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System **One-Time Approval Token(Approval Token)**Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System/Enterprise Mail Intelligence System Enterprise Mail Intelligence System. Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System.
-                        </p>
-                        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-                            <span class="brand-badge"><i data-lucide="shield"></i> Untrusted Email Isolation</span>
-                            <span class="brand-badge"><i data-lucide="key"></i> KEK/DEK AES-256-GCM</span>
-                        </div>
-                    </div>
-
-                    <div>
-                        <div class="sec-item">
-                            <i data-lucide="eye-off"></i>
-                            <div>
-                                <h4>Enterprise Mail Intelligence System Enterprise Mail Intelligence System (SecretHandle)</h4>
-                                <p>Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System API KeyEnterprise Mail Intelligence System MCP Enterprise Mail Intelligence System Enterprise Mail Intelligence System LLM Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System.</p>
-                            </div>
-                        </div>
-                        <div class="sec-item">
-                            <i data-lucide="file-warning"></i>
-                            <div>
-                                <h4>Enterprise Mail Intelligence System Enterprise Mail Intelligence System DLP Enterprise Mail Intelligence System Enterprise Mail Intelligence System</h4>
-                                <p>Zip Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System, Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System, Enterprise Mail Intelligence System/Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System DLPEnterprise Mail Intelligence System Enterprise Mail Intelligence System.</p>
-                            </div>
-                        </div>
-                        <div class="sec-item">
-                            <i data-lucide="check-check"></i>
-                            <div>
-                                <h4>Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System</h4>
-                                <p>Enterprise Mail Intelligence System Enterprise Mail Intelligence System SPF, DKIM, DMARC Enterprise Mail Intelligence System ARC Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System(0–100)Enterprise Mail Intelligence System Enterprise Mail Intelligence System.</p>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Solution Comparison Table -->
-                <div style="margin-top: 80px;">
-                    <h3 style="font-size: 1.6rem; font-weight: 800; text-align: center; margin-bottom: 28px;">
-                        Postra vs Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Matrix
-                    </h3>
-                    <div class="comparison-table-wrap">
-                        <table class="comparison-table">
-                            <thead>
-                                <tr>
-                                    <th>Enterprise Mail Intelligence System Enterprise Mail Intelligence System</th>
-                                    <th>Enterprise Mail Intelligence System Enterprise Mail Intelligence System SaaS Enterprise Mail Intelligence System AI</th>
-                                    <th class="highlight-col">Postra Enterprise AI Platform</th>
-                                    <th>Enterprise Mail Intelligence System Enterprise Mail Intelligence System Wrapper</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <tr>
-                                    <td><strong>Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System</strong></td>
-                                    <td>Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System</td>
-                                    <td class="highlight-col"><span class="check-yes">100% Enterprise Mail Intelligence System / Enterprise Mail Intelligence System</span></td>
-                                    <td>Enterprise Mail Intelligence System Enterprise Mail Intelligence System (Enterprise Mail Intelligence System)</td>
-                                </tr>
-                                <tr>
-                                    <td><strong>Enterprise Mail Intelligence System & Enterprise Mail Intelligence System Enterprise Mail Intelligence System</strong></td>
-                                    <td>Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System</td>
-                                    <td class="highlight-col"><span class="check-yes">AES-256 Envelope (KEK/DEK)</span></td>
-                                    <td class="check-no">Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System</td>
-                                </tr>
-                                <tr>
-                                    <td><strong>AI Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System</strong></td>
-                                    <td class="check-no">Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System</td>
-                                    <td class="highlight-col"><span class="check-yes">Enterprise Mail Intelligence System Enterprise Mail Intelligence System One-Time Approval Token</span></td>
-                                    <td class="check-no">Enterprise Mail Intelligence System (Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System)</td>
-                                </tr>
-                                <tr>
-                                    <td><strong>MCP (Model Context Protocol)</strong></td>
-                                    <td class="check-no">Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System API</td>
-                                    <td class="highlight-col"><span class="check-yes">Stdio & Streamable HTTP Enterprise Mail Intelligence System</span></td>
-                                    <td class="check-no">Enterprise Mail Intelligence System</td>
-                                </tr>
-                                <tr>
-                                    <td><strong>Enterprise Mail Intelligence System Enterprise Mail Intelligence System</strong></td>
-                                    <td>Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System</td>
-                                    <td class="highlight-col"><span class="check-yes">FTS5 + pgvector RRF Enterprise Mail Intelligence System</span></td>
-                                    <td class="check-no">Enterprise Mail Intelligence System SQL LIKE Search</td>
-                                </tr>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <!-- MCP Integration Section -->
-        <section id="mcp" style="background: rgba(10, 14, 23, 0.6); border-y: 1px solid var(--border-color);">
-            <div class="container">
-                <header class="section-header">
-                    <span class="section-tag">Model Context Protocol</span>
-                    <h2 class="section-title">Claude Code & Cursor Enterprise Mail Intelligence System Enterprise Mail Intelligence System</h2>
-                    <p class="section-desc">Enterprise Mail Intelligence System MCP Enterprise Mail Intelligence System Enterprise Mail Intelligence System AI Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System.</p>
-                </header>
-
-                <div class="mcp-container">
-                    <div class="mcp-tabs">
-                        <button class="mcp-tab active" onclick="switchTab('claude')">
-                            <i data-lucide="terminal"></i> Claude Code (Stdio)
-                        </button>
-                        <button class="mcp-tab" onclick="switchTab('http')">
-                            <i data-lucide="globe"></i> Streamable HTTP (:8480/mcp)
-                        </button>
-                        <button class="mcp-tab" onclick="switchTab('docker')">
-                            <i data-lucide="box"></i> Docker Compose
-                        </button>
-                        <button class="mcp-tab" onclick="switchTab('tools')">
-                            <i data-lucide="cpu"></i> Tools & Prompts
-                        </button>
-                    </div>
-                    <div class="mcp-content">
-                        <!-- Tab 1: Claude Code Stdio -->
-                        <div id="tab-claude" class="mcp-panel active">
-                            <p style="color: var(--text-muted); margin-bottom: 16px;">
-                                `~/.claude.json` Enterprise Mail Intelligence System Postra Stdio MCP Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System.
-                            </p>
-                            <div class="code-block">
-                                <button class="copy-btn" onclick="copyCode(this)"><i data-lucide="copy"></i> Copy JSON</button>
-                                <pre><code>{
+    <section class="section" id="mcp">
+      <div class="container mcp-grid">
+        <div class="mcp-copy">
+          <p class="kicker">Model Context Protocol</p>
+          <h2>Let agents help with mail—inside defined boundaries.</h2>
+          <p>Run <code>postra mcp</code> for a local stdio client, or connect to <code>/mcp</code> on the unified HTTP service. Search, summarize, organize, draft, and request approval through explicit tools.</p>
+          <div class="tool-list"><code>mail_search</code><code>mail_hybrid_search</code><code>mail_summarize</code><code>mail_action_items_extract</code><code>mail_draft_create</code><code>mail_send_request_approval</code></div>
+          <a class="button button-secondary" href="https://github.com/hkjang/postra#mcp" target="_blank" rel="noopener">Browse MCP tools ↗</a>
+        </div>
+        <div class="code-shell">
+          <div class="code-head"><span>Claude Code · stdio</span><button class="copy-button" type="button" data-copy="mcp-code">Copy</button></div>
+          <pre id="mcp-code">{
   "mcpServers": {
     "postra": {
       "command": "/usr/local/bin/postra",
       "args": ["mcp"]
     }
   }
-}</code></pre>
-                            </div>
-                        </div>
+}</pre>
+        </div>
+      </div>
+    </section>
 
-                        <!-- Tab 2: HTTP Streamable -->
-                        <div id="tab-http" class="mcp-panel">
-                            <p style="color: var(--text-muted); margin-bottom: 16px;">
-                                `postra serve` Enterprise Mail Intelligence System Enterprise Mail Intelligence System HTTP Streamable MCP Enterprise Mail Intelligence System `/mcp`Enterprise Mail Intelligence System Enterprise Mail Intelligence System.
-                            </p>
-                            <div class="code-block">
-                                <button class="copy-btn" onclick="copyCode(this)"><i data-lucide="copy"></i> Copy Shell</button>
-                                <pre><code># Postra Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System (Web UI + REST + MCP)
-POSTRA_API_TOKEN="your-secure-mcp-token" ./postra serve
+    <section class="section section-soft" id="quickstart">
+      <div class="container mcp-grid">
+        <div>
+          <p class="kicker">Quick start</p>
+          <h2>Connect one account and see the entire path.</h2>
+          <p class="section-lead">Build the binary, initialize local configuration, register a credential through the non-echoing TTY flow, connect an account, and start the unified service.</p>
+          <div class="hero-actions"><a class="button button-primary" href="https://github.com/hkjang/postra#빠른-시작" target="_blank" rel="noopener">Open the full guide ↗</a></div>
+        </div>
+        <div class="code-shell">
+          <div class="code-head"><span>terminal</span><button class="copy-button" type="button" data-copy="quick-code">Copy</button></div>
+          <pre id="quick-code"><span class="comment"># Build and initialize</span>
+<span class="cmd">go build</span> -o postra ./cmd/postra
+./postra init
 
-# Remote MCP Endpoint
-Endpoint: http://127.0.0.1:8480/mcp
-Header:   Authorization: Bearer your-secure-mcp-token</code></pre>
-                            </div>
-                        </div>
+<span class="comment"># Register the password securely</span>
+./postra secret set --type mail_password --label "Work mailbox"
 
-                        <!-- Tab 3: Docker Compose -->
-                        <div id="tab-docker" class="mcp-panel">
-                            <p style="color: var(--text-muted); margin-bottom: 16px;">
-                                PostgreSQL + pgvector Enterprise Mail Intelligence System Enterprise Mail Intelligence System Postra Enterprise Mail Intelligence System Enterprise Mail Intelligence System.
-                            </p>
-                            <div class="code-block">
-                                <button class="copy-btn" onclick="copyCode(this)"><i data-lucide="copy"></i> Copy YAML</button>
-                                <pre><code>version: '3.8'
-services:
-  postra:
-    image: postra/postra:latest
-    ports:
-      - "8480:8480"
-    environment:
-      - POSTRA_STORAGE_DRIVER=postgres
-      - POSTRA_POSTGRES_DSN=postgres://postra:secret@db:5432/postra?sslmode=disable
-      - POSTRA_KEK=your-super-secret-kek-key-32bytes!
-    depends_on:
-      - db
-  db:
-    image: pgvector/pgvector:pg16
-    environment:
-      POSTGRES_USER: postra
-      POSTGRES_PASSWORD: secret
-      POSTGRES_DB: postra</code></pre>
-                            </div>
-                        </div>
-
-                        <!-- Tab 4: Tools Catalog -->
-                        <div id="tab-tools" class="mcp-panel">
-                            <p style="color: var(--text-muted); margin-bottom: 16px;">
-                                PostraEnterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System MCP Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System.
-                            </p>
-                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
-                                <div style="background: #060911; padding: 20px; border-radius: 10px; border: 1px solid var(--border-color);">
-                                    <h4 style="color: var(--accent-cyan); margin-bottom: 10px;">🛠️ MCP Tools</h4>
-                                    <ul style="list-style: none; font-size: 0.88rem; color: var(--text-muted); line-height: 1.8;">
-                                        <li>• <code>mail_search</code> — Enterprise Mail Intelligence System Enterprise Mail Intelligence System/Enterprise Mail Intelligence System Enterprise Mail Intelligence System</li>
-                                        <li>• <code>mail_semantic_search</code> — pgvector Enterprise Mail Intelligence System Enterprise Mail Intelligence System</li>
-                                        <li>• <code>mail_hybrid_search</code> — RRF Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System</li>
-                                        <li>• <code>mail_summarize</code> — Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System</li>
-                                        <li>• <code>mail_draft_create</code> — AI Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System</li>
-                                        <li>• <code>mail_send_request_approval</code> — Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System</li>
-                                    </ul>
-                                </div>
-                                <div style="background: #060911; padding: 20px; border-radius: 10px; border: 1px solid var(--border-color);">
-                                    <h4 style="color: #C084FC; margin-bottom: 10px;">💡 MCP Prompts</h4>
-                                    <ul style="list-style: none; font-size: 0.88rem; color: var(--text-muted); line-height: 1.8;">
-                                        <li>• <code>summarize_thread</code> — Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System</li>
-                                        <li>• <code>draft_reply</code> — Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System</li>
-                                        <li>• <code>extract_action_items</code> — Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System</li>
-                                        <li>• <code>review_phishing_risk</code> — Enterprise Mail Intelligence System risk Enterprise Mail Intelligence System Enterprise Mail Intelligence System</li>
-                                        <li>• <code>prepare_daily_digest</code> — Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System</li>
-                                    </ul>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <!-- AEO & FAQ Section (Answer Engine Optimization for ChatGPT / Perplexity / Gemini) -->
-        <section id="faq">
-            <div class="container">
-                <header class="section-header">
-                    <span class="section-tag">AEO & Knowledge Base</span>
-                    <h2 class="section-title">Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System (FAQ & AEO)</h2>
-                    <p class="section-desc">AI Enterprise Mail Intelligence System(Perplexity, SearchGPT, ChatGPT, Claude) Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Q&AEnterprise Mail Intelligence System.</p>
-                </header>
-
-                <div class="faq-grid">
-                    <article class="faq-card">
-                        <h3><i data-lucide="help-circle"></i> PostraEnterprise Mail Intelligence System Enterprise Mail Intelligence System?</h3>
-                        <p>PostraEnterprise Mail Intelligence System Go Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System AI & Model Context Protocol (MCP) Enterprise Mail Intelligence System. POP3/IMAP/SMTP Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System, Enterprise Mail Intelligence System Enterprise Mail Intelligence System, Enterprise Mail Intelligence System Enterprise Mail Intelligence System, AI Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System.</p>
-                    </article>
-
-                    <article class="faq-card">
-                        <h3><i data-lucide="shield-alert"></i> PostraEnterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System?</h3>
-                        <p>Zero-Trust Enterprise Mail Intelligence System Enterprise Mail Intelligence System(Envelope Encryption: KEK→DEK, AES-256-GCM) Enterprise Mail Intelligence System Enterprise Mail Intelligence System. Enterprise Mail Intelligence System Enterprise Mail Intelligence System SecretHandleEnterprise Mail Intelligence System Enterprise Mail Intelligence System AI Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System at-rest Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System.</p>
-                    </article>
-
-                    <article class="faq-card">
-                        <h3><i data-lucide="send"></i> AI Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System?</h3>
-                        <p>Enterprise Mail Intelligence System. PostraEnterprise Mail Intelligence System AIEnterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System(Draft)Enterprise Mail Intelligence System Enterprise Mail Intelligence System, Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System·Enterprise Mail Intelligence System·Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System One-Time Approval Token(Approval Token)Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System. Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System.</p>
-                    </article>
-
-                    <article class="faq-card">
-                        <h3><i data-lucide="search"></i> Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System?</h3>
-                        <p>SQLite FTS5 Enterprise Mail Intelligence System Enterprise Mail Intelligence System PostgreSQL pgvector Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System RRF(Reciprocal Rank Fusion) Enterprise Mail Intelligence System Enterprise Mail Intelligence System, Enterprise Mail Intelligence System LLM Cross-Encoder Enterprise Mail Intelligence System(Reranking)Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System.</p>
-                    </article>
-                </div>
-            </div>
-        </section>
-
-        <!-- Quick Start Guide -->
-        <section id="quickstart" style="background: rgba(10, 14, 23, 0.6); border-t: 1px solid var(--border-color);">
-            <div class="container">
-                <header class="section-header">
-                    <span class="section-tag">Deployment Guide</span>
-                    <h2 class="section-title">1Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System</h2>
-                    <p class="section-desc">Go Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System, Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System.</p>
-                </header>
-
-                <div style="max-width: 860px; margin: 0 auto;">
-                    <div class="code-block">
-                        <button class="copy-btn" onclick="copyCode(this)"><i data-lucide="copy"></i> Copy Commands</button>
-                        <pre><code><span class="term-comment"># 1. Postra Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System</span>
-go build -o postra ./cmd/postra
-./postra init                          <span class="term-comment"># ~/.postra/config.json Enterprise Mail Intelligence System</span>
-
-<span class="term-comment"># 2. Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System TTY Enterprise Mail Intelligence System Enterprise Mail Intelligence System (SecretHandle Enterprise Mail Intelligence System)</span>
-./postra secret set --type mail_password --label "Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System"
-
-<span class="term-comment"># 3. POP3 / IMAP / SMTP Enterprise Mail Intelligence System Enterprise Mail Intelligence System (Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System)</span>
-./postra account add --name "Work" --email me@company.local \
-  --pop3-host pop.company.local --pop3-security tls --pop3-user me \
-  --pop3-secret-ref sec_xxx \
-  --smtp-host smtp.company.local --smtp-security tls --smtp-user me --smtp-secret-ref sec_xxx
-
-<span class="term-comment"># 4. Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System</span>
+<span class="comment"># Test, sync, and serve after adding the account</span>
 ./postra account test --id acc_xxx
 ./postra sync --account acc_xxx --wait
+./postra serve
 
-<span class="term-comment"># 5. Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System (Web UI: http://127.0.0.1:8480/ui)</span>
-./postra serve</code></pre>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <!-- Documentation Portal -->
-        <section id="docs">
-            <div class="container">
-                <header class="section-header">
-                    <span class="section-tag">Official Documentation</span>
-                    <h2 class="section-title">Enterprise Mail Intelligence System Enterprise Mail Intelligence System Documentation Center</h2>
-                    <p class="section-desc">Enterprise Mail Intelligence System, Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System PDF Enterprise Mail Intelligence System Enterprise Mail Intelligence System.</p>
-                </header>
-
-                <div class="docs-grid">
-                    <!-- User Guide -->
-                    <article class="doc-card">
-                        <div>
-                            <span class="doc-badge badge-user">User Manual</span>
-                            <h3>User Guide</h3>
-                            <p>Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System(`/ui/`), Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System, Enterprise Mail Intelligence System Enterprise Mail Intelligence System, Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System AI Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System.</p>
-                        </div>
-                        <div class="doc-actions">
-                            <a href="USER_GUIDE.md" class="btn btn-secondary" target="_blank">
-                                <i data-lucide="file-text"></i> Markdown
-                            </a>
-                            <a href="USER_GUIDE.pdf" class="btn btn-primary" download>
-                                <i data-lucide="download"></i> PDF Enterprise Mail Intelligence System
-                            </a>
-                        </div>
-                    </article>
-
-                    <!-- Admin Guide -->
-                    <article class="doc-card">
-                        <div>
-                            <span class="doc-badge badge-admin">System Admin</span>
-                            <h3>Administrator Guide</h3>
-                            <p>Enterprise Mail Intelligence System Enterprise Mail Intelligence System, Keycloak OIDC SSO Enterprise Mail Intelligence System, PostgreSQL + pgvector Enterprise Mail Intelligence System Enterprise Mail Intelligence System, K8s Enterprise Mail Intelligence System Enterprise Mail Intelligence System MCP RBAC Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System.</p>
-                        </div>
-                        <div class="doc-actions">
-                            <a href="ADMIN_GUIDE.md" class="btn btn-secondary" target="_blank">
-                                <i data-lucide="file-text"></i> Markdown
-                            </a>
-                            <a href="ADMIN_GUIDE.pdf" class="btn btn-primary" download>
-                                <i data-lucide="download"></i> PDF Enterprise Mail Intelligence System
-                            </a>
-                        </div>
-                    </article>
-
-                    <!-- Executive Report -->
-                    <article class="doc-card">
-                        <div>
-                            <span class="doc-badge badge-exec">Executive Report</span>
-                            <h3>Executive Report</h3>
-                            <p>Postra Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System, Enterprise Mail Intelligence System AI Enterprise Mail Intelligence System Enterprise Mail Intelligence System ROI Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System Enterprise Mail Intelligence System.</p>
-                        </div>
-                        <div class="doc-actions">
-                            <a href="EXECUTIVE_REPORT.md" class="btn btn-secondary" target="_blank">
-                                <i data-lucide="file-text"></i> Markdown
-                            </a>
-                            <a href="EXECUTIVE_REPORT.pdf" class="btn btn-primary" download>
-                                <i data-lucide="download"></i> PDF Enterprise Mail Intelligence System
-                            </a>
-                        </div>
-                    </article>
-                </div>
-            </div>
-        </section>
-    </main>
-
-    <!-- Footer -->
-    <footer>
-        <div class="container">
-            <div class="footer-top">
-                <div class="footer-info">
-                    <div class="brand" style="margin-bottom: 8px;">
-                        <img src="assets/logo.png" alt="Postra Official Logo Footer" width="32" height="32">
-                        <span class="brand-title" style="font-size:1.2rem;">Postra</span>
-                    </div>
-                    <p>Enterprise On-Premise Mail AI & Model Context Protocol Platform</p>
-                </div>
-                
-                <div class="contact-box">
-                    <i data-lucide="mail" style="color: var(--accent-cyan); width: 18px; height: 18px;"></i>
-                    <span style="font-size: 0.9rem; color: var(--text-muted);">Enterprise Mail Intelligence System: <a href="mailto:gagagiga@naver.com">gagagiga@naver.com</a></span>
-                </div>
-            </div>
-            
-            <div class="footer-bottom">
-                <p>&copy; 2026 Postra Engineering Team. AI Infra Department. All rights reserved.</p>
-                <p>Optimized for Search Engines (SEO) & AI Answer Engines (AEO).</p>
-            </div>
+<span class="comment"># Web UI and remote MCP</span>
+http://127.0.0.1:8480/ui
+http://127.0.0.1:8480/mcp</pre>
         </div>
-    </footer>
+      </div>
+    </section>
 
-    <!-- Toast Notification -->
-    <div id="toast" class="toast">
-        <i data-lucide="check-circle-2"></i>
-        <span id="toast-msg">Enterprise Mail Intelligence System Enterprise Mail Intelligence System!</span>
+    <section class="section" id="docs">
+      <div class="container">
+        <header class="section-head"><p class="kicker">Documentation</p><h2>Evaluate the product from every role.</h2><p class="section-lead">The repository README contains the current implementation details. These guides cover everyday use, deployment, and business context.</p></header>
+        <div class="docs-grid">
+          <a class="doc" href="USER_GUIDE.pdf" target="_blank" rel="noopener"><small>For users</small><h3>User guide</h3><p>Accounts, inbox workflows, search, AI analysis, drafts, approvals, and sending.</p><span>Open PDF ↗</span></a>
+          <a class="doc" href="ADMIN_GUIDE.pdf" target="_blank" rel="noopener"><small>For administrators</small><h3>Administrator guide</h3><p>Installation, Keycloak, storage, policy, MCP access, observability, and recovery.</p><span>Open PDF ↗</span></a>
+          <a class="doc" href="https://github.com/hkjang/postra#readme" target="_blank" rel="noopener"><small>For builders</small><h3>Technical README</h3><p>Current architecture, commands, security behavior, APIs, and implementation notes.</p><span>Open on GitHub ↗</span></a>
+        </div>
+      </div>
+    </section>
+
+    <section class="section section-soft" id="faq">
+      <div class="container faq">
+        <header class="section-head"><p class="kicker">FAQ</p><h2>Before you deploy.</h2><p class="section-lead">A few details that matter when email and AI share the same workflow.</p></header>
+        <div class="faq-list">
+          <details><summary>Does Postra replace my mail server?</summary><p>No. Postra connects to existing POP3 or IMAP accounts for collection and SMTP for sending. It adds a self-hosted workspace, automation, search, AI assistance, and controlled actions around that infrastructure.</p></details>
+          <details><summary>Can an AI agent send mail without a person?</summary><p>The intended flow separates drafting from sending. A send request requires a one-time approval token bound to the exact recipient, subject, and body; changing the draft invalidates the token.</p></details>
+          <details><summary>Can Postra run without an external AI provider?</summary><p>Core mail collection, browsing, full-text search, rules, drafts, and sending do not require an AI call. AI-powered analysis and embeddings use a configured OpenAI-compatible endpoint and follow the administrator's external-data policy.</p></details>
+          <details><summary>Which storage backend should I use?</summary><p>SQLite is designed for embedded or single-instance use. PostgreSQL supports server and multi-user deployments and can use pgvector for accelerated semantic search. Review the multi-node constraints in the README before scaling replicas.</p></details>
+        </div>
+      </div>
+    </section>
+
+    <section class="final-cta">
+      <div class="container cta-panel">
+        <h2>Make email useful to AI without giving up operational control.</h2>
+        <p>Run Postra locally, connect a test mailbox, and inspect every step—from collection and search to the final human-approved send.</p>
+        <div class="hero-actions"><a class="button button-primary" href="https://github.com/hkjang/postra" target="_blank" rel="noopener">View Postra on GitHub ↗</a><a class="button button-secondary" href="mailto:gagagiga@naver.com">Contact the project</a></div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-row">
+      <span>© 2026 Postra Project</span>
+      <div class="footer-links"><a href="mailto:gagagiga@naver.com">Contact</a><a href="https://github.com/hkjang/postra" target="_blank" rel="noopener">GitHub</a><a href="index.html" lang="ko">한국어</a></div>
     </div>
+  </footer>
 
-    <!-- Interactive Scripts -->
-    <script>
-        // Lucide Icons Render
-        lucide.createIcons();
-
-        // Tab Switching
-        function switchTab(tabId) {
-            document.querySelectorAll('.mcp-tab').forEach(tab => tab.classList.remove('active'));
-            document.querySelectorAll('.mcp-panel').forEach(panel => panel.classList.remove('active'));
-
-            event.currentTarget.classList.add('active');
-            document.getElementById('tab-' + tabId).classList.add('active');
+  <script>
+    const toggle = document.getElementById('mobile-toggle');
+    const nav = document.getElementById('nav-links');
+    toggle.addEventListener('click', () => {
+      const isOpen = nav.classList.toggle('open');
+      toggle.setAttribute('aria-expanded', String(isOpen));
+      toggle.setAttribute('aria-label', isOpen ? 'Close navigation' : 'Open navigation');
+    });
+    nav.querySelectorAll('a').forEach(link => link.addEventListener('click', () => {
+      nav.classList.remove('open');
+      toggle.setAttribute('aria-expanded', 'false');
+    }));
+    document.querySelectorAll('[data-copy]').forEach(button => {
+      button.addEventListener('click', async () => {
+        const target = document.getElementById(button.dataset.copy);
+        try {
+          await navigator.clipboard.writeText(target.innerText);
+          button.textContent = 'Copied';
+          window.setTimeout(() => { button.textContent = 'Copy'; }, 1600);
+        } catch (_) {
+          button.textContent = 'Select text';
         }
-
-        // Copy Code Functionality
-        function copyCode(btn) {
-            const pre = btn.nextElementSibling;
-            const codeText = pre.innerText;
-
-            navigator.clipboard.writeText(codeText).then(() => {
-                showToast('Enterprise Mail Intelligence System Enterprise Mail Intelligence System!');
-            }).catch(err => {
-                showToast('Enterprise Mail Intelligence System Enterprise Mail Intelligence System!');
-            });
-        }
-
-        // Toast Notification
-        function showToast(msg) {
-            const toast = document.getElementById('toast');
-            const toastMsg = document.getElementById('toast-msg');
-            toastMsg.innerText = msg;
-            toast.classList.add('show');
-            setTimeout(() => {
-                toast.classList.remove('show');
-            }, 2500);
-        }
-    </script>
-<script>document.addEventListener("DOMContentLoaded", function() { if(typeof setLanguage === "function") setLanguage("en"); });</script>
+      });
+    });
+  </script>
 </body>
 </html>
