@@ -559,6 +559,7 @@ func serve(configPath string) error {
 	go app.RunRetryWorker(schedCtx)
 	go app.RunIdleWorker(schedCtx)
 	go app.RunJobReaper(schedCtx)
+	go app.RunEmbeddingWorker(schedCtx)
 
 	// REST, Web UI, and Streamable HTTP MCP share the primary listener. A
 	// separate MCPHTTPAddr remains optional for existing deployments.

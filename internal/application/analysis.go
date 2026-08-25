@@ -216,6 +216,10 @@ func (a *App) runAnalysis(ctx context.Context, analysisType, targetType, targetI
 	// AI-011: mask PII/secrets before content leaves the box to an external
 	// endpoint. Local endpoints skip masking unless forced by policy.
 	content := truncateRunes(untrusted, maxAIBodyChars)
+	// Screen the mail content for attempts to hijack the model. Content stays
+	// in the untrusted block regardless (AI-014); this records the attempt so
+	// the user/admin can distrust anything derived from this message.
+	a.guardUntrusted(ctx, analysisType, targetType, targetID, content)
 	if aiCfg.MaskExternalPII && !a.aiEndpointLocal(ctx) {
 		masked, hits := mask.Mask(content)
 		content = masked
@@ -322,7 +326,9 @@ func (a *App) AnswerQuestion(ctx context.Context, question, accountID string) (*
 		return nil, userErrf("답변할 근거가 될 메일을 찾지 못했습니다")
 	}
 	var sb strings.Builder
+	allowed := make(map[string]bool, len(msgs))
 	for _, m := range msgs {
+		allowed[m.ID] = true
 		body, _ := a.Store.GetBody(ctx, userIDFrom(ctx), m.ID)
 		text := ""
 		if body != nil {
@@ -331,7 +337,14 @@ func (a *App) AnswerQuestion(ctx context.Context, question, accountID string) (*
 		fmt.Fprintf(&sb, "[%s] Subject: %s | From: %s | Date: %s\n%s\n\n",
 			m.ID, m.Subject, m.From.Email, fmtUnix(m.Date), text)
 	}
-	return a.runAnalysis(ctx, "question_answer", "query", "adhoc", "Question: "+question, sb.String())
+	an, err := a.runAnalysis(ctx, "question_answer", "query", "adhoc", "Question: "+question, sb.String())
+	if err != nil {
+		return nil, err
+	}
+	// Never surface a citation the model was not actually given: a fabricated
+	// evidence ID reads as proof while pointing at nothing.
+	a.applyCitationVerification(ctx, an, allowed)
+	return an, nil
 }
 
 // retrieveForquestion gathers the candidate messages for RAG question

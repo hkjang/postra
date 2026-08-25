@@ -206,6 +206,11 @@ type SyncConfig struct {
 	// active POP3 accounts on this cadence (POP-001 주기 동기화). It also acts
 	// as the per-account minimum interval (POP-002). 0 disables auto-sync.
 	AutoSyncMinutes int `json:"auto_sync_minutes"`
+	// AutoEmbedMinutes, when > 0, runs a background worker that indexes newly
+	// ingested mail for semantic search on this cadence. Without it embeddings
+	// only exist for messages covered by a manual backfill job, so semantic and
+	// hybrid search silently miss recent mail. 0 disables auto-indexing.
+	AutoEmbedMinutes int `json:"auto_embed_minutes"`
 	// MaxConcurrentSyncs caps how many account syncs run at once across the
 	// process. Each in-flight sync buffers whole messages in memory, so an
 	// unbounded fan-out (many accounts × the scheduler tick + IMAP IDLE) can
@@ -245,6 +250,7 @@ func Default() Config {
 			ConnectTimeoutSec:  15,
 			CommandTimeoutSec:  60,
 			MaxConcurrentSyncs: 2,
+		AutoEmbedMinutes:   5,
 		},
 
 		Send: SendConfig{

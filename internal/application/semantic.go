@@ -7,9 +7,11 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"time"
 
 	"postra/internal/adapters/persistence"
 	"postra/internal/domain"
+	"postra/internal/platform/metrics"
 )
 
 // embedChunkChars bounds the text embedded per message. MVP uses a single
@@ -414,4 +416,74 @@ func indexOfView(views []MessageView, v MessageView) int {
 		}
 	}
 	return -1
+}
+
+// autoEmbedBatch bounds how many messages one auto-indexing tick embeds per
+// user, keeping the AI call and memory footprint predictable.
+const autoEmbedBatch = 32
+
+// RunEmbeddingWorker keeps the semantic index current. Embeddings were
+// previously created only by an explicit backfill job, so mail that arrived
+// afterwards was invisible to semantic and hybrid search (including RAG
+// question answering) until someone remembered to re-run it. This worker
+// closes that gap: on each tick the leader indexes a bounded batch of
+// not-yet-embedded messages per user. Leader-only and best-effort — the index
+// self-heals on the next tick after any failure.
+func (a *App) RunEmbeddingWorker(ctx context.Context) {
+	interval := time.Duration(a.Cfg.Sync.AutoEmbedMinutes) * time.Minute
+	if interval <= 0 {
+		slog.Info("auto-embedding disabled (sync.auto_embed_minutes = 0)")
+		return
+	}
+	slog.Info("embedding worker started", "interval", interval)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if a.IsLeader() {
+				a.guard("embedding-worker", func() { a.embedPendingOnce(ctx) })
+			}
+		}
+	}
+}
+
+// embedPendingOnce indexes one batch of pending messages for every active
+// user. Returns the number of messages indexed (exposed for tests).
+func (a *App) embedPendingOnce(ctx context.Context) int {
+	if err := a.checkAIPolicy(ctx); err != nil {
+		slog.Debug("embedding worker: skipped by AI policy", "err", err)
+		return 0
+	}
+	sctx := WithActor(ctx, "embed-worker")
+	users, err := a.Store.ListUsers(sctx)
+	if err != nil {
+		slog.Error("embedding worker: list users failed", "err", err)
+		return 0
+	}
+	total := 0
+	for _, u := range users {
+		if u.Status != domain.UserActive {
+			continue
+		}
+		uctx := WithPrincipal(sctx, domain.Principal{
+			UserID: u.ID, LoginID: u.LoginID, Role: u.Role, AuthMethod: "embed-worker",
+		})
+		ids, err := a.VectorStore().MessagesMissingEmbeddings(uctx, u.ID, "", autoEmbedBatch)
+		if err != nil || len(ids) == 0 {
+			continue
+		}
+		if err := a.embedMessagesBatch(uctx, "", ids); err != nil {
+			slog.Warn("embedding worker: batch failed; will retry next tick", "user", u.ID, "count", len(ids), "err", err)
+			continue
+		}
+		metrics.AIAutoEmbedded.Add(float64(len(ids)))
+		total += len(ids)
+	}
+	if total > 0 {
+		slog.Info("embedding worker: indexed new messages for semantic search", "count", total)
+	}
+	return total
 }

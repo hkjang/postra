@@ -65,7 +65,13 @@ var (
 
 	// AI provider.
 	AIRequests = counter("ai_requests_total", "AI provider calls by op and result.", "op", "result")
-	AILatency  = histogram("ai_request_duration_seconds", "AI provider call latency.", "op")
+	// AIInjectionFlags counts mail bodies that tried to manipulate the model
+	// (prompt injection); AICitationsDropped counts unverifiable evidence IDs
+	// removed from AI answers.
+	AIInjectionFlags   = plainCounter("ai_prompt_injection_flags_total", "Mail bodies flagged as attempted prompt injection.")
+	AICitationsDropped = plainCounter("ai_citations_dropped_total", "Unverifiable evidence message IDs removed from AI answers.")
+	AIAutoEmbedded     = plainCounter("ai_auto_embedded_total", "Messages indexed for semantic search by the background embedding worker.")
+	AILatency          = histogram("ai_request_duration_seconds", "AI provider call latency.", "op")
 
 	// SMTP send.
 	SMTPSend    = counter("smtp_send_total", "Outbound deliveries by result.", "result")
