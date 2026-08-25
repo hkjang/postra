@@ -306,6 +306,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS legal_hold BOOL NOT NULL DEFAULT false`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_hash ON messages(account_id, raw_hash)`,
 		`CREATE INDEX IF NOT EXISTS idx_messages_account_date ON messages(account_id, date DESC)`,
+		// Serves the periodic background queries (triage sweep, digest window),
+		// which filter by owner and arrival time rather than sender date.
+		`CREATE INDEX IF NOT EXISTS idx_messages_user_created ON messages(user_id, created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_messages_tsv ON messages USING GIN(search_tsv)`,
 		`CREATE TABLE IF NOT EXISTS message_bodies (
 			message_id TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,

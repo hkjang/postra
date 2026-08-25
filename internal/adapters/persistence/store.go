@@ -234,6 +234,10 @@ CREATE TABLE IF NOT EXISTS messages (
   snoozed_until INTEGER NOT NULL DEFAULT 0, labels_json TEXT NOT NULL DEFAULT '',
   legal_hold INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS idx_messages_account_date ON messages(account_id, date DESC);
+-- Serves the periodic background queries, which filter by owner and arrival
+-- time: triage runs every few minutes forever, so an unindexed scan here is a
+-- permanent cost that grows with the mailbox.
+CREATE INDEX IF NOT EXISTS idx_messages_user_created ON messages(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_msgid ON messages(message_id_hdr);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_hash ON messages(account_id, raw_hash);
 
