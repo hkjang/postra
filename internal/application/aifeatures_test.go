@@ -625,3 +625,50 @@ func TestEmbeddingsFiledUnderOwnAccount(t *testing.T) {
 		}
 	}
 }
+
+// A Smart Reply suggestion is written by the model, so the stored version must
+// say so: the UI badges versions as AI- or user-authored and the audit trail
+// records the same field. Attributing machine text to the person is a
+// provenance failure, not a cosmetic one.
+func TestDraftBodyAuthorship(t *testing.T) {
+	app, _, _, _ := newTestApp(t)
+	ctx := WithActor(context.Background(), "test")
+	acc := mustAccount(t, app)
+	recentMessage(t, app, ctx, acc.ID, "msg_auth", "질문", "언제 가능하신가요?")
+
+	// An accepted suggestion is AI-authored.
+	dv, err := app.CreateDraft(ctx, CreateDraftInput{
+		AccountID: acc.ID, Kind: "reply", ReplyToMessageID: "msg_auth",
+		Body: "네, 가능합니다.", BodyAuthor: "ai",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dv.Version.Author != "ai" {
+		t.Fatalf("AI-written body recorded as %q, want \"ai\"", dv.Version.Author)
+	}
+
+	// Text the person typed stays theirs.
+	dv, err = app.CreateDraft(ctx, CreateDraftInput{
+		AccountID: acc.ID, Kind: "reply", ReplyToMessageID: "msg_auth",
+		Body: "제가 직접 씁니다.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dv.Version.Author != "user" {
+		t.Fatalf("hand-written body recorded as %q, want \"user\"", dv.Version.Author)
+	}
+
+	// A caller cannot invent an authorship value.
+	dv, err = app.CreateDraft(ctx, CreateDraftInput{
+		AccountID: acc.ID, Kind: "reply", ReplyToMessageID: "msg_auth",
+		Body: "본문", BodyAuthor: "ceo",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dv.Version.Author != "user" {
+		t.Fatalf("arbitrary author accepted: %q", dv.Version.Author)
+	}
+}

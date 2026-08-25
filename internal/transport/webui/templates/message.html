@@ -64,6 +64,7 @@
     <form method="post" action="/ui/messages/{{$m.ID}}/draft" class="smart-reply">
       <input type="hidden" name="kind" value="reply">
       <input type="hidden" name="body" value="{{.}}">
+      <input type="hidden" name="body_author" value="ai">
       <p>{{.}}</p>
       <button class="ghost" type="submit">이 내용으로 초안 →</button>
     </form>

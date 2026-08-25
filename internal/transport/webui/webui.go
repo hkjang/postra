@@ -1280,9 +1280,11 @@ func (s *Server) messageDraft(w http.ResponseWriter, r *http.Request) {
 	}
 	dv, err := s.app.CreateDraft(r.Context(), application.CreateDraftInput{
 		AccountID: mv.Message.AccountID, Kind: kind, ReplyToMessageID: mv.Message.ID,
-		// A chosen Smart Reply suggestion arrives as body (user-authored, no
-		// re-generation); the free-form field stays AI instructions.
+		// A chosen Smart Reply suggestion arrives as body with no
+		// re-generation; body_author records that the model wrote it. The
+		// free-form field stays AI instructions.
 		Body:         strings.TrimSpace(r.FormValue("body")),
+		BodyAuthor:   r.FormValue("body_author"),
 		Instructions: strings.TrimSpace(r.FormValue("instructions")),
 	})
 	if err != nil {

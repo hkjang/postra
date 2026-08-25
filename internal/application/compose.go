@@ -23,6 +23,11 @@ type CreateDraftInput struct {
 	// (the result is stored as an AI-authored version; sending still
 	// requires explicit user approval — §1 발송 원칙).
 	Instructions string `json:"instructions,omitempty"`
+	// BodyAuthor declares who wrote Body. Set it to "ai" when the text came
+	// from the model rather than the person — an accepted Smart Reply
+	// suggestion, for example — so the version is attributed correctly in the
+	// UI and the audit trail. Anything else is treated as user-authored.
+	BodyAuthor string `json:"body_author,omitempty"`
 }
 
 type DraftView struct {
@@ -65,6 +70,11 @@ func (a *App) CreateDraft(ctx context.Context, in CreateDraftInput) (*DraftView,
 	}
 
 	v := domain.DraftVersion{Subject: in.Subject, BodyText: in.Body, Author: "user"}
+	// Machine-written text must not be recorded as the person's own. Only "ai"
+	// is honoured, so a caller cannot invent arbitrary authorship.
+	if in.Body != "" && in.BodyAuthor == "ai" {
+		v.Author = "ai"
+	}
 	if v.To, err = parseAddressStrings(in.To); err != nil {
 		return nil, err
 	}
