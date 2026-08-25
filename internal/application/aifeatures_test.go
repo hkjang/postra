@@ -576,3 +576,52 @@ func TestDigestSelectsByArrivalNotSenderDate(t *testing.T) {
 		t.Fatal("stale-dated mail missing from the briefing context")
 	}
 }
+
+// A batch can span several accounts — the background worker draws one batch
+// per user across all of them. Filing every embedding under the first
+// message's account makes account-scoped semantic search miss mail entirely.
+func TestEmbeddingsFiledUnderOwnAccount(t *testing.T) {
+	app, _, _, _ := newTestApp(t)
+	ctx := WithActor(context.Background(), "test")
+	accA := mustAccount(t, app)
+	accB := mustAccount(t, app)
+	if accA.ID == accB.ID {
+		t.Fatal("test premise broken: needs two distinct accounts")
+	}
+
+	now := time.Now().Unix()
+	for _, spec := range []struct{ id, acc, subj string }{
+		{"msg_a", accA.ID, "계정 A 메일"},
+		{"msg_b", accB.ID, "계정 B 메일"},
+	} {
+		m := &domain.Message{
+			ID: spec.id, UserID: DefaultUserID, AccountID: spec.acc, UIDL: "u-" + spec.id,
+			Subject: spec.subj, From: domain.Address{Email: "s@example.com"},
+			RawHash: "h-" + spec.id, RawURI: "mem://" + spec.id, Date: now, CreatedAt: now,
+		}
+		if err := app.Store.InsertMessage(ctx, m,
+			&domain.MessageBody{MessageID: spec.id, TextBody: spec.subj}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// One mixed batch, exactly as the worker issues it.
+	if err := app.embedMessagesBatch(ctx, "", []string{"msg_a", "msg_b"}); err != nil {
+		t.Fatal(err)
+	}
+
+	query := []float32{0.01, 0.01, 0.01}
+	for _, tc := range []struct{ acc, want string }{{accA.ID, "msg_a"}, {accB.ID, "msg_b"}} {
+		hits, err := app.VectorStore().SemanticSearch(ctx, DefaultUserID, tc.acc, query, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(hits) != 1 {
+			t.Fatalf("account %s: got %d hits, want exactly its own message", tc.acc, len(hits))
+		}
+		if hits[0].MessageID != tc.want {
+			t.Fatalf("account %s returned %s, want %s — embedding filed under the wrong account",
+				tc.acc, hits[0].MessageID, tc.want)
+		}
+	}
+}

@@ -159,25 +159,28 @@ func (a *App) embedMessagesBatch(ctx context.Context, accountID string, messageI
 		return fmt.Errorf("embedder returned no vectors")
 	}
 
-	var items []EmbeddingItem
+	// Every embedding is filed under its own message's account. A batch can span
+	// accounts — the background worker draws one per user across all of them —
+	// and storing them under a single account would make account-scoped
+	// semantic search silently miss mail and mis-attribute the rest.
+	byAccount := map[string][]EmbeddingItem{}
 	for idx, mID := range validIDs {
 		if idx >= len(res.Vectors) {
 			break
 		}
-		items = append(items, EmbeddingItem{
+		byAccount[accs[idx]] = append(byAccount[accs[idx]], EmbeddingItem{
 			MessageID: mID,
 			ChunkID:   0,
 			Vector:    res.Vectors[idx],
 			Model:     res.Model,
 		})
 	}
-
-	targetAcc := accountID
-	if targetAcc == "" && len(accs) > 0 {
-		targetAcc = accs[0]
+	for acc, items := range byAccount {
+		if err := a.VectorStore().SaveEmbeddingsBatch(ctx, userID, acc, items); err != nil {
+			return err
+		}
 	}
-
-	return a.VectorStore().SaveEmbeddingsBatch(ctx, userID, targetAcc, items)
+	return nil
 }
 
 // SemanticSearch embeds the query and returns the most similar stored
