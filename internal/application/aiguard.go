@@ -24,7 +24,10 @@ var injectionPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\bforget\s+(everything|all\s+previous|your\s+instructions)`),
 	regexp.MustCompile(`(?i)\b(you\s+are\s+now|from\s+now\s+on\s+you)\b`),
 	regexp.MustCompile(`(?i)\b(system|developer)\s*(prompt|message|instruction)s?\b`),
-	regexp.MustCompile(`(?i)^\s*(system|assistant)\s*:`),
+	// (?m) is essential: Go anchors ^ to the start of the text unless it is
+	// set, so without it this rule only fired when the entire mail began with
+	// the marker — never the realistic case of an injected line mid-body.
+	regexp.MustCompile(`(?im)^\s*(system|assistant)\s*:`),
 	regexp.MustCompile(`(?i)\b(reveal|print|repeat|show)\s+(your|the)\s+(system\s+)?(prompt|instructions?|rules?)`),
 	regexp.MustCompile(`(?i)\bact\s+as\s+(an?\s+)?(unrestricted|different|new)\b`),
 	regexp.MustCompile(`(?i)\b(jailbreak|DAN\s+mode|developer\s+mode)\b`),
@@ -77,8 +80,17 @@ func verifyCitations(resultJSON string, allowed map[string]bool) (string, int) {
 	if err := json.Unmarshal([]byte(resultJSON), &obj); err != nil {
 		return resultJSON, 0
 	}
-	raw, ok := obj["evidence_message_ids"].([]any)
-	if !ok {
+	// Models commonly collapse a single-element list into a bare string. Left
+	// unhandled, that form skipped verification entirely and a fabricated
+	// citation reached the user unchecked — the exact failure this guards.
+	var raw []any
+	normalized := false
+	switch v := obj["evidence_message_ids"].(type) {
+	case []any:
+		raw = v
+	case string:
+		raw, normalized = []any{v}, true
+	default:
 		return resultJSON, 0
 	}
 	kept := []any{}
@@ -90,9 +102,11 @@ func verifyCitations(resultJSON string, allowed map[string]bool) (string, int) {
 		}
 		dropped++
 	}
-	if dropped == 0 {
+	if dropped == 0 && !normalized {
 		return resultJSON, 0
 	}
+	// Rewrite even when nothing was dropped, so a bare string always reaches
+	// consumers as the list the schema promises.
 	obj["evidence_message_ids"] = kept
 	obj["citations_dropped"] = dropped
 	if len(kept) == 0 {

@@ -2,13 +2,13 @@
 
 Docker 데몬 없이 빌드한, 오프라인망에서 바로 사용 가능한 산출물입니다.
 
-> **v0.16.6**: 일정(.ics)·계량 정확성 수정 — 같은 메일의 일정을 다시 내려받으면 캘린더에 중복 등록되던 문제(UID 고정), RFC 5545 줄 길이(75옥텟) 초과 폴딩 수정, AI 토큰 지표가 합계 조회 시 두 배로 집계되던 문제 수정.
+> **v0.16.7**: AI 안전장치 수정 — 본문 중간에 삽입된 역할 표시(`System:` 등) 프롬프트 인젝션을 탐지하지 못하던 문제(정규식이 본문 첫 줄에만 적용됨)와, AI가 근거 메일 ID를 배열이 아닌 문자열 하나로 반환하면 검증을 건너뛰어 지어낸 인용이 그대로 노출되던 문제를 수정했습니다.
 
 | 파일 | 설명 |
 | --- | --- |
-| `postra-0.16.6-linux-amd64-image.tar.gz` | `docker load` 로 불러오는 컨테이너 이미지 (`postra:0.16.6`, linux/amd64) |
-| `postra-0.16.6-linux-amd64` | 정적 링크 단일 실행 파일 (CGO 없음, 의존성 없음) |
-| `postra-0.16.6-sbom.cdx.json` | CycloneDX 소프트웨어 자재명세서 |
+| `postra-0.16.7-linux-amd64-image.tar.gz` | `docker load` 로 불러오는 컨테이너 이미지 (`postra:0.16.7`, linux/amd64) |
+| `postra-0.16.7-linux-amd64` | 정적 링크 단일 실행 파일 (CGO 없음, 의존성 없음) |
+| `postra-0.16.7-sbom.cdx.json` | CycloneDX 소프트웨어 자재명세서 |
 | `SHA256SUMS.txt` | 모든 릴리즈 파일의 SHA-256 체크섬 |
 
 이미지는 순수 Go 정적 바이너리 + CA 인증서 + 최소 rootfs 로만 구성됩니다(scratch 기반).
@@ -17,7 +17,7 @@ Docker 데몬 없이 빌드한, 오프라인망에서 바로 사용 가능한 �
 
 ```bash
 # 폐쇄망 호스트로 tar.gz 를 옮긴 뒤:
-docker load -i postra-0.16.6-linux-amd64-image.tar.gz     # gzip 자동 인식
+docker load -i postra-0.16.7-linux-amd64-image.tar.gz     # gzip 자동 인식
 docker image ls | grep postra
 
 # 오프라인망(평문 POP3/SMTP 허용) 실행 예시
@@ -27,7 +27,7 @@ docker run -d --name postra \
   -e POSTRA_HTTP_ADDR=0.0.0.0:8480 \
   -e POSTRA_ALLOW_INSECURE_MAIL=true \
   -e POSTRA_API_TOKEN=change-me \
-  postra:0.16.6
+  postra:0.16.7
 
 # CLI 사용 (같은 컨테이너)
 docker exec -it postra postra account list
@@ -39,9 +39,9 @@ REST API는 `/api`, Web UI는 `/ui`, MCP Streamable HTTP는 `/mcp`이며 모두 
 ## 2) 바이너리 단독 실행 (Docker 불필요)
 
 ```bash
-chmod +x postra-0.16.6-linux-amd64
-./postra-0.16.6-linux-amd64 init
-POSTRA_BOOTSTRAP_ADMIN_PASSWORD='replace-me' ./postra-0.16.6-linux-amd64 serve
+chmod +x postra-0.16.7-linux-amd64
+./postra-0.16.7-linux-amd64 init
+POSTRA_BOOTSTRAP_ADMIN_PASSWORD='replace-me' ./postra-0.16.7-linux-amd64 serve
 ```
 
 ## 데이터 / 비밀값
@@ -55,6 +55,6 @@ Docker 없이 이미지를 다시 만들려면:
 
 ```bash
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o postra ./cmd/postra
-go run scripts/mkimage.go postra postra-image.tar postra:0.16.6
+go run scripts/mkimage.go postra postra-image.tar postra:0.16.7
 gzip -9 postra-image.tar
 ```
