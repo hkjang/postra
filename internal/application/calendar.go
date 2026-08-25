@@ -2,12 +2,13 @@ package application
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
-
-	"postra/internal/adapters/persistence"
 )
 
 // CalendarEvent is one schedulable item found in a message.
@@ -86,7 +87,7 @@ func (c *CalendarEvents) ICS() string {
 			}
 		}
 		sb.WriteString("BEGIN:VEVENT\r\n")
-		fmt.Fprintf(&sb, "UID:%s-%d@postra\r\n", persistence.NewID("evt"), i)
+		fmt.Fprintf(&sb, "UID:%s@postra\r\n", eventUID(c.MessageID, ev, i))
 		fmt.Fprintf(&sb, "DTSTAMP:%s\r\n", stamp)
 		if allDay {
 			fmt.Fprintf(&sb, "DTSTART;VALUE=DATE:%s\r\n", start.Format("20060102"))
@@ -128,22 +129,37 @@ func parseEventTime(v string) (t time.Time, allDay bool, err error) {
 	return time.Time{}, false, fmt.Errorf("unrecognized time %q", v)
 }
 
-// icsLine escapes a value per RFC 5545 and folds the line at 75 octets.
+// icsLine escapes a value per RFC 5545 and folds it to 75 octets per line.
+// Continuation lines begin with a space that itself counts toward the limit,
+// so everything after the first fold is cut one octet shorter.
 func icsLine(name, value string) string {
 	r := strings.NewReplacer("\\", "\\\\", ";", "\\;", ",", "\\,", "\r\n", "\\n", "\n", "\\n", "\r", "\\n")
 	line := name + ":" + r.Replace(value)
 	var sb strings.Builder
-	for len(line) > 75 {
-		cut := 75
+	limit := 75
+	for len(line) > limit {
+		cut := limit
 		// Never split a multi-byte rune across the fold.
 		for cut > 0 && !utf8ValidBoundary(line, cut) {
 			cut--
 		}
+		if cut == 0 { // a single rune wider than the limit; emit it whole
+			cut = limit
+		}
 		sb.WriteString(line[:cut] + "\r\n ")
 		line = line[cut:]
+		limit = 74
 	}
 	sb.WriteString(line + "\r\n")
 	return sb.String()
+}
+
+// eventUID derives a stable identifier for an extracted event. A random UID
+// would make every download a new event, so re-importing the same message
+// would duplicate entries in the calendar instead of updating them.
+func eventUID(messageID string, ev CalendarEvent, index int) string {
+	sum := sha256.Sum256([]byte(messageID + "|" + ev.Title + "|" + ev.Start + "|" + strconv.Itoa(index)))
+	return hex.EncodeToString(sum[:16])
 }
 
 func utf8ValidBoundary(s string, i int) bool {

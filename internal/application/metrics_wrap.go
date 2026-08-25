@@ -63,7 +63,10 @@ func (m meteredAI) observeUsage(op string, u domain.TokenUsage) {
 	if u.CompletionTokens > 0 {
 		metrics.AITokens.WithLabelValues(op, "output").Add(float64(u.CompletionTokens))
 	}
-	if u.TotalTokens > 0 {
+	if u.PromptTokens == 0 && u.CompletionTokens == 0 && u.TotalTokens > 0 {
+		// Only when the provider gives no breakdown. Emitting a "total" series
+		// alongside input/output would make sum(ai_tokens_total) count every
+		// token twice.
 		metrics.AITokens.WithLabelValues(op, "total").Add(float64(u.TotalTokens))
 	}
 	if m.rates == nil {

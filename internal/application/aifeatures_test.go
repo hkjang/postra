@@ -3,12 +3,16 @@ package application
 import (
 	"context"
 	"errors"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
 	"postra/internal/domain"
+	"postra/internal/platform/metrics"
 )
 
 func recentMessage(t *testing.T, app *App, ctx context.Context, accID, id, subject, body string) *domain.Message {
@@ -425,5 +429,93 @@ func TestDigestRetriesAfterTransientFailure(t *testing.T) {
 	}
 	if _, marked := settings[digestStateKey+DefaultUserID]; !marked {
 		t.Fatal("successful briefing did not mark the day, it would regenerate every tick")
+	}
+}
+
+// Re-downloading the same message's calendar must produce the same UIDs, or
+// importing twice duplicates entries instead of updating them.
+func TestCalendarICSUIDIsStable(t *testing.T) {
+	ev := CalendarEvents{MessageID: "msg_x", Events: []CalendarEvent{
+		{Title: "회의", Start: "2026-03-04T15:00:00+09:00"},
+		{Title: "회의", Start: "2026-03-04T15:00:00+09:00"}, // same content, different slot
+	}}
+	first, second := ev.ICS(), ev.ICS()
+	if first != second {
+		t.Fatal("ICS output is not deterministic across renders")
+	}
+	uids := regexp.MustCompile(`UID:([^\r\n]+)`).FindAllStringSubmatch(first, -1)
+	if len(uids) != 2 {
+		t.Fatalf("expected 2 UIDs, got %d", len(uids))
+	}
+	if uids[0][1] == uids[1][1] {
+		t.Fatal("distinct events share a UID; one would overwrite the other")
+	}
+	// A different message must not collide with this one.
+	other := CalendarEvents{MessageID: "msg_y", Events: ev.Events[:1]}
+	otherUID := regexp.MustCompile(`UID:([^\r\n]+)`).FindStringSubmatch(other.ICS())
+	if otherUID[1] == uids[0][1] {
+		t.Fatal("events from different messages collide on UID")
+	}
+}
+
+// RFC 5545 caps a content line at 75 octets; a continuation's leading space
+// counts toward that, so folded lines must not exceed the limit.
+func TestCalendarICSFoldsWithinLimit(t *testing.T) {
+	long := strings.Repeat("가나다라마바사아자차", 40) // multi-byte, well past one line
+	ev := CalendarEvents{MessageID: "m", Events: []CalendarEvent{
+		{Title: long, Start: "2026-03-04T15:00:00+09:00", Location: long},
+	}}
+	ics := ev.ICS()
+	for _, line := range strings.Split(ics, "\r\n") {
+		if len(line) > 75 {
+			t.Fatalf("line exceeds 75 octets (%d): %q", len(line), line)
+		}
+	}
+	// Unfolding must restore the original text, proving no rune was split.
+	unfolded := strings.ReplaceAll(ics, "\r\n ", "")
+	if !strings.Contains(unfolded, long) {
+		t.Fatal("folding corrupted the value; unfolding did not restore it")
+	}
+}
+
+// Token accounting must not double-count: emitting input, output AND total
+// under one metric makes sum(ai_tokens_total) report twice the real usage.
+func TestTokenUsageAccounting(t *testing.T) {
+	m := meteredAI{rates: func() (float64, float64) { return 3.0, 15.0 }}
+	read := func(kind string) float64 {
+		return testutil.ToFloat64(metrics.AITokens.WithLabelValues("generate", kind))
+	}
+	cost := func() float64 { return testutil.ToFloat64(metrics.AICostUSD.WithLabelValues("generate")) }
+
+	in0, out0, tot0, cost0 := read("input"), read("output"), read("total"), cost()
+
+	// A provider reporting a full breakdown: components only, no "total".
+	m.observeUsage("generate", domain.TokenUsage{PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500})
+	if got := read("input") - in0; got != 1000 {
+		t.Errorf("input tokens = %v, want 1000", got)
+	}
+	if got := read("output") - out0; got != 500 {
+		t.Errorf("output tokens = %v, want 500", got)
+	}
+	if got := read("total") - tot0; got != 0 {
+		t.Errorf("total series written alongside a breakdown (%v) — tokens double-counted", got)
+	}
+	// 1000 in @ $3/M + 500 out @ $15/M = 0.003 + 0.0075
+	if got := cost() - cost0; got < 0.01049 || got > 0.01051 {
+		t.Errorf("cost = %v, want ~0.0105", got)
+	}
+
+	// A provider reporting only a total still gets recorded, under "total".
+	tot1 := read("total")
+	m.observeUsage("generate", domain.TokenUsage{TotalTokens: 42})
+	if got := read("total") - tot1; got != 42 {
+		t.Errorf("total-only usage not recorded, got %v", got)
+	}
+
+	// Nothing reported means unknown, not free.
+	before := read("input") + read("output") + read("total")
+	m.observeUsage("generate", domain.TokenUsage{})
+	if after := read("input") + read("output") + read("total"); after != before {
+		t.Error("empty usage should record nothing")
 	}
 }
