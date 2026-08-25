@@ -1268,6 +1268,40 @@ func (s *Store) UpdateMessageBody(ctx context.Context, messageID string, body *d
 	return err
 }
 
+// bodySnippetMaxStored caps the stored body a preview will load; see the
+// SQLite adapter for the reasoning.
+const bodySnippetMaxStored = 256 << 10
+
+// BodyTextBatch returns the decrypted plain text of several messages in one
+// query, so a listing can show previews without a query per row.
+func (s *Store) BodyTextBatch(ctx context.Context, userID string, messageIDs []string) (map[string]string, error) {
+	out := map[string]string{}
+	if len(messageIDs) == 0 {
+		return out, nil
+	}
+	rows, err := s.pool.Query(ctx, `SELECT b.message_id, b.text_body
+	 FROM message_bodies b JOIN messages m ON m.id=b.message_id
+	 WHERE m.user_id=$1 AND b.message_id = ANY($2) AND length(b.text_body) <= $3`,
+		userID, messageIDs, bodySnippetMaxStored)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var stored *string
+		if err := rows.Scan(&id, &stored); err != nil {
+			return nil, err
+		}
+		text, err := s.openBody(id, "text", deref(stored))
+		if err != nil {
+			continue // key mismatch: show the row without a preview
+		}
+		out[id] = text
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) ListAttachments(ctx context.Context, userID, messageID string) ([]domain.Attachment, error) {
 	rows, err := s.pool.Query(ctx, `SELECT a.id,a.message_id,a.name,a.mime_type,a.size,a.hash,a.storage_uri,a.inline_flag,
 	 COALESCE(a.scan_status,'clean'),COALESCE(a.scan_detail,'')

@@ -37,6 +37,7 @@
           {{$p := aiPriority .Labels}}{{if $p}}<span class="prio prio-{{$p}}">{{if eq $p "urgent"}}긴급{{else if eq $p "high"}}높음{{else if eq $p "normal"}}보통{{else}}낮음{{end}}</span>{{end}}
           <span class="mailrow-subject">{{if .Subject}}{{.Subject}}{{else}}(제목 없음){{end}}</span>
         </div>
+        {{with index $.Snippets .ID}}<div class="mailrow-snippet">{{.}}</div>{{end}}
         <div class="mailrow-meta">
           <span class="mailrow-from">{{senderName .From}}</span>
           {{if aiReplyNeeded .Labels}}<span class="tag">답장 필요</span>{{end}}

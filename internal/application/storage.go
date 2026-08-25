@@ -88,6 +88,9 @@ type Storage interface {
 	// search index) in place — together they power body-repair re-sync.
 	UIDLsNeedingBodyRepair(ctx context.Context, accountID string) (map[string]string, error)
 	UpdateMessageBody(ctx context.Context, messageID string, body *domain.MessageBody) error
+	// BodyTextBatch fetches several messages' plain text in one query, so a
+	// listing can render previews without a query per row.
+	BodyTextBatch(ctx context.Context, userID string, messageIDs []string) (map[string]string, error)
 	ListAttachments(ctx context.Context, userID, messageID string) ([]domain.Attachment, error)
 	Search(ctx context.Context, q domain.SearchQuery) (*domain.SearchResult, error)
 	UpdateMessage(ctx context.Context, m *domain.Message) error

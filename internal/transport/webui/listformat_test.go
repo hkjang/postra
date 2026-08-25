@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"postra/internal/application"
 	"postra/internal/domain"
@@ -99,5 +100,64 @@ func TestInboxRendersMailRows(t *testing.T) {
 	// The raw "Name <email>" form should no longer appear in the list.
 	if strings.Contains(body, "김철수 &lt;kim@corp.local&gt;") {
 		t.Error("list still renders the verbose Name <email> form")
+	}
+}
+
+func TestSnippetOf(t *testing.T) {
+	// Mail is full of hard wraps and blank lines; a preview must read as one line.
+	got := snippetOf("안녕하세요.\n\n   내일 회의\t자료를\r\n보냅니다.  ", 140)
+	if got != "안녕하세요. 내일 회의 자료를 보냅니다." {
+		t.Fatalf("whitespace not collapsed: %q", got)
+	}
+	if snippetOf("   \n\t  ", 140) != "" {
+		t.Error("a blank body should yield no preview at all")
+	}
+	// Truncation counts runes, not bytes, so Korean text is not cut mid-character.
+	long := strings.Repeat("가", 300)
+	cut := snippetOf(long, 10)
+	if r := []rune(cut); len(r) != 11 || string(r[:10]) != strings.Repeat("가", 10) || r[10] != '…' {
+		t.Fatalf("truncation is not rune-aware: %q", cut)
+	}
+	if !utf8.ValidString(cut) {
+		t.Fatal("truncation produced invalid UTF-8")
+	}
+}
+
+// The preview must reach the rendered row, and come from one batched query
+// rather than a per-row fetch.
+func TestInboxRendersPreview(t *testing.T) {
+	app, _ := newTestApp(t)
+	ctx := application.WithActor(context.Background(), "test")
+	now := time.Now().Unix()
+	m := &domain.Message{
+		ID: "msg_prev", UserID: application.DefaultUserID, AccountID: "acc_p", UIDL: "u-p",
+		Subject: "회의 안내", From: domain.Address{Name: "박영희", Email: "park@corp.local"},
+		RawHash: "h-p", RawURI: "mem://p", Date: now, CreatedAt: now,
+	}
+	body := &domain.MessageBody{MessageID: m.ID, TextBody: "안녕하세요.\n\n내일 3시 회의 가능하신가요?"}
+	if err := app.Store.InsertMessage(ctx, m, body, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := do(t, New(app, "").Handler(), http.MethodGet, "/ui/", nil, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("inbox returned %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `class="mailrow-snippet">안녕하세요. 내일 3시 회의 가능하신가요?<`) {
+		t.Fatalf("preview missing from the row:\n%s", rec.Body.String())
+	}
+
+	// Bodies are encrypted at rest in this configuration, so the batch fetch
+	// must decrypt — otherwise the preview would show ciphertext.
+	texts, err := app.Store.BodyTextBatch(ctx, application.DefaultUserID, []string{m.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(texts[m.ID], "내일 3시 회의") {
+		t.Fatalf("batch fetch did not return decrypted text: %q", texts[m.ID])
+	}
+	// Unknown IDs are simply absent, not an error that would break the listing.
+	if got, err := app.Store.BodyTextBatch(ctx, application.DefaultUserID, []string{"nope"}); err != nil || len(got) != 0 {
+		t.Fatalf("unknown id should yield an empty map, got %v (err=%v)", got, err)
 	}
 }

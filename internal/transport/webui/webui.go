@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -71,6 +72,24 @@ var funcs = template.FuncMap{
 	// shortest form that is still unambiguous.
 	"senderName": senderName,
 	"smartTime":  smartTime,
+}
+
+// snippetSpace collapses runs of whitespace so a preview reads as one line.
+var snippetSpace = regexp.MustCompile(`\s+`)
+
+// snippetOf renders a one-line preview of a message body. Mail is full of hard
+// wraps, quoted blocks and blank lines; without collapsing them a preview
+// would show mostly whitespace.
+func snippetOf(text string, max int) string {
+	t := strings.TrimSpace(snippetSpace.ReplaceAllString(text, " "))
+	if t == "" {
+		return ""
+	}
+	r := []rune(t)
+	if len(r) <= max {
+		return t
+	}
+	return strings.TrimSpace(string(r[:max])) + "…"
 }
 
 // senderName prefers the display name and falls back to the address, so the
@@ -871,8 +890,25 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
+	// One batched query for the whole page: a preview per row is what makes a
+	// list readable without opening anything, but a query per row would not be.
+	ids := make([]string, 0, len(res.Messages))
+	for _, m := range res.Messages {
+		ids = append(ids, m.ID)
+	}
+	snippets := map[string]string{}
+	if bodies, berr := s.app.Store.BodyTextBatch(r.Context(), application.DefaultUserID, ids); berr == nil {
+		for id, text := range bodies {
+			if sn := snippetOf(text, 140); sn != "" {
+				snippets[id] = sn
+			}
+		}
+	} else {
+		slog.Warn("inbox previews unavailable", "err", berr) // the list still renders
+	}
+
 	data := map[string]any{
-		"Query": q, "Messages": res.Messages, "Accounts": accounts,
+		"Query": q, "Messages": res.Messages, "Accounts": accounts, "Snippets": snippets,
 		"AccountID": accountID, "HasAccounts": len(accounts) > 0,
 		"HasMessages": len(res.Messages) > 0, "Label": label,
 	}

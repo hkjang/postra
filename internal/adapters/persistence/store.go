@@ -1390,6 +1390,50 @@ func (s *Store) UpdateMessageBody(ctx context.Context, messageID string, body *d
 	return nil
 }
 
+// bodySnippetMaxStored caps the stored body a preview will load. Bodies are
+// encrypted, so they cannot be truncated in SQL; without a cap one page of a
+// mailbox full of very long mail would pull tens of megabytes just to show a
+// line each. Mail beyond the cap simply gets no preview.
+const bodySnippetMaxStored = 256 << 10
+
+// BodyTextBatch returns the decrypted plain text of several messages in one
+// query, so a listing can show previews without issuing a query per row.
+// Messages whose body is missing, oversized, or undecryptable are absent from
+// the result rather than failing the batch — a listing must still render.
+func (s *Store) BodyTextBatch(ctx context.Context, userID string, messageIDs []string) (map[string]string, error) {
+	out := map[string]string{}
+	if len(messageIDs) == 0 {
+		return out, nil
+	}
+	placeholders := make([]string, len(messageIDs))
+	args := []any{userID}
+	for i, id := range messageIDs {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+	args = append(args, bodySnippetMaxStored)
+	rows, err := s.db.QueryContext(ctx, `SELECT b.message_id, b.text_body
+	 FROM message_bodies b JOIN messages m ON m.id=b.message_id
+	 WHERE m.user_id=? AND b.message_id IN (`+strings.Join(placeholders, ",")+`)
+	   AND length(b.text_body) <= ?`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, stored string
+		if err := rows.Scan(&id, &stored); err != nil {
+			return nil, err
+		}
+		text, err := s.openBody(id, "text", stored)
+		if err != nil {
+			continue // key mismatch: show the row without a preview
+		}
+		out[id] = text
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) ListAttachments(ctx context.Context, userID, messageID string) ([]domain.Attachment, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT a.id,a.message_id,a.name,a.mime_type,a.size,a.hash,a.storage_uri,a.inline_flag,
 	 COALESCE(a.scan_status,'clean'),COALESCE(a.scan_detail,'')
