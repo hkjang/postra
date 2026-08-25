@@ -519,3 +519,60 @@ func TestTokenUsageAccounting(t *testing.T) {
 		t.Error("empty usage should record nothing")
 	}
 }
+
+// The briefing answers "what arrived today", so it must select by ingest time.
+// Filtering on the sender's Date header silently drops mail that arrived now
+// but carries an old or missing date — forwarded threads, delayed delivery, a
+// wrong clock, or a sender who simply omits the header. Arrival time is
+// stamped by the store, so unlike the Date header it cannot be spoofed.
+func TestDigestSelectsByArrivalNotSenderDate(t *testing.T) {
+	app, _, _, ai := newTestApp(t)
+	ai.response = `{"headline":"요약","needs_reply":[],"deadlines":[],"fyi":[],"volume_note":"1건"}`
+	ctx := WithActor(context.Background(), "test")
+	acc := mustAccount(t, app)
+
+	now := time.Now().Unix()
+	stale := &domain.Message{
+		ID: "msg_stale", UserID: DefaultUserID, AccountID: acc.ID, UIDL: "u-stale",
+		Subject: "오래된 날짜 헤더", From: domain.Address{Email: "s@example.com"},
+		RawHash: "h-stale", RawURI: "mem://stale",
+		Date: now - 90*24*3600, // sender says three months ago; it arrives now
+	}
+	if err := app.Store.InsertMessage(ctx, stale,
+		&domain.MessageBody{MessageID: stale.ID, TextBody: "확인 부탁드립니다."}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// The two windows must disagree, which is the whole point: a Date-header
+	// window loses this message, an arrival window keeps it.
+	byDate, err := app.Store.Search(ctx, domain.SearchQuery{UserID: DefaultUserID, Since: now - 3600, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(byDate.Messages) != 0 {
+		t.Fatal("test premise broken: the stale Date header should fall outside a Since window")
+	}
+	byArrival, err := app.Store.Search(ctx, domain.SearchQuery{UserID: DefaultUserID, ReceivedSince: now - 3600, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(byArrival.Messages) != 1 {
+		t.Fatalf("ReceivedSince did not match mail that just arrived, got %d", len(byArrival.Messages))
+	}
+	// A window that starts in the future still matches nothing.
+	future, err := app.Store.Search(ctx, domain.SearchQuery{UserID: DefaultUserID, ReceivedSince: now + 3600, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(future.Messages) != 0 {
+		t.Fatalf("ReceivedSince is not filtering, got %d", len(future.Messages))
+	}
+
+	// And the briefing itself now includes the message it used to drop.
+	if _, err := app.GenerateDailyDigest(ctx, "", 24); err != nil {
+		t.Fatalf("mail that arrived today was excluded from the briefing: %v", err)
+	}
+	if !strings.Contains(ai.lastRequest.Untrusted, "msg_stale") {
+		t.Fatal("stale-dated mail missing from the briefing context")
+	}
+}

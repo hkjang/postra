@@ -24,8 +24,11 @@ func (a *App) GenerateDailyDigest(ctx context.Context, accountID string, hours i
 		hours = 24
 	}
 	since := time.Now().Add(-time.Duration(hours) * time.Hour).Unix()
+	// Select by arrival, not by the Date header: mail forwarded from an old
+	// thread, delayed in transit, or sent with a wrong/missing clock would
+	// otherwise be dropped from a briefing it belongs in.
 	res, err := a.Store.Search(ctx, domain.SearchQuery{
-		UserID: userIDFrom(ctx), AccountID: accountID, Since: since, Limit: digestMaxMessages,
+		UserID: userIDFrom(ctx), AccountID: accountID, ReceivedSince: since, Limit: digestMaxMessages,
 	})
 	if err != nil {
 		return nil, err

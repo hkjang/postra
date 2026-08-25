@@ -1435,6 +1435,9 @@ func (s *Store) Search(ctx context.Context, q domain.SearchQuery) (*domain.Searc
 	if q.Since > 0 {
 		conds, args = append(conds, "m.date >= ?"), append(args, q.Since)
 	}
+	if q.ReceivedSince > 0 {
+		conds, args = append(conds, "m.created_at >= ?"), append(args, q.ReceivedSince)
+	}
 	if q.Until > 0 {
 		conds, args = append(conds, "m.date <= ?"), append(args, q.Until)
 	}

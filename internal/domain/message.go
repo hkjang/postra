@@ -131,14 +131,19 @@ type Thread struct {
 }
 
 type SearchQuery struct {
-	UserID        string `json:"-"`
-	AccountID     string `json:"account_id,omitempty"`
-	Text          string `json:"text,omitempty"`
-	From          string `json:"from,omitempty"`
-	To            string `json:"to,omitempty"`
-	Subject       string `json:"subject,omitempty"`
-	Since         int64  `json:"since,omitempty"` // unix seconds
-	Until         int64  `json:"until,omitempty"`
+	UserID    string `json:"-"`
+	AccountID string `json:"account_id,omitempty"`
+	Text      string `json:"text,omitempty"`
+	From      string `json:"from,omitempty"`
+	To        string `json:"to,omitempty"`
+	Subject   string `json:"subject,omitempty"`
+	Since     int64  `json:"since,omitempty"` // unix seconds, on the sender's Date header
+	Until     int64  `json:"until,omitempty"`
+	// ReceivedSince filters on when the message was ingested rather than the
+	// Date header the sender wrote. Use it to answer "what arrived since X":
+	// a sender's clock can be wrong, absent, or deliberately stale, and such
+	// mail would silently fall outside a Since window.
+	ReceivedSince int64  `json:"received_since,omitempty"`
 	HasAttachment *bool  `json:"has_attachment,omitempty"`
 	Limit         int    `json:"limit,omitempty"`
 	Cursor        string `json:"cursor,omitempty"`
