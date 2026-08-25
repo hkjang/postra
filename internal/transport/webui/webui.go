@@ -101,7 +101,7 @@ func parseTemplates() map[string]*template.Template {
 	pages := []string{"search", "message", "draft", "send", "sent", "login", "error",
 		"accounts", "account_new", "account", "compose", "analysis", "job",
 		"setup", "admin_users", "admin_settings", "mcp_keys"}
-	pages = append(pages, "admin_ai", "admin_incidents", "digest")
+	pages = append(pages, "admin_ai", "admin_incidents", "digest", "rules")
 	out := make(map[string]*template.Template, len(pages))
 	for _, p := range pages {
 		t := template.Must(template.New("layout").Funcs(funcs).
@@ -147,6 +147,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /ui/admin/ai/test", s.gate(s.adminAITest))
 	mux.HandleFunc("POST /ui/admin/vector/test", s.gate(s.adminVectorTest))
 	mux.HandleFunc("GET /ui/digest", s.gate(s.digest))
+	mux.HandleFunc("GET /ui/rules", s.gate(s.rules))
+	mux.HandleFunc("POST /ui/rules/draft", s.gate(s.ruleDraft))
+	mux.HandleFunc("POST /ui/rules", s.gate(s.ruleCreate))
+	mux.HandleFunc("POST /ui/rules/{id}/delete", s.gate(s.ruleDelete))
 	mux.HandleFunc("GET /ui/", s.gate(s.search))
 	mux.HandleFunc("GET /ui/accounts", s.gate(s.accounts))
 	mux.HandleFunc("GET /ui/accounts/new", s.gate(s.accountNew))
@@ -1080,6 +1084,69 @@ func (s *Server) message(w http.ResponseWriter, r *http.Request) {
 	}
 	accounts, _ := s.app.ListAccounts(r.Context())
 	s.render(w, "message", http.StatusOK, map[string]any{"View": view, "Accounts": accounts})
+}
+
+// rules lists the user's automation rules and offers the plain-language
+// composer. Rules act on incoming mail, so nothing here is applied without an
+// explicit save.
+func (s *Server) rules(w http.ResponseWriter, r *http.Request) {
+	s.renderRules(w, r, http.StatusOK, nil)
+}
+
+func (s *Server) renderRules(w http.ResponseWriter, r *http.Request, code int, extra map[string]any) {
+	list, err := s.app.ListRules(r.Context())
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	data := map[string]any{"Rules": list, "CSRF": csrfFromRequest(r)}
+	for k, v := range extra {
+		data[k] = v
+	}
+	s.render(w, "rules", code, data)
+}
+
+// ruleDraft turns the typed request into a proposed rule and shows it for
+// confirmation. The draft is carried back to the browser as JSON in a hidden
+// field, so proposing costs no storage and nothing filters mail until saved.
+func (s *Server) ruleDraft(w http.ResponseWriter, r *http.Request) {
+	instruction := strings.TrimSpace(r.FormValue("instruction"))
+	rule, err := s.app.DraftRuleFromText(r.Context(), instruction)
+	if err != nil {
+		s.renderRules(w, r, http.StatusOK, map[string]any{"Error": err.Error(), "Instruction": instruction})
+		return
+	}
+	encoded, err := json.Marshal(rule)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	s.renderRules(w, r, http.StatusOK, map[string]any{
+		"Draft": rule, "DraftJSON": string(encoded), "Instruction": instruction,
+	})
+}
+
+// ruleCreate saves a confirmed draft. The JSON round-trips through the browser,
+// so it is re-validated server-side exactly like any hand-authored rule.
+func (s *Server) ruleCreate(w http.ResponseWriter, r *http.Request) {
+	var rule domain.MailRule
+	if err := json.Unmarshal([]byte(r.FormValue("rule_json")), &rule); err != nil {
+		s.renderRules(w, r, http.StatusBadRequest, map[string]any{"Error": "규칙 데이터를 읽을 수 없습니다."})
+		return
+	}
+	if _, err := s.app.CreateRule(r.Context(), rule); err != nil {
+		s.renderRules(w, r, http.StatusBadRequest, map[string]any{"Error": err.Error()})
+		return
+	}
+	http.Redirect(w, r, "/ui/rules", http.StatusSeeOther)
+}
+
+func (s *Server) ruleDelete(w http.ResponseWriter, r *http.Request) {
+	if err := s.app.DeleteRule(r.Context(), r.PathValue("id")); err != nil {
+		s.fail(w, err)
+		return
+	}
+	http.Redirect(w, r, "/ui/rules", http.StatusSeeOther)
 }
 
 // digestView is the parsed shape of a daily_digest analysis, so the template

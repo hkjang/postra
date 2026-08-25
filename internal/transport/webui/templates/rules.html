@@ -1,0 +1,62 @@
+{{define "title"}}메일 규칙{{end}}
+{{define "content"}}
+<h1>메일 규칙 <span class="small muted">자동 분류·정리</span></h1>
+
+{{if .Error}}<div class="warn">{{.Error}}</div>{{end}}
+
+<div class="card">
+  <h2 style="margin-top:0">평소 말로 규칙 만들기</h2>
+  <p class="small muted" style="margin:.2rem 0 .9rem">
+    예: “뉴스레터는 Archive 라벨 붙여줘”, “대표님이 보낸 메일은 중요 표시”.
+    AI가 규칙을 제안하면 확인 후 저장합니다 — 저장 전에는 메일에 아무 영향이 없습니다.
+  </p>
+  <form method="post" action="/ui/rules/draft" class="search" style="margin-bottom:0">
+    <input type="text" name="instruction" value="{{.Instruction}}" placeholder="어떻게 정리할까요?" autofocus>
+    <button type="submit">규칙 제안받기</button>
+  </form>
+</div>
+
+{{with .Draft}}
+<div class="card" style="border-color:var(--accent)">
+  <h2 style="margin-top:0">제안된 규칙 <span class="tag">미저장</span></h2>
+  <dl class="kv">
+    <dt>이름</dt><dd><b>{{.Name}}</b></dd>
+    <dt>조건</dt>
+    <dd>
+      {{if eq .Match "any"}}<span class="small muted">아래 중 하나라도 맞으면</span>{{else}}<span class="small muted">아래를 모두 만족하면</span>{{end}}
+      <ul style="margin:.35rem 0 0;padding-left:1.1rem">
+        {{range .Conditions}}<li><code>{{.Field}}</code> {{.Operator}} {{if .Value}}<b>{{.Value}}</b>{{end}}</li>{{end}}
+      </ul>
+    </dd>
+    <dt>동작</dt>
+    <dd><ul style="margin:0;padding-left:1.1rem">
+      {{range .Actions}}<li><b>{{.Type}}</b>{{if .Value}} → {{.Value}}{{end}}</li>{{end}}
+    </ul></dd>
+  </dl>
+  <form method="post" action="/ui/rules" class="actions">
+    <input type="hidden" name="rule_json" value="{{$.DraftJSON}}">
+    <button type="submit">이 규칙 저장</button>
+    <a class="btn ghost" href="/ui/rules">취소</a>
+  </form>
+</div>
+{{end}}
+
+<h2>저장된 규칙 ({{len .Rules}})</h2>
+{{if .Rules}}
+<div class="card"><table>
+  <thead><tr><th>이름</th><th>조건</th><th>동작</th><th>상태</th><th></th></tr></thead>
+  <tbody>{{range .Rules}}<tr>
+    <td><b>{{.Name}}</b><br><span class="small muted">우선순위 {{.Priority}}</span></td>
+    <td class="small">
+      {{if eq .Match "any"}}<span class="muted">하나라도:</span>{{else}}<span class="muted">모두:</span>{{end}}
+      {{range .Conditions}}<div><code>{{.Field}}</code> {{.Operator}} {{.Value}}</div>{{end}}
+    </td>
+    <td class="small">{{range .Actions}}<div>{{.Type}}{{if .Value}} → {{.Value}}{{end}}</div>{{end}}</td>
+    <td class="small">{{if .Enabled}}<span class="ok">사용 중</span>{{else}}<span class="muted">중지됨</span>{{end}}</td>
+    <td><form method="post" action="/ui/rules/{{.ID}}/delete" onsubmit="return confirm('이 규칙을 삭제하시겠습니까?')"><button class="danger" type="submit">삭제</button></form></td>
+  </tr>{{end}}</tbody>
+</table></div>
+{{else}}
+<div class="card empty"><p class="muted">아직 규칙이 없습니다. 위에 평소 쓰는 말로 적어보세요.</p></div>
+{{end}}
+{{end}}
