@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"postra/internal/domain"
 )
@@ -224,5 +225,116 @@ func TestAttachmentTextSkipsBlocked(t *testing.T) {
 	}
 	if got := app.AttachmentsTextForIndex(ctx, m.ID, 1500); got != "" {
 		t.Fatalf("blocked attachment must not be indexed, got %q", got)
+	}
+}
+
+// Indexing must read only the prefix it keeps. A large attachment previously
+// pulled up to 5 MB into memory per message to retain ~1500 characters, which
+// an embedding batch multiplies into hundreds of megabytes.
+func TestAttachmentIndexReadIsBounded(t *testing.T) {
+	app, _, _, _ := newTestApp(t)
+	ctx := WithActor(context.Background(), "test")
+	acc := mustAccount(t, app)
+
+	big := strings.Repeat("가나다라마바사아자차", 200000) // ~2M runes
+	uri, hash, _, err := app.Objects.Put("att", strings.NewReader(big))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().Unix()
+	m := &domain.Message{
+		ID: "msg_big", UserID: DefaultUserID, AccountID: acc.ID, UIDL: "u-big",
+		Subject: "대용량", From: domain.Address{Email: "x@example.com"},
+		RawHash: "h-big", RawURI: "mem://big", Date: now, CreatedAt: now, HasAttachments: true,
+	}
+	atts := []domain.Attachment{{
+		ID: "att_big", MessageID: m.ID, Name: "huge.txt", MIMEType: "text/plain",
+		Hash: hash, StorageURI: uri, ScanStatus: domain.ScanClean,
+	}}
+	if err := app.Store.InsertMessage(ctx, m, &domain.MessageBody{MessageID: m.ID}, atts); err != nil {
+		t.Fatal(err)
+	}
+
+	got := app.AttachmentsTextForIndex(ctx, m.ID, 1500)
+	if got == "" {
+		t.Fatal("large attachment produced no indexable text")
+	}
+	// Header line plus at most the budget; nowhere near the 2M-rune source.
+	if n := len([]rune(got)); n > 1600 {
+		t.Fatalf("index text not bounded: %d runes", n)
+	}
+	if !strings.Contains(got, "huge.txt") {
+		t.Fatalf("attachment name missing: %q", got[:80])
+	}
+	// Truncating a multi-byte stream must not leave invalid UTF-8 behind.
+	if !utf8.ValidString(got) {
+		t.Fatal("index text contains invalid UTF-8 from a mid-rune cut")
+	}
+}
+
+// Quarantined content sits behind an acknowledgement gate for manual
+// downloads; background indexing must not read it either.
+func TestAttachmentIndexSkipsQuarantined(t *testing.T) {
+	app, _, _, _ := newTestApp(t)
+	ctx := WithActor(context.Background(), "test")
+	acc := mustAccount(t, app)
+
+	uri, hash, _, err := app.Objects.Put("att", strings.NewReader("격리된 내용"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().Unix()
+	m := &domain.Message{
+		ID: "msg_q", UserID: DefaultUserID, AccountID: acc.ID, UIDL: "u-q",
+		Subject: "격리", From: domain.Address{Email: "x@example.com"},
+		RawHash: "h-q", RawURI: "mem://q", Date: now, CreatedAt: now, HasAttachments: true,
+	}
+	atts := []domain.Attachment{{
+		ID: "att_q", MessageID: m.ID, Name: "macro.txt", MIMEType: "text/plain",
+		Hash: hash, StorageURI: uri, ScanStatus: domain.ScanQuarantined,
+	}}
+	if err := app.Store.InsertMessage(ctx, m, &domain.MessageBody{MessageID: m.ID}, atts); err != nil {
+		t.Fatal(err)
+	}
+	if got := app.AttachmentsTextForIndex(ctx, m.ID, 1500); got != "" {
+		t.Fatalf("quarantined attachment must not be indexed, got %q", got)
+	}
+}
+
+// Indexing is a background read, not a user download: it must not forge an
+// attachment_download audit record against the user.
+func TestAttachmentIndexWritesNoDownloadAudit(t *testing.T) {
+	app, _, _, _ := newTestApp(t)
+	ctx := WithActor(context.Background(), "test")
+	acc := mustAccount(t, app)
+
+	uri, hash, _, err := app.Objects.Put("att", strings.NewReader("색인 대상 텍스트"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().Unix()
+	m := &domain.Message{
+		ID: "msg_aud", UserID: DefaultUserID, AccountID: acc.ID, UIDL: "u-aud",
+		Subject: "감사", From: domain.Address{Email: "x@example.com"},
+		RawHash: "h-aud", RawURI: "mem://aud", Date: now, CreatedAt: now, HasAttachments: true,
+	}
+	atts := []domain.Attachment{{
+		ID: "att_aud", MessageID: m.ID, Name: "notes.txt", MIMEType: "text/plain",
+		Hash: hash, StorageURI: uri, ScanStatus: domain.ScanClean,
+	}}
+	if err := app.Store.InsertMessage(ctx, m, &domain.MessageBody{MessageID: m.ID}, atts); err != nil {
+		t.Fatal(err)
+	}
+	if got := app.AttachmentsTextForIndex(ctx, m.ID, 1500); got == "" {
+		t.Fatal("clean attachment should be indexed")
+	}
+	events, err := app.Store.SearchAudit(ctx, DefaultUserID, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range events {
+		if e.Action == "attachment_download" {
+			t.Fatalf("indexing forged a download audit record: %+v", e)
+		}
 	}
 }

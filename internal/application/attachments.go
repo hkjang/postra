@@ -13,6 +13,10 @@ import (
 // extraction.
 const maxAttachmentTextBytes = 5 << 20
 
+// indexReadCapBytes hard-caps a single attachment read on the indexing path,
+// independent of the caller's character budget.
+const indexReadCapBytes = 256 << 10
+
 // AttachmentText is the extracted plain text of an attachment.
 type AttachmentText struct {
 	AttachmentID string `json:"attachment_id"`
@@ -103,7 +107,18 @@ func stripHTML(s string) string {
 // attachments, bounded by budget characters. Mail often carries its substance
 // in an attached document, so leaving that text out of the semantic index and
 // the RAG context makes those messages effectively unsearchable and
-// unanswerable. Best-effort: unsupported or unreadable attachments are skipped.
+// unanswerable.
+//
+// This deliberately does NOT reuse ExtractAttachmentText/GetAttachment, which
+// exist to serve a person who asked for a file. Background indexing differs on
+// three points that matter:
+//   - it reads only the prefix it will actually keep, instead of pulling up to
+//     maxAttachmentTextBytes per attachment into memory (an embedding batch of
+//     attachment-heavy mail would otherwise allocate hundreds of megabytes);
+//   - it never records an attachment_download audit event, which would falsely
+//     attribute a download to a user who did nothing;
+//   - it indexes only clean attachments, so quarantined or suspect content is
+//     not read behind the acknowledgement gate that guards manual downloads.
 func (a *App) AttachmentsTextForIndex(ctx context.Context, messageID string, budget int) string {
 	if budget <= 0 {
 		return ""
@@ -114,26 +129,50 @@ func (a *App) AttachmentsTextForIndex(ctx context.Context, messageID string, bud
 	}
 	var sb strings.Builder
 	for _, att := range atts {
-		if sb.Len() >= budget {
+		remaining := budget - len([]rune(sb.String()))
+		if remaining <= 0 {
 			break
 		}
-		if att.StorageURI == "" || att.ScanStatus == domain.ScanBlocked {
-			continue // never re-read content we deliberately did not retain
+		// Only retained, clean, text-bearing attachments are indexed.
+		if att.StorageURI == "" || att.ScanStatus != domain.ScanClean {
+			continue
 		}
 		if !textExtractable(att.MIMEType, att.Name) {
 			continue
 		}
-		at, err := a.ExtractAttachmentText(ctx, messageID, att.ID)
-		if err != nil || at == nil || !at.Supported {
-			continue
-		}
-		text := strings.TrimSpace(at.Text)
+		text := a.attachmentTextHead(att.StorageURI, att.MIMEType, att.Name, remaining)
 		if text == "" {
 			continue
 		}
-		remaining := budget - sb.Len()
 		sb.WriteString("\n[attachment: " + att.Name + "]\n")
-		sb.WriteString(truncateRunes(text, remaining))
+		sb.WriteString(text)
 	}
 	return sb.String()
+}
+
+// attachmentTextHead reads just enough of an attachment to yield `budget`
+// characters of text, so indexing a 50 MB log file costs kilobytes, not
+// megabytes. UTF-8 needs at most 4 bytes per rune, and HTML only shrinks once
+// tags are stripped, so a modest multiplier plus slack always covers the budget.
+func (a *App) attachmentTextHead(storageURI, mimeType, name string, budget int) string {
+	readBytes := budget*4 + 4096
+	if readBytes > indexReadCapBytes {
+		readBytes = indexReadCapBytes
+	}
+	rc, err := a.Objects.Get(storageURI)
+	if err != nil {
+		return ""
+	}
+	defer rc.Close()
+	raw, err := io.ReadAll(io.LimitReader(rc, int64(readBytes)))
+	if err != nil || len(raw) == 0 {
+		return ""
+	}
+	text := string(raw)
+	if strings.Contains(strings.ToLower(mimeType), "html") || strings.HasSuffix(strings.ToLower(name), ".html") {
+		text = stripHTML(text)
+	}
+	// A truncated read can end mid-rune; drop any invalid tail.
+	text = strings.ToValidUTF8(text, "")
+	return truncateRunes(strings.TrimSpace(text), budget)
 }
