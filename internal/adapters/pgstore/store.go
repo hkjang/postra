@@ -202,6 +202,9 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 
 func (s *Store) Close() error { s.pool.Close(); return nil }
 
+// aiTriageLabelPrefix marks labels applied by AI triage (e.g. "ai/urgent").
+const aiTriageLabelPrefix = "ai/"
+
 func now() int64 { return time.Now().Unix() }
 
 func NewID(prefix string) string {
@@ -1937,6 +1940,27 @@ func (s *Store) UpdateJob(ctx context.Context, j *domain.Job) error {
 	_, err := s.pool.Exec(ctx, `UPDATE jobs SET status=$1, progress=$2, stats_json=$3, error=$4, updated_at=$5 WHERE id=$6`,
 		j.Status, j.Progress, string(stats), j.Error, j.UpdatedAt, j.ID)
 	return err
+}
+
+// MessagesNeedingTriage lists recent messages with no AI triage label yet.
+func (s *Store) MessagesNeedingTriage(ctx context.Context, userID string, sinceTS int64, limit int) ([]string, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT id FROM messages WHERE user_id=$1 AND created_at >= $2
+		 AND labels_json NOT LIKE '%"'||$3||'%'
+		 ORDER BY date DESC LIMIT $4`, userID, sinceTS, aiTriageLabelPrefix, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
 }
 
 // TouchJob bumps a running job's updated_at as a liveness heartbeat.

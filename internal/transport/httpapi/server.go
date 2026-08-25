@@ -88,6 +88,10 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("POST /api/messages/{id}/analyze", s.analyzeMessage)
 	mux.HandleFunc("POST /api/messages/{id}/suggest-replies", s.suggestReplies)
+	mux.HandleFunc("POST /api/messages/{id}/calendar", s.messageCalendar)
+	mux.HandleFunc("GET /api/messages/{id}/calendar.ics", s.messageCalendarICS)
+	mux.HandleFunc("POST /api/rules/draft", s.draftRule)
+	mux.HandleFunc("POST /api/digest", s.dailyDigest)
 	mux.HandleFunc("POST /api/threads/{id}/summarize", s.summarizeThread)
 	mux.HandleFunc("POST /api/qa", s.questionAnswer)
 	mux.HandleFunc("POST /api/eval", s.evalPrompt)
@@ -803,6 +807,62 @@ func (s *Server) analyzeMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	an, err := s.app.AnalyzeMessage(r.Context(), r.PathValue("id"), in.Type)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, an)
+}
+
+func (s *Server) messageCalendar(w http.ResponseWriter, r *http.Request) {
+	out, err := s.app.ExtractCalendarEvents(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// messageCalendarICS returns the message's events as a downloadable .ics file,
+// which every calendar application can import directly.
+func (s *Server) messageCalendarICS(w http.ResponseWriter, r *http.Request) {
+	out, err := s.app.ExtractCalendarEvents(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/calendar; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="postra-events.ics"`)
+	_, _ = io.WriteString(w, out.ICS())
+}
+
+func (s *Server) draftRule(w http.ResponseWriter, r *http.Request) {
+	in, err := decode[struct {
+		Instruction string `json:"instruction"`
+	}](r)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	rule, err := s.app.DraftRuleFromText(r.Context(), in.Instruction)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	// Preview only — the caller confirms and POSTs it to /api/rules to save.
+	writeJSON(w, http.StatusOK, map[string]any{"rule": rule, "saved": false})
+}
+
+func (s *Server) dailyDigest(w http.ResponseWriter, r *http.Request) {
+	in, err := decode[struct {
+		AccountID string `json:"account_id"`
+		Hours     int    `json:"hours"`
+	}](r)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	an, err := s.app.GenerateDailyDigest(r.Context(), in.AccountID, in.Hours)
 	if err != nil {
 		writeErr(w, err)
 		return

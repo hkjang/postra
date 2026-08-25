@@ -67,7 +67,7 @@ func New(cfg config.Config, store Storage, objects objectstore.Store,
 	}
 	a := &App{
 		Cfg: cfg, Store: store, Objects: objects, Secrets: secrets,
-		POP3: pop3, SMTP: smtp, AI: meteredAI{inner: ai}, aiRaw: ai,
+		POP3: pop3, SMTP: smtp, aiRaw: ai,
 		Scanner:    malware.NewHeuristic(cfg.Attachments),
 		background: bg, cancelAll: cancel,
 		syncSem: make(chan struct{}, syncConcurrency),
@@ -79,6 +79,12 @@ func New(cfg config.Config, store Storage, objects objectstore.Store,
 	if configurable, ok := ai.(interface{ Configure(config.AIConfig) }); ok {
 		configurable.Configure(cfg.AI)
 	}
+	// Meter AI calls, pricing them from the live config so a rate change in
+	// settings is picked up without a restart.
+	a.AI = meteredAI{inner: ai, rates: func() (float64, float64) {
+		c := a.currentAIConfig()
+		return c.CostPer1MInputTokens, c.CostPer1MOutputTokens
+	}}
 	candidate := make([]byte, len(a.oidcStateKey))
 	if _, err := rand.Read(candidate); err != nil {
 		cancel()

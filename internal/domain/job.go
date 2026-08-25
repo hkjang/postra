@@ -72,6 +72,16 @@ type GenerationResult struct {
 	Text      string
 	Model     string
 	InputHash string
+	Usage     TokenUsage
+}
+
+// TokenUsage reports what one provider call consumed. Providers that do not
+// report usage (or streaming responses without usage frames) leave it zero, so
+// callers must treat zero as "unknown", not "free".
+type TokenUsage struct {
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
 }
 
 type EmbeddingRequest struct {
@@ -81,6 +91,7 @@ type EmbeddingRequest struct {
 type EmbeddingResult struct {
 	Vectors [][]float32
 	Model   string
+	Usage   TokenUsage
 }
 
 type EmbeddingItem struct {

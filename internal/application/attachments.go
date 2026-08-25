@@ -98,3 +98,42 @@ func stripHTML(s string) string {
 	s = strings.ReplaceAll(s, "&gt;", ">")
 	return strings.Join(strings.Fields(s), " ")
 }
+
+// AttachmentsTextForIndex concatenates the extractable text of a message's
+// attachments, bounded by budget characters. Mail often carries its substance
+// in an attached document, so leaving that text out of the semantic index and
+// the RAG context makes those messages effectively unsearchable and
+// unanswerable. Best-effort: unsupported or unreadable attachments are skipped.
+func (a *App) AttachmentsTextForIndex(ctx context.Context, messageID string, budget int) string {
+	if budget <= 0 {
+		return ""
+	}
+	atts, err := a.Store.ListAttachments(ctx, userIDFrom(ctx), messageID)
+	if err != nil || len(atts) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	for _, att := range atts {
+		if sb.Len() >= budget {
+			break
+		}
+		if att.StorageURI == "" || att.ScanStatus == domain.ScanBlocked {
+			continue // never re-read content we deliberately did not retain
+		}
+		if !textExtractable(att.MIMEType, att.Name) {
+			continue
+		}
+		at, err := a.ExtractAttachmentText(ctx, messageID, att.ID)
+		if err != nil || at == nil || !at.Supported {
+			continue
+		}
+		text := strings.TrimSpace(at.Text)
+		if text == "" {
+			continue
+		}
+		remaining := budget - sb.Len()
+		sb.WriteString("\n[attachment: " + att.Name + "]\n")
+		sb.WriteString(truncateRunes(text, remaining))
+	}
+	return sb.String()
+}

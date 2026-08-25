@@ -108,6 +108,24 @@ JSON schema: {"subject": string, "body": string, "language": string}`,
 		task: `Rewrite the draft in the untrusted block according to the user instruction given above the block. Keep the factual content identical.
 JSON schema: {"subject": string, "body": string}`,
 	},
+	"daily_digest": {
+		system: "You write a daily mail briefing for a busy professional. Respond with JSON only. Summarize only what the emails actually say; never invent senders, deadlines, or requests. Write in the language most of the mail uses.",
+		task: `The untrusted block contains the emails received in the period, each prefixed with [message_id].
+JSON schema: {"headline": string, "needs_reply": [{"message_id": string, "who": string, "what": string}], "deadlines": [{"message_id": string, "what": string, "when": string}], "fyi": [string], "volume_note": string}
+Put only genuinely action-requiring mail in needs_reply, and copy deadlines verbatim from the mail. Keep the headline to one sentence.`,
+	},
+	"calendar_events": {
+		system: "You extract calendar events from email. Respond with JSON only. Never invent a date, time, or location that is not in the email; omit a field you cannot ground. Times must be copied from the email, not guessed.",
+		task: `Extract the schedulable events described by the email in the untrusted block.
+JSON schema: {"events": [{"title": string, "start": string, "end": string|null, "all_day": boolean, "location": string|null, "description": string|null, "confidence": number (0-1)}]}
+start/end use RFC3339 with offset when a time is given (2026-03-04T15:00:00+09:00), or YYYY-MM-DD when the email states only a date (then all_day is true). Return an empty events array when the email schedules nothing.`,
+	},
+	"rule_from_text": {
+		system: "You translate a person's plain-language mail-filing request into a Postra rule. Respond with JSON only. Use only the fields and enum values given; never invent new ones. When the request is too vague to express as a rule, return an empty conditions array.",
+		task: `The untrusted block contains the user's request, in their own words. Produce one mail rule expressing it.
+JSON schema: {"name": string, "match": "all"|"any", "stop_on_match": boolean, "conditions": [{"field": "from"|"to"|"subject"|"body"|"account"|"has_attachment"|"is_important", "operator": "contains"|"equals"|"starts_with"|"ends_with"|"regex"|"is_true"|"is_false", "value": string}], "actions": [{"type": "add_label"|"remove_label"|"archive"|"mark_important"|"snooze"|"delete", "value": string}]}
+Rules: use "contains" unless the user clearly demands an exact or pattern match; has_attachment/is_important take operator is_true or is_false with an empty value; snooze value is seconds from now; label actions put the label in value; other actions use an empty value. Name the rule concisely in the user's language.`,
+	},
 	"smart_reply": {
 		system: "You are an email reply assistant. Respond with JSON only. Write short, ready-to-send replies in the SAME language as the email. Never invent facts, commitments, dates, numbers, or names that are not in the email; when a detail is unknown keep the wording general. Write natural prose — no placeholders like [Name] and no signature.",
 		task: `Draft 3 distinct, concise reply options (each 1–3 sentences) for the email in the untrusted block, covering the stances that fit the content — for example an affirmative/accepting reply, a reply that asks a clarifying question, and a brief holding or polite-decline reply.
@@ -333,6 +351,9 @@ func (a *App) AnswerQuestion(ctx context.Context, question, accountID string) (*
 		text := ""
 		if body != nil {
 			text = truncateRunes(body.TextBody, 2500)
+		}
+		if m.HasAttachments {
+			text += a.AttachmentsTextForIndex(ctx, m.ID, 1500)
 		}
 		fmt.Fprintf(&sb, "[%s] Subject: %s | From: %s | Date: %s\n%s\n\n",
 			m.ID, m.Subject, m.From.Email, fmtUnix(m.Date), text)

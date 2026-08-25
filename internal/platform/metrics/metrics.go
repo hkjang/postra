@@ -72,6 +72,11 @@ var (
 	AICitationsDropped = plainCounter("ai_citations_dropped_total", "Unverifiable evidence message IDs removed from AI answers.")
 	AIAutoEmbedded     = plainCounter("ai_auto_embedded_total", "Messages indexed for semantic search by the background embedding worker.")
 	AILatency          = histogram("ai_request_duration_seconds", "AI provider call latency.", "op")
+	// AITokens/AICostUSD make AI spend observable: providers report usage per
+	// call, and the configured per-million rates turn it into money. Without
+	// these, cost is invisible until the invoice arrives.
+	AITokens  = counter("ai_tokens_total", "Tokens consumed by AI provider calls.", "op", "kind")
+	AICostUSD = counter("ai_cost_usd_total", "Estimated AI spend in USD, from configured per-token rates.", "op")
 
 	// SMTP send.
 	SMTPSend    = counter("smtp_send_total", "Outbound deliveries by result.", "result")

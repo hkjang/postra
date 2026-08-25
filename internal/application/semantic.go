@@ -19,6 +19,10 @@ import (
 // refinement the schema already supports (chunk_id).
 const embedChunkChars = 4000
 
+// embedAttachmentChars bounds how much attachment text joins a message's
+// embedding, leaving room for the subject and body within embedChunkChars.
+const embedAttachmentChars = 1500
+
 // BuildEmbeddings backfills embeddings for stored messages that lack them,
 // so semantic search can rank them. Runs as an async job and respects the
 // external-AI policy (mail content leaves the box only if allowed).
@@ -122,6 +126,11 @@ func (a *App) embedMessagesBatch(ctx context.Context, accountID string, messageI
 		text := m.Subject
 		if body != nil {
 			text += "\n" + body.TextBody
+		}
+		if m.HasAttachments {
+			// A message whose substance lives in an attached document must be
+			// findable by that content, not just by its cover note.
+			text += a.AttachmentsTextForIndex(ctx, mID, embedAttachmentChars)
 		}
 		text = truncateRunes(strings.TrimSpace(text), embedChunkChars)
 		if text == "" {

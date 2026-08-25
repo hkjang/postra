@@ -71,7 +71,14 @@ type respFormat struct {
 	Type string `json:"type"`
 }
 
+type apiUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+}
+
 type chatResponse struct {
+	Usage   apiUsage `json:"usage"`
 	Choices []struct {
 		Message chatMessage `json:"message"`
 	} `json:"choices"`
@@ -114,13 +121,13 @@ func (p *OpenAICompat) Generate(ctx context.Context, req domain.GenerationReques
 	msgs = append(msgs, chatMessage{Role: "user", Content: user})
 
 	route := cfg.RouteForTask(req.Task)
-	text, err := p.generateOnce(ctx, cfg, client, route, req, msgs)
+	text, usage, err := p.generateOnce(ctx, cfg, client, route, req, msgs)
 	if err != nil && req.Task != "" {
 		// Automatic fallback to the default endpoint when a per-task model
 		// fails (§AI 작업별 모델 라우팅 "실패 시 대체 모델").
 		def := cfg.RouteForTask("")
 		if def != route {
-			text, err = p.generateOnce(ctx, cfg, client, def, req, msgs)
+			text, usage, err = p.generateOnce(ctx, cfg, client, def, req, msgs)
 			if err == nil {
 				route = def
 			}
@@ -134,12 +141,13 @@ func (p *OpenAICompat) Generate(ctx context.Context, req domain.GenerationReques
 		Text:      text,
 		Model:     route.Model,
 		InputHash: hex.EncodeToString(sum[:]),
+		Usage:     usage,
 	}, nil
 }
 
 // generateOnce performs a single chat-completion call against a resolved route.
 func (p *OpenAICompat) generateOnce(ctx context.Context, cfg config.AIConfig, client *http.Client,
-	route config.AITaskRoute, req domain.GenerationRequest, msgs []chatMessage) (string, error) {
+	route config.AITaskRoute, req domain.GenerationRequest, msgs []chatMessage) (string, domain.TokenUsage, error) {
 	maxTokens := req.MaxTokens
 	if maxTokens <= 0 {
 		maxTokens = route.MaxTokens
@@ -150,20 +158,20 @@ func (p *OpenAICompat) generateOnce(ctx context.Context, cfg config.AIConfig, cl
 	}
 	b, err := json.Marshal(body)
 	if err != nil {
-		return "", err
+		return "", domain.TokenUsage{}, err
 	}
 
 	url := strings.TrimSuffix(route.BaseURL, "/") + "/chat/completions"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(b))
 	if err != nil {
-		return "", err
+		return "", domain.TokenUsage{}, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	var sensitiveKey string
 	if route.APIKeyRef != "" && p.secrets != nil {
 		h, err := p.secrets.Acquire(ctx, domain.SecretRef(route.APIKeyRef), domain.PurposeAIKey)
 		if err != nil {
-			return "", fmt.Errorf("acquire AI key: %w", err)
+			return "", domain.TokenUsage{}, fmt.Errorf("acquire AI key: %w", err)
 		}
 		sensitiveKey = string(h.Reveal())
 		httpReq.Header.Set("Authorization", "Bearer "+sensitiveKey)
@@ -173,37 +181,42 @@ func (p *OpenAICompat) generateOnce(ctx context.Context, cfg config.AIConfig, cl
 
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return "", fmt.Errorf("AI request: %w", err)
+		return "", domain.TokenUsage{}, fmt.Errorf("AI request: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
-		return "", fmt.Errorf("AI API %d: %s", resp.StatusCode,
+		return "", domain.TokenUsage{}, fmt.Errorf("AI API %d: %s", resp.StatusCode,
 			sanitizeProviderError(truncate(string(respBody), 300), sensitiveKey))
 	}
 
 	if isEventStream(resp.Header.Get("Content-Type")) {
 		text, err := parseSSEChatStream(io.LimitReader(resp.Body, 10<<20))
 		if err != nil {
-			return "", fmt.Errorf("%s", sanitizeProviderError(err.Error(), sensitiveKey))
+			return "", domain.TokenUsage{}, fmt.Errorf("%s", sanitizeProviderError(err.Error(), sensitiveKey))
 		}
-		return text, nil
+		// Streaming responses carry no usage frame here; report unknown (zero).
+		return text, domain.TokenUsage{}, nil
 	}
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
 	if err != nil {
-		return "", err
+		return "", domain.TokenUsage{}, err
 	}
 	var cr chatResponse
 	if err := json.Unmarshal(respBody, &cr); err != nil {
-		return "", fmt.Errorf("AI response parse: %w", err)
+		return "", domain.TokenUsage{}, fmt.Errorf("AI response parse: %w", err)
 	}
 	if cr.Error != nil {
-		return "", fmt.Errorf("AI API error: %s", sanitizeProviderError(cr.Error.Message, sensitiveKey))
+		return "", domain.TokenUsage{}, fmt.Errorf("AI API error: %s", sanitizeProviderError(cr.Error.Message, sensitiveKey))
 	}
 	if len(cr.Choices) == 0 {
-		return "", fmt.Errorf("AI API returned no choices")
+		return "", domain.TokenUsage{}, fmt.Errorf("AI API returned no choices")
 	}
-	return cr.Choices[0].Message.Content, nil
+	return cr.Choices[0].Message.Content, domain.TokenUsage{
+		PromptTokens:     cr.Usage.PromptTokens,
+		CompletionTokens: cr.Usage.CompletionTokens,
+		TotalTokens:      cr.Usage.TotalTokens,
+	}, nil
 }
 
 func isEventStream(contentType string) bool {
@@ -252,7 +265,8 @@ type embedRequest struct {
 }
 
 type embedResponse struct {
-	Data []struct {
+	Usage apiUsage `json:"usage"`
+	Data  []struct {
 		Embedding []float32 `json:"embedding"`
 	} `json:"data"`
 	Error *struct {
@@ -317,7 +331,8 @@ func (p *OpenAICompat) Embed(ctx context.Context, req domain.EmbeddingRequest) (
 		return domain.EmbeddingResult{}, fmt.Errorf("embed API error: %s",
 			sanitizeProviderError(er.Error.Message, sensitiveKey))
 	}
-	out := domain.EmbeddingResult{Model: model, Vectors: make([][]float32, len(er.Data))}
+	out := domain.EmbeddingResult{Model: model, Vectors: make([][]float32, len(er.Data)),
+		Usage: domain.TokenUsage{PromptTokens: er.Usage.PromptTokens, TotalTokens: er.Usage.TotalTokens}}
 	for i, d := range er.Data {
 		out.Vectors[i] = d.Embedding
 	}

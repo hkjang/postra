@@ -131,6 +131,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /ui/messages/{id}/attachments/{att}", s.gate(s.attachment))
 	mux.HandleFunc("POST /ui/messages/{id}/analyze", s.gate(s.analyze))
 	mux.HandleFunc("POST /ui/messages/{id}/suggest", s.gate(s.messageSuggest))
+	mux.HandleFunc("GET /ui/messages/{id}/calendar.ics", s.gate(s.messageCalendarICS))
 	mux.HandleFunc("POST /ui/messages/{id}/draft", s.gate(s.messageDraft))
 	mux.HandleFunc("GET /ui/drafts/{id}", s.gate(s.draft))
 	mux.HandleFunc("POST /ui/drafts/{id}", s.gate(s.draftUpdate))
@@ -1043,6 +1044,24 @@ func (s *Server) message(w http.ResponseWriter, r *http.Request) {
 	}
 	accounts, _ := s.app.ListAccounts(r.Context())
 	s.render(w, "message", http.StatusOK, map[string]any{"View": view, "Accounts": accounts})
+}
+
+// messageCalendarICS extracts the message's meetings/deadlines and returns them
+// as an .ics download, so a mailed invitation reaches the calendar without
+// being retyped.
+func (s *Server) messageCalendarICS(w http.ResponseWriter, r *http.Request) {
+	out, err := s.app.ExtractCalendarEvents(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if len(out.Events) == 0 {
+		s.render(w, "error", http.StatusNotFound, map[string]any{"Message": "이 메일에서 일정을 찾지 못했습니다."})
+		return
+	}
+	w.Header().Set("Content-Type", "text/calendar; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="postra-events.ics"`)
+	_, _ = io.WriteString(w, out.ICS())
 }
 
 // messageSuggest generates Smart Reply options and re-renders the message page

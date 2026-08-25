@@ -137,6 +137,8 @@ type Storage interface {
 	// TouchJob bumps a running job's updated_at as a liveness heartbeat, so
 	// stale-job recovery can distinguish an actively-progressing job from one
 	// abandoned by a crashed worker.
+	// MessagesNeedingTriage lists recent messages not yet AI-triaged.
+	MessagesNeedingTriage(ctx context.Context, userID string, sinceTS int64, limit int) ([]string, error)
 	TouchJob(ctx context.Context, id string) error
 	// FailStaleAccountJobs clears queued/running jobs for one account that have
 	// stopped heart-beating past the grace window (used to unstick a prior

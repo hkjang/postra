@@ -375,6 +375,9 @@ func NewID(prefix string) string {
 	return prefix + "_" + hex.EncodeToString(b)
 }
 
+// aiTriageLabelPrefix marks labels applied by AI triage (e.g. "ai/urgent").
+const aiTriageLabelPrefix = "ai/"
+
 func now() int64 { return time.Now().Unix() }
 
 // ErrNotFound aliases the canonical port error so existing callers keep
@@ -2091,6 +2094,29 @@ func (s *Store) UpdateJob(ctx context.Context, j *domain.Job) error {
 		`UPDATE jobs SET status=?, progress=?, stats_json=?, error=?, updated_at=? WHERE id=?`,
 		j.Status, j.Progress, string(stats), j.Error, j.UpdatedAt, j.ID)
 	return err
+}
+
+// MessagesNeedingTriage lists recent messages that carry no AI triage label
+// yet, so the background worker can classify newly arrived mail without
+// re-examining the whole mailbox.
+func (s *Store) MessagesNeedingTriage(ctx context.Context, userID string, sinceTS int64, limit int) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id FROM messages WHERE user_id=? AND created_at >= ?
+		 AND labels_json NOT LIKE '%"`+aiTriageLabelPrefix+`%'
+		 ORDER BY date DESC LIMIT ?`, userID, sinceTS, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
 }
 
 // TouchJob bumps a running job's updated_at as a liveness heartbeat.

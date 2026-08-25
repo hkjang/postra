@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -298,4 +299,44 @@ func matchString(op, value, hay string) bool {
 	default:
 		return false
 	}
+}
+
+// DraftRuleFromText turns a plain-language filing request ("뉴스레터는 보관함으로")
+// into a concrete rule. The rule is validated but deliberately NOT saved: the
+// model proposes, the same validator that guards hand-written rules enforces
+// the schema, and the user confirms before anything starts acting on their
+// mail. Callers persist the result with CreateRule.
+func (a *App) DraftRuleFromText(ctx context.Context, instruction string) (*domain.MailRule, error) {
+	instruction = strings.TrimSpace(instruction)
+	if instruction == "" {
+		return nil, userErrf("규칙으로 만들 요청 문장이 비어 있습니다")
+	}
+	// The request goes in the untrusted block: it is user text, and keeping it
+	// out of the instruction channel means a pasted mail snippet cannot rewrite
+	// the prompt (AI-014).
+	an, err := a.runAnalysis(ctx, "rule_from_text", "query", "adhoc", "", instruction)
+	if err != nil {
+		return nil, err
+	}
+	var r domain.MailRule
+	if err := json.Unmarshal([]byte(an.ResultJSON), &r); err != nil {
+		return nil, userErrf("AI가 규칙 형식을 반환하지 못했습니다: %v", err)
+	}
+	if len(r.Conditions) == 0 {
+		return nil, userErrf("요청을 규칙 조건으로 해석하지 못했습니다. 대상(보낸사람/제목 등)과 동작을 더 구체적으로 적어주세요")
+	}
+	if len(r.Actions) == 0 {
+		return nil, userErrf("요청에서 수행할 동작을 찾지 못했습니다 (예: 라벨 추가, 보관, 중요 표시)")
+	}
+	r.UserID = userIDFrom(ctx)
+	r.Enabled = true
+	if strings.TrimSpace(r.Name) == "" {
+		r.Name = truncateRunes(instruction, 60)
+	}
+	// Enforce exactly the same invariants as a hand-authored rule.
+	if err := normalizeAndValidateRule(&r); err != nil {
+		return nil, userErrf("AI가 만든 규칙이 유효하지 않습니다: %v", err)
+	}
+	a.audit(ctx, "rule_draft_from_text", "rule:preview", "ok", truncateRunes(instruction, 120))
+	return &r, nil
 }

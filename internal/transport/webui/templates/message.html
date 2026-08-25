@@ -49,6 +49,7 @@
   <form method="post" action="/ui/messages/{{$m.ID}}/analyze"><input type="hidden" name="type" value="classify"><button class="ghost" type="submit">분류·중요도</button></form>
   <form method="post" action="/ui/messages/{{$m.ID}}/analyze"><input type="hidden" name="type" value="entities"><button class="ghost" type="submit">인물·금액 추출</button></form>
   <form method="post" action="/ui/messages/{{$m.ID}}/analyze"><input type="hidden" name="type" value="phishing"><button class="ghost" type="submit">피싱 점검</button></form>
+  <a class="btn ghost" href="/ui/messages/{{$m.ID}}/calendar.ics">📅 일정 추출 (.ics)</a>
 </div>
 <h2>답장</h2>
 <div class="card">

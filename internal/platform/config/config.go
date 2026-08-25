@@ -152,7 +152,12 @@ type AIConfig struct {
 	MaskExternalPII bool              `json:"mask_external_pii"`
 	PromptVersions  map[string]string `json:"prompt_versions,omitempty"`
 	Stream          bool              `json:"stream"`
-	ExtraHeaders    string            `json:"extra_headers"`
+	// CostPer1MInputTokens / CostPer1MOutputTokens price this deployment's model
+	// (USD per 1,000,000 tokens) so AI spend is observable in Prometheus. 0
+	// leaves the cost metric at zero while token counters still record usage.
+	CostPer1MInputTokens  float64 `json:"cost_per_1m_input_tokens"`
+	CostPer1MOutputTokens float64 `json:"cost_per_1m_output_tokens"`
+	ExtraHeaders          string  `json:"extra_headers"`
 	// TaskModels routes specific AI tasks to dedicated models/endpoints. Keys
 	// are task names (summarize, classify, phishing, action_items, entities,
 	// thread_summary, question_answer, draft_reply, rewrite). A task with no
@@ -211,6 +216,16 @@ type SyncConfig struct {
 	// only exist for messages covered by a manual backfill job, so semantic and
 	// hybrid search silently miss recent mail. 0 disables auto-indexing.
 	AutoEmbedMinutes int `json:"auto_embed_minutes"`
+	// AutoTriage, when true, runs a background worker that classifies newly
+	// arrived mail with the AI triage prompt and labels it "ai/<priority>", so
+	// the inbox can be filtered and sorted by urgency. Off by default: it costs
+	// one AI call per message. AutoTriageMinutes sets the cadence (default 10).
+	AutoTriage        bool `json:"auto_triage"`
+	AutoTriageMinutes int  `json:"auto_triage_minutes"`
+	// DailyDigestEnabled generates a once-a-day briefing of the last 24 hours
+	// of mail for each active user, at DailyDigestHour (local server time).
+	DailyDigestEnabled bool `json:"daily_digest_enabled"`
+	DailyDigestHour    int  `json:"daily_digest_hour"`
 	// MaxConcurrentSyncs caps how many account syncs run at once across the
 	// process. Each in-flight sync buffers whole messages in memory, so an
 	// unbounded fan-out (many accounts × the scheduler tick + IMAP IDLE) can
@@ -250,7 +265,9 @@ func Default() Config {
 			ConnectTimeoutSec:  15,
 			CommandTimeoutSec:  60,
 			MaxConcurrentSyncs: 2,
-		AutoEmbedMinutes:   5,
+			AutoEmbedMinutes:   5,
+			AutoTriageMinutes:  10,
+			DailyDigestHour:    8,
 		},
 
 		Send: SendConfig{

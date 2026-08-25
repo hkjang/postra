@@ -177,10 +177,11 @@ func toolCatalogSummary() map[string]any {
 		"ai": {"mail_summarize", "mail_classify", "mail_action_items_extract",
 			"mail_entities_extract", "mail_phishing_inspect", "mail_auth_inspect", "mail_thread_summarize",
 			"mail_question_answer", "mail_embeddings_build", "mail_semantic_search",
-			"mail_attachment_summarize", "mail_eval_prompt", "mail_suggest_replies"},
+			"mail_attachment_summarize", "mail_eval_prompt", "mail_suggest_replies",
+			"mail_calendar_extract", "mail_daily_digest"},
 		"compose_send": {"mail_draft_create", "mail_draft_update", "mail_draft_rewrite",
 			"mail_send_preview", "mail_send_request_approval", "mail_send", "mail_outbound_status"},
-		"automation":    {"mail_rules_list", "mail_rule_create", "mail_rule_update", "mail_rule_delete", "mail_apply_rules"},
+		"automation":    {"mail_rule_draft_from_text", "mail_rules_list", "mail_rule_create", "mail_rule_update", "mail_rule_delete", "mail_apply_rules"},
 		"action_cards":  {"mail_action_cards_extract", "mail_action_cards_list", "mail_action_card_set_status", "mail_action_card_export"},
 		"collaboration": {"mail_team_inbox", "mail_collab_get", "mail_assign", "mail_set_work_status", "mail_add_note"},
 		"attachments":   {"mail_attachment_list", "mail_attachment_extract_text", "mail_attachment_summarize"},
@@ -710,6 +711,49 @@ func registerAITools(s *mcp.Server, app *application.App) {
 		AccountID string `json:"account_id,omitempty" jsonschema:"optional account scope"`
 	}) (*mcp.CallToolResult, any, error) {
 		an, err := app.AnswerQuestion(ctx, in.Question, in.AccountID)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, an, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "mail_calendar_extract",
+		Description: "Extract meetings/deadlines from a message as calendar events (also renderable as iCalendar).",
+		Annotations: aiAnn,
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct {
+		MessageID string `json:"message_id" jsonschema:"the message to extract events from"`
+	}) (*mcp.CallToolResult, any, error) {
+		out, err := app.ExtractCalendarEvents(ctx, in.MessageID)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, out, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "mail_rule_draft_from_text",
+		Description: "Turn a plain-language filing request into a mail rule. Returns an unsaved preview; save it with mail_rule_create.",
+		Annotations: aiAnn,
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct {
+		Instruction string `json:"instruction" jsonschema:"the request in plain language, e.g. file newsletters into Archive"`
+	}) (*mcp.CallToolResult, any, error) {
+		rule, err := app.DraftRuleFromText(ctx, in.Instruction)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, map[string]any{"rule": rule, "saved": false}, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "mail_daily_digest",
+		Description: "Summarize recent mail into a briefing: what needs a reply, deadlines, and FYI.",
+		Annotations: aiAnn,
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct {
+		AccountID string `json:"account_id,omitempty" jsonschema:"optional account scope"`
+		Hours     int    `json:"hours,omitempty" jsonschema:"lookback window in hours (default 24)"`
+	}) (*mcp.CallToolResult, any, error) {
+		an, err := app.GenerateDailyDigest(ctx, in.AccountID, in.Hours)
 		if err != nil {
 			return nil, nil, err
 		}
