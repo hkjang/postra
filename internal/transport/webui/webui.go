@@ -62,6 +62,37 @@ var funcs = template.FuncMap{
 	"size":     humanSize,
 	"mailHTML": renderMailHTML,
 	"mailText": renderMailText,
+	// aiPriority/aiReplyNeeded read the labels written by auto-triage so the
+	// list can show urgency at a glance instead of only through search.
+	"aiPriority":    aiPriorityOf,
+	"aiReplyNeeded": aiReplyNeededOf,
+}
+
+// aiPriorityOf returns the triage priority encoded in a message's labels
+// ("urgent", "high", "normal", "low"), or "" when it has not been triaged.
+func aiPriorityOf(labels []string) string {
+	for _, l := range labels {
+		switch l {
+		case "ai/urgent":
+			return "urgent"
+		case "ai/high":
+			return "high"
+		case "ai/normal":
+			return "normal"
+		case "ai/low":
+			return "low"
+		}
+	}
+	return ""
+}
+
+func aiReplyNeededOf(labels []string) bool {
+	for _, l := range labels {
+		if l == "ai/reply-needed" {
+			return true
+		}
+	}
+	return false
 }
 
 // parseTemplates builds one template set per page (layout + page), so each
@@ -771,6 +802,7 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
 	cursor := r.URL.Query().Get("cursor")
 	accountID := r.URL.Query().Get("account")
+	label := r.URL.Query().Get("label")
 	accounts, err := s.app.ListAccounts(r.Context())
 	if err != nil {
 		s.fail(w, err)
@@ -778,7 +810,7 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := s.app.Search(r.Context(), domain.SearchQuery{
 		UserID: application.DefaultUserID, Text: q, AccountID: accountID,
-		Limit: searchPageSize, Cursor: cursor,
+		Label: label, Limit: searchPageSize, Cursor: cursor,
 	})
 	if err != nil {
 		s.fail(w, err)
@@ -787,12 +819,15 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 	data := map[string]any{
 		"Query": q, "Messages": res.Messages, "Accounts": accounts,
 		"AccountID": accountID, "HasAccounts": len(accounts) > 0,
-		"HasMessages": len(res.Messages) > 0,
+		"HasMessages": len(res.Messages) > 0, "Label": label,
 	}
 	if res.NextCursor != "" {
 		next := "/ui/?q=" + url.QueryEscape(q)
 		if accountID != "" {
 			next += "&account=" + url.QueryEscape(accountID)
+		}
+		if label != "" {
+			next += "&label=" + url.QueryEscape(label)
 		}
 		data["NextURL"] = next + "&cursor=" + url.QueryEscape(res.NextCursor)
 	}

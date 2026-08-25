@@ -161,3 +161,68 @@ func TestTriageWorkerLabelsNewMail(t *testing.T) {
 		t.Fatalf("re-triaged %d already-labelled messages, want 0", n)
 	}
 }
+
+// Mail whose substance lives in an attached document must be indexed by that
+// content, not just by its cover note.
+func TestAttachmentTextJoinsIndexAndRAG(t *testing.T) {
+	app, _, _, _ := newTestApp(t)
+	ctx := WithActor(context.Background(), "test")
+	acc := mustAccount(t, app)
+
+	const attachedFact = "2026년 예산은 1억 2천만원으로 확정되었습니다"
+	uri, hash, _, err := app.Objects.Put("att", strings.NewReader(attachedFact))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().Unix()
+	m := &domain.Message{
+		ID: "msg_att", UserID: DefaultUserID, AccountID: acc.ID, UIDL: "u-att",
+		Subject: "자료 전달", From: domain.Address{Email: "sender@example.com"},
+		RawHash: "h-att", RawURI: "mem://att", Date: now, CreatedAt: now,
+		HasAttachments: true,
+	}
+	atts := []domain.Attachment{{
+		ID: "att_1", MessageID: m.ID, Name: "budget.txt", MIMEType: "text/plain",
+		Size: int64(len(attachedFact)), Hash: hash, StorageURI: uri,
+		ScanStatus: domain.ScanClean,
+	}}
+	if err := app.Store.InsertMessage(ctx, m, &domain.MessageBody{MessageID: m.ID, TextBody: "첨부 확인 바랍니다."}, atts); err != nil {
+		t.Fatal(err)
+	}
+
+	got := app.AttachmentsTextForIndex(ctx, m.ID, 1500)
+	if !strings.Contains(got, attachedFact) {
+		t.Fatalf("attachment text not available for indexing: %q", got)
+	}
+	if !strings.Contains(got, "budget.txt") {
+		t.Fatalf("attachment name should label the excerpt: %q", got)
+	}
+	// The budget must respect the caller's cap.
+	if capped := app.AttachmentsTextForIndex(ctx, m.ID, 20); len([]rune(capped)) > 80 {
+		t.Fatalf("budget ignored, got %d runes", len([]rune(capped)))
+	}
+}
+
+// Blocked attachments were deliberately not retained; indexing must not try to
+// read them back.
+func TestAttachmentTextSkipsBlocked(t *testing.T) {
+	app, _, _, _ := newTestApp(t)
+	ctx := WithActor(context.Background(), "test")
+	acc := mustAccount(t, app)
+	now := time.Now().Unix()
+	m := &domain.Message{
+		ID: "msg_blk", UserID: DefaultUserID, AccountID: acc.ID, UIDL: "u-blk",
+		Subject: "차단 첨부", From: domain.Address{Email: "x@example.com"},
+		RawHash: "h-blk", RawURI: "mem://blk", Date: now, CreatedAt: now, HasAttachments: true,
+	}
+	atts := []domain.Attachment{{
+		ID: "att_blk", MessageID: m.ID, Name: "evil.exe", MIMEType: "text/plain",
+		StorageURI: "", ScanStatus: domain.ScanBlocked,
+	}}
+	if err := app.Store.InsertMessage(ctx, m, &domain.MessageBody{MessageID: m.ID}, atts); err != nil {
+		t.Fatal(err)
+	}
+	if got := app.AttachmentsTextForIndex(ctx, m.ID, 1500); got != "" {
+		t.Fatalf("blocked attachment must not be indexed, got %q", got)
+	}
+}

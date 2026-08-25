@@ -2,13 +2,13 @@
 
 Docker 데몬 없이 빌드한, 오프라인망에서 바로 사용 가능한 산출물입니다.
 
-> **v0.16.1**: 일일 브리핑 웹 UI 추가 — 상단 `브리핑` 메뉴에서 기간(24시간/3일/7일)을 골라 AI 요약을 보고, 답장 필요 메일·마감·참고 항목에서 원본 메일로 바로 이동할 수 있습니다. (v0.16.0의 AI 인박스 인텔리전스 후속)
+> **v0.16.2**: AI 우선순위 인박스 UI — 받은편지함에서 긴급/높음/답장 필요로 바로 필터링하고, 각 메일에 우선순위 배지를 표시합니다. 첨부 문서 색인 동작에 대한 테스트를 추가했습니다.
 
 | 파일 | 설명 |
 | --- | --- |
-| `postra-0.16.1-linux-amd64-image.tar.gz` | `docker load` 로 불러오는 컨테이너 이미지 (`postra:0.16.1`, linux/amd64) |
-| `postra-0.16.1-linux-amd64` | 정적 링크 단일 실행 파일 (CGO 없음, 의존성 없음) |
-| `postra-0.16.1-sbom.cdx.json` | CycloneDX 소프트웨어 자재명세서 |
+| `postra-0.16.2-linux-amd64-image.tar.gz` | `docker load` 로 불러오는 컨테이너 이미지 (`postra:0.16.2`, linux/amd64) |
+| `postra-0.16.2-linux-amd64` | 정적 링크 단일 실행 파일 (CGO 없음, 의존성 없음) |
+| `postra-0.16.2-sbom.cdx.json` | CycloneDX 소프트웨어 자재명세서 |
 | `SHA256SUMS.txt` | 모든 릴리즈 파일의 SHA-256 체크섬 |
 
 이미지는 순수 Go 정적 바이너리 + CA 인증서 + 최소 rootfs 로만 구성됩니다(scratch 기반).
@@ -17,7 +17,7 @@ Docker 데몬 없이 빌드한, 오프라인망에서 바로 사용 가능한 �
 
 ```bash
 # 폐쇄망 호스트로 tar.gz 를 옮긴 뒤:
-docker load -i postra-0.16.1-linux-amd64-image.tar.gz     # gzip 자동 인식
+docker load -i postra-0.16.2-linux-amd64-image.tar.gz     # gzip 자동 인식
 docker image ls | grep postra
 
 # 오프라인망(평문 POP3/SMTP 허용) 실행 예시
@@ -27,7 +27,7 @@ docker run -d --name postra \
   -e POSTRA_HTTP_ADDR=0.0.0.0:8480 \
   -e POSTRA_ALLOW_INSECURE_MAIL=true \
   -e POSTRA_API_TOKEN=change-me \
-  postra:0.16.1
+  postra:0.16.2
 
 # CLI 사용 (같은 컨테이너)
 docker exec -it postra postra account list
@@ -39,9 +39,9 @@ REST API는 `/api`, Web UI는 `/ui`, MCP Streamable HTTP는 `/mcp`이며 모두 
 ## 2) 바이너리 단독 실행 (Docker 불필요)
 
 ```bash
-chmod +x postra-0.16.1-linux-amd64
-./postra-0.16.1-linux-amd64 init
-POSTRA_BOOTSTRAP_ADMIN_PASSWORD='replace-me' ./postra-0.16.1-linux-amd64 serve
+chmod +x postra-0.16.2-linux-amd64
+./postra-0.16.2-linux-amd64 init
+POSTRA_BOOTSTRAP_ADMIN_PASSWORD='replace-me' ./postra-0.16.2-linux-amd64 serve
 ```
 
 ## 데이터 / 비밀값
@@ -55,6 +55,6 @@ Docker 없이 이미지를 다시 만들려면:
 
 ```bash
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o postra ./cmd/postra
-go run scripts/mkimage.go postra postra-image.tar postra:0.16.1
+go run scripts/mkimage.go postra postra-image.tar postra:0.16.2
 gzip -9 postra-image.tar
 ```

@@ -17,8 +17,17 @@
     <option value="">모든 계정</option>
     {{range .Accounts}}<option value="{{.ID}}" {{if eq $.AccountID .ID}}selected{{end}}>{{.Name}} · {{.Email}}</option>{{end}}
   </select>
+  <input type="hidden" name="label" value="{{.Label}}">
   <button type="submit">검색</button>
 </form>
+{{$q := .Query}}{{$acc := .AccountID}}
+<div class="chips">
+  <span class="small muted">AI 우선순위</span>
+  <a class="chip{{if eq .Label ""}} on{{end}}" href="/ui/?q={{$q}}&account={{$acc}}">전체</a>
+  <a class="chip prio-urgent{{if eq .Label "ai/urgent"}} on{{end}}" href="/ui/?q={{$q}}&account={{$acc}}&label=ai%2Furgent">긴급</a>
+  <a class="chip prio-high{{if eq .Label "ai/high"}} on{{end}}" href="/ui/?q={{$q}}&account={{$acc}}&label=ai%2Fhigh">높음</a>
+  <a class="chip{{if eq .Label "ai/reply-needed"}} on{{end}}" href="/ui/?q={{$q}}&account={{$acc}}&label=ai%2Freply-needed">답장 필요</a>
+</div>
 {{if .Messages}}
   <div class="card">
   <table>
@@ -26,7 +35,10 @@
     <tbody>
     {{range .Messages}}
       <tr>
-        <td class="subj"><a href="/ui/messages/{{.ID}}">{{if .Subject}}{{.Subject}}{{else}}(제목 없음){{end}}</a>
+        <td class="subj">
+          {{$p := aiPriority .Labels}}{{if $p}}<span class="prio prio-{{$p}}">{{if eq $p "urgent"}}긴급{{else if eq $p "high"}}높음{{else if eq $p "normal"}}보통{{else}}낮음{{end}}</span>{{end}}
+          <a href="/ui/messages/{{.ID}}">{{if .Subject}}{{.Subject}}{{else}}(제목 없음){{end}}</a>
+          {{if aiReplyNeeded .Labels}}<span class="tag">답장 필요</span>{{end}}
           {{if .HasAttachments}}<span class="tag">첨부</span>{{end}}</td>
         <td class="small">{{addr .From}}</td>
         <td class="small muted">{{ts .Date}}</td>
