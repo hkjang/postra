@@ -66,6 +66,57 @@ var funcs = template.FuncMap{
 	// list can show urgency at a glance instead of only through search.
 	"aiPriority":    aiPriorityOf,
 	"aiReplyNeeded": aiReplyNeededOf,
+	// senderName/smartTime keep the mail list scannable: a list is read by
+	// glancing down it, so each row shows who wrote it and a time in the
+	// shortest form that is still unambiguous.
+	"senderName": senderName,
+	"smartTime":  smartTime,
+}
+
+// senderName prefers the display name and falls back to the address, so the
+// list column stays short instead of repeating "Name <addr>" on every row.
+func senderName(a domain.Address) string {
+	if n := strings.TrimSpace(a.Name); n != "" {
+		return n
+	}
+	return a.Email
+}
+
+// smartTime renders a timestamp at the precision a reader actually needs:
+// the clock for today, the weekday within the past week, a date without the
+// year for this year, and the full date beyond that.
+func smartTime(unix int64) string {
+	if unix <= 0 {
+		return "—"
+	}
+	t := time.Unix(unix, 0)
+	now := time.Now()
+	switch {
+	case t.After(now):
+		// A future timestamp means a bad sender clock; show the date rather
+		// than a nonsensical "in 3 hours".
+		return t.Format("2006-01-02")
+	case sameDay(t, now):
+		return t.Format("15:04")
+	case sameDay(t, now.AddDate(0, 0, -1)):
+		return "어제"
+	case now.Sub(t) < 7*24*time.Hour:
+		return weekdayKO(t.Weekday())
+	case t.Year() == now.Year():
+		return t.Format("1월 2일")
+	default:
+		return t.Format("2006-01-02")
+	}
+}
+
+func sameDay(a, b time.Time) bool {
+	ay, am, ad := a.Date()
+	by, bm, bd := b.Date()
+	return ay == by && am == bm && ad == bd
+}
+
+func weekdayKO(d time.Weekday) string {
+	return [...]string{"일요일", "월요일", "화요일", "수요일", "목요일", "금요일", "토요일"}[d]
 }
 
 // aiPriorityOf returns the triage priority encoded in a message's labels

@@ -29,24 +29,23 @@
   <a class="chip{{if eq .Label "ai/reply-needed"}} on{{end}}" href="/ui/?q={{$q}}&account={{$acc}}&label=ai%2Freply-needed">답장 필요</a>
 </div>
 {{if .Messages}}
-  <div class="card">
-  <table>
-    <thead><tr><th>제목</th><th>보낸이</th><th>날짜</th><th></th></tr></thead>
-    <tbody>
+  <div class="card maillist">
     {{range .Messages}}
-      <tr>
-        <td class="subj">
+    <a class="mailrow{{if .IsImportant}} is-important{{end}}" href="/ui/messages/{{.ID}}">
+      <div class="mailrow-main">
+        <div class="mailrow-top">
           {{$p := aiPriority .Labels}}{{if $p}}<span class="prio prio-{{$p}}">{{if eq $p "urgent"}}긴급{{else if eq $p "high"}}높음{{else if eq $p "normal"}}보통{{else}}낮음{{end}}</span>{{end}}
-          <a href="/ui/messages/{{.ID}}">{{if .Subject}}{{.Subject}}{{else}}(제목 없음){{end}}</a>
+          <span class="mailrow-subject">{{if .Subject}}{{.Subject}}{{else}}(제목 없음){{end}}</span>
+        </div>
+        <div class="mailrow-meta">
+          <span class="mailrow-from">{{senderName .From}}</span>
           {{if aiReplyNeeded .Labels}}<span class="tag">답장 필요</span>{{end}}
-          {{if .HasAttachments}}<span class="tag">첨부</span>{{end}}</td>
-        <td class="small">{{addr .From}}</td>
-        <td class="small muted">{{ts .Date}}</td>
-        <td class="small muted">{{size .Size}}</td>
-      </tr>
+          {{if .HasAttachments}}<span class="tag">첨부 {{size .Size}}</span>{{end}}
+        </div>
+      </div>
+      <time class="mailrow-time" datetime="{{ts .Date}}" title="{{ts .Date}}">{{smartTime .Date}}</time>
+    </a>
     {{end}}
-    </tbody>
-  </table>
   </div>
   {{if .NextURL}}<div class="actions"><a class="btn ghost" href="{{.NextURL}}">더 보기</a></div>{{end}}
 {{else}}

@@ -1,0 +1,103 @@
+package webui
+
+import (
+	"context"
+	"net/http"
+	"strings"
+	"testing"
+	"time"
+
+	"postra/internal/application"
+	"postra/internal/domain"
+)
+
+func TestSmartTime(t *testing.T) {
+	now := time.Now()
+	cases := []struct {
+		name string
+		at   time.Time
+		want string
+	}{
+		{"today shows the clock", now.Add(-2 * time.Hour), now.Add(-2 * time.Hour).Format("15:04")},
+		{"yesterday is named", now.AddDate(0, 0, -1), "어제"},
+		{"this year drops the year", time.Date(now.Year(), 1, 2, 9, 0, 0, 0, now.Location()), "1월 2일"},
+		{"older keeps the year", time.Date(now.Year()-2, 3, 4, 9, 0, 0, 0, now.Location()), time.Date(now.Year()-2, 3, 4, 9, 0, 0, 0, now.Location()).Format("2006-01-02")},
+	}
+	for _, c := range cases {
+		// The "this year" case collapses into today/yesterday/weekday when the
+		// run happens to fall near Jan 2; skip rather than assert a false rule.
+		if c.name == "this year drops the year" && now.Sub(c.at) < 7*24*time.Hour {
+			continue
+		}
+		if got := smartTime(c.at.Unix()); got != c.want {
+			t.Errorf("%s: smartTime = %q, want %q", c.name, got, c.want)
+		}
+	}
+
+	if got := smartTime(0); got != "—" {
+		t.Errorf("missing date should render as a dash, got %q", got)
+	}
+	// A sender's clock can be wrong; a future stamp must not read as "in 3h".
+	future := now.Add(48 * time.Hour)
+	if got := smartTime(future.Unix()); got != future.Format("2006-01-02") {
+		t.Errorf("future timestamp = %q, want the plain date", got)
+	}
+}
+
+func TestSenderName(t *testing.T) {
+	if got := senderName(domain.Address{Name: "김철수", Email: "kim@corp.local"}); got != "김철수" {
+		t.Errorf("display name should win, got %q", got)
+	}
+	if got := senderName(domain.Address{Email: "noname@corp.local"}); got != "noname@corp.local" {
+		t.Errorf("address is the fallback, got %q", got)
+	}
+	if got := senderName(domain.Address{Name: "   ", Email: "blank@corp.local"}); got != "blank@corp.local" {
+		t.Errorf("whitespace-only name must not render as a blank sender, got %q", got)
+	}
+}
+
+// Render the inbox for real: a template that parses can still fail at render,
+// and the row markup is what the user actually sees.
+func TestInboxRendersMailRows(t *testing.T) {
+	app, _ := newTestApp(t)
+	ctx := application.WithActor(context.Background(), "test")
+	now := time.Now().Unix()
+	m := &domain.Message{
+		ID: "msg_ui", UserID: application.DefaultUserID, AccountID: "acc_ui", UIDL: "u-ui",
+		Subject: "분기 예산 검토 요청", From: domain.Address{Name: "김철수", Email: "kim@corp.local"},
+		RawHash: "h-ui", RawURI: "mem://ui", Date: now, CreatedAt: now,
+		IsImportant: true, HasAttachments: true, Size: 2048,
+		Labels: []string{"ai/urgent", "ai/reply-needed"},
+	}
+	if err := app.Store.InsertMessage(ctx, m, &domain.MessageBody{MessageID: m.ID, TextBody: "본문"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	// InsertMessage stores the ingested fields only; labels and the important
+	// flag are applied afterwards (by triage or the user), as they are here.
+	if err := app.Store.UpdateMessage(ctx, m); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := do(t, New(app, "").Handler(), http.MethodGet, "/ui/", nil, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("inbox returned %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`class="mailrow`,           // the redesigned row rendered
+		"is-important",             // importance is visible
+		"분기 예산 검토 요청",              // subject
+		"김철수",                      // display name, not "Name <addr>"
+		`class="prio prio-urgent"`, // AI priority badge
+		"답장 필요",
+		time.Unix(now, 0).Format("15:04"), // today's mail shows the clock
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("inbox markup missing %q", want)
+		}
+	}
+	// The raw "Name <email>" form should no longer appear in the list.
+	if strings.Contains(body, "김철수 &lt;kim@corp.local&gt;") {
+		t.Error("list still renders the verbose Name <email> form")
+	}
+}
