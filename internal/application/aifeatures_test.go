@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -336,5 +337,93 @@ func TestAttachmentIndexWritesNoDownloadAudit(t *testing.T) {
 		if e.Action == "attachment_download" {
 			t.Fatalf("indexing forged a download audit record: %+v", e)
 		}
+	}
+}
+
+// A message whose analysis cannot be parsed must still leave the triage queue.
+// Analyses are cached by input hash, so retrying returns the same unusable
+// output forever — the message would occupy a batch slot and burn an AI call
+// on every tick.
+func TestTriageDoesNotRetryUnusableOutputForever(t *testing.T) {
+	app, _, _, ai := newTestApp(t)
+	ai.response = `{"priority": ` // malformed on purpose
+	ctx := WithActor(context.Background(), "test")
+	acc := mustAccount(t, app)
+	recentMessage(t, app, ctx, acc.ID, "msg_bad", "형식 오류", "본문")
+
+	if n := app.triageOnce(ctx); n != 1 {
+		t.Fatalf("message should still be labelled with the neutral default, got n=%d", n)
+	}
+	m, err := app.Store.GetMessage(ctx, DefaultUserID, "msg_bad")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(m.Labels); got == 0 {
+		t.Fatal("no label applied, message will be retried forever")
+	}
+	// Second pass must find nothing left to do.
+	if n := app.triageOnce(ctx); n != 0 {
+		t.Fatalf("message re-triaged after being labelled (n=%d)", n)
+	}
+}
+
+// When the provider is down, the pass stops instead of repeating the same
+// failure against every remaining message.
+func TestTriageStopsWhenProviderUnavailable(t *testing.T) {
+	app, _, _, ai := newTestApp(t)
+	ai.genErr = errors.New("provider unreachable")
+	ctx := WithActor(context.Background(), "test")
+	acc := mustAccount(t, app)
+	recentMessage(t, app, ctx, acc.ID, "msg_d1", "하나", "본문")
+	recentMessage(t, app, ctx, acc.ID, "msg_d2", "둘", "본문")
+
+	if n := app.triageOnce(ctx); n != 0 {
+		t.Fatalf("nothing should be labelled during an outage, got %d", n)
+	}
+	for _, id := range []string{"msg_d1", "msg_d2"} {
+		m, err := app.Store.GetMessage(ctx, DefaultUserID, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(m.Labels) != 0 {
+			t.Fatalf("%s labelled despite the outage: %v", id, m.Labels)
+		}
+	}
+	// Once the provider recovers, the same mail is picked up.
+	ai.genErr = nil
+	ai.response = `{"priority":"high","reply_required":false}`
+	if n := app.triageOnce(ctx); n != 2 {
+		t.Fatalf("expected both messages triaged after recovery, got %d", n)
+	}
+}
+
+// A transient provider fault must not cost the user their whole day's
+// briefing: the day stays unmarked so the next tick retries.
+func TestDigestRetriesAfterTransientFailure(t *testing.T) {
+	app, _, _, ai := newTestApp(t)
+	app.Cfg.Sync.DailyDigestHour = 0 // the hour gate is not what we are testing
+	ctx := WithActor(context.Background(), "test")
+	acc := mustAccount(t, app)
+	recentMessage(t, app, ctx, acc.ID, "msg_dg", "보고", "확인 부탁드립니다.")
+
+	ai.genErr = errors.New("provider unreachable")
+	app.digestOnce(ctx)
+	settings, err := app.Store.GetSettings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, marked := settings[digestStateKey+DefaultUserID]; marked {
+		t.Fatal("day marked done despite a transient failure — briefing would be lost")
+	}
+
+	ai.genErr = nil
+	ai.response = `{"headline":"오늘의 요약","needs_reply":[],"deadlines":[],"fyi":[],"volume_note":"1건"}`
+	app.digestOnce(ctx)
+	settings, err = app.Store.GetSettings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, marked := settings[digestStateKey+DefaultUserID]; !marked {
+		t.Fatal("successful briefing did not mark the day, it would regenerate every tick")
 	}
 }

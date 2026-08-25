@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -105,8 +106,17 @@ func (a *App) digestOnce(ctx context.Context) int {
 			UserID: u.ID, LoginID: u.LoginID, Role: u.Role, AuthMethod: "digest-worker",
 		})
 		if _, err := a.GenerateDailyDigest(uctx, "", 24); err != nil {
-			slog.Debug("digest worker: no briefing produced", "user", u.ID, "err", err)
-			// Still mark the day so an empty mailbox is not retried every tick.
+			var ue *UserError
+			if !errors.As(err, &ue) {
+				// A provider or storage fault is transient. Marking the day
+				// done here would cost the user their entire briefing over a
+				// momentary outage, so leave it for the next tick.
+				slog.Warn("digest worker: briefing failed, will retry", "user", u.ID, "err", err)
+				continue
+			}
+			// A UserError means there is genuinely nothing to brief today
+			// (e.g. no mail arrived); marking the day avoids retrying every tick.
+			slog.Debug("digest worker: nothing to brief", "user", u.ID, "err", err)
 		}
 		_ = a.Store.UpsertSettings(ctx, map[string]string{key: today})
 		made++

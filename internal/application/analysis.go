@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -15,6 +16,12 @@ import (
 	"postra/internal/domain"
 	"postra/internal/platform/mask"
 )
+
+// errAIOutputInvalid marks a response the model produced but that failed
+// validation. Callers must distinguish it from a provider outage: the output
+// is deterministic for a given input (and cached), so retrying the same
+// message is futile, whereas an outage should simply be retried later.
+var errAIOutputInvalid = errors.New("AI returned non-JSON output")
 
 // maxAIBodyChars bounds untrusted content per request.
 const maxAIBodyChars = 12000
@@ -258,7 +265,7 @@ func (a *App) runAnalysis(ctx context.Context, analysisType, targetType, targetI
 	}
 	resultJSON, err := extractJSON(res.Text)
 	if err != nil {
-		return nil, fmt.Errorf("AI returned non-JSON output (AI-005 validation failed): %w", err)
+		return nil, fmt.Errorf("%w (AI-005 validation failed): %v", errAIOutputInvalid, err)
 	}
 	an := &domain.Analysis{
 		ID: persistence.NewID("ana"), UserID: userID,

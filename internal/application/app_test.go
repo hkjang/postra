@@ -127,6 +127,9 @@ func (f *fakeSMTP) Send(ctx context.Context, opts domain.SMTPSendOptions, env do
 type fakeAI struct {
 	lastRequest domain.GenerationRequest
 	response    string
+	// genErr, when set, makes Generate fail — used to exercise provider-outage
+	// paths in the background workers.
+	genErr error
 	// embed maps a substring to the vector returned when the input contains
 	// it; falls back to a zero-ish vector. Lets tests control similarity.
 	embed map[string][]float32
@@ -134,6 +137,9 @@ type fakeAI struct {
 
 func (f *fakeAI) Generate(ctx context.Context, req domain.GenerationRequest) (domain.GenerationResult, error) {
 	f.lastRequest = req
+	if f.genErr != nil {
+		return domain.GenerationResult{}, f.genErr
+	}
 	resp := f.response
 	if resp == "" {
 		resp = `{"summary":"test summary","requests":[],"dates":[],"confidence":0.9}`

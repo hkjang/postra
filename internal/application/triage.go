@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"strings"
 	"time"
@@ -78,7 +79,15 @@ func (a *App) triageOnce(ctx context.Context) int {
 			if ctx.Err() != nil {
 				return total
 			}
-			if a.triageMessage(uctx, id) {
+			labelled, aiDown := a.triageMessage(uctx, id)
+			if aiDown {
+				// The provider rejected the call; every remaining message this
+				// tick would fail identically. Stop rather than hammer it —
+				// the next tick retries from where this left off.
+				slog.Warn("triage worker: AI unavailable, ending this pass", "message", id)
+				return total
+			}
+			if labelled {
 				total++
 			}
 		}
@@ -90,21 +99,34 @@ func (a *App) triageOnce(ctx context.Context) int {
 }
 
 // triageMessage runs triage for one message and records the outcome as a
-// label. Returns whether the message was labelled.
-func (a *App) triageMessage(ctx context.Context, messageID string) bool {
+// label. It reports whether the message was labelled, and whether the failure
+// was the AI provider itself (in which case the caller should stop the pass
+// instead of retrying the same fault on every remaining message).
+func (a *App) triageMessage(ctx context.Context, messageID string) (labelled, aiUnavailable bool) {
 	an, err := a.AnalyzeMessage(ctx, messageID, "triage")
-	if err != nil {
+	if errors.Is(err, errAIOutputInvalid) {
+		// The model answered, but not in a usable shape. That answer is cached
+		// and deterministic, so retrying this message would fail identically
+		// every tick while occupying a batch slot. Fall through and label it
+		// with the neutral default so it leaves the queue.
+		slog.Warn("triage worker: unusable analysis output, defaulting to normal",
+			"message", messageID, "err", err)
+		an = nil
+	} else if err != nil {
 		slog.Debug("triage worker: analysis failed", "message", messageID, "err", err)
-		return false
+		return false, true
 	}
 	var parsed struct {
 		Priority      string `json:"priority"`
 		ReplyRequired bool   `json:"reply_required"`
 	}
-	if err := json.Unmarshal([]byte(an.ResultJSON), &parsed); err != nil {
-		return false
+	priority, replyRequired := "normal", false
+	if an != nil {
+		if err := json.Unmarshal([]byte(an.ResultJSON), &parsed); err == nil {
+			priority = strings.ToLower(strings.TrimSpace(parsed.Priority))
+			replyRequired = parsed.ReplyRequired
+		}
 	}
-	priority := strings.ToLower(strings.TrimSpace(parsed.Priority))
 	switch priority {
 	case "urgent", "high", "normal", "low":
 	default:
@@ -112,16 +134,16 @@ func (a *App) triageMessage(ctx context.Context, messageID string) bool {
 	}
 	m, err := a.Store.GetMessage(ctx, userIDFrom(ctx), messageID)
 	if err != nil {
-		return false
+		return false, false
 	}
 	label := aiLabelPrefix + priority
 	for _, l := range m.Labels {
 		if l == label {
-			return false // already labelled
+			return false, false // already labelled
 		}
 	}
 	m.Labels = append(m.Labels, label)
-	if parsed.ReplyRequired {
+	if replyRequired {
 		m.Labels = append(m.Labels, aiLabelPrefix+"reply-needed")
 	}
 	// Surface the mail that actually matters through the existing important flag.
@@ -130,7 +152,7 @@ func (a *App) triageMessage(ctx context.Context, messageID string) bool {
 	}
 	if err := a.Store.UpdateMessage(ctx, m); err != nil {
 		slog.Warn("triage worker: label update failed", "message", messageID, "err", err)
-		return false
+		return false, false
 	}
-	return true
+	return true, false
 }
