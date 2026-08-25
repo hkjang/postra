@@ -1,0 +1,56 @@
+{{define "title"}}일일 브리핑{{end}}
+{{define "content"}}
+<div class="actions" style="justify-content:space-between;margin-top:0">
+  <h1>일일 브리핑</h1>
+  <form method="get" action="/ui/digest" class="actions" style="margin-top:0">
+    <select name="hours">
+      <option value="24" {{if eq .Hours 24}}selected{{end}}>최근 24시간</option>
+      <option value="72" {{if eq .Hours 72}}selected{{end}}>최근 3일</option>
+      <option value="168" {{if eq .Hours 168}}selected{{end}}>최근 7일</option>
+    </select>
+    <button type="submit">브리핑 생성</button>
+  </form>
+</div>
+
+{{if .Error}}<div class="warn">{{.Error}}</div>{{end}}
+
+{{with .Digest}}
+<div class="card">
+  <p style="font-size:1.12rem;line-height:1.6;margin:0"><b>{{.Headline}}</b></p>
+  {{if .VolumeNote}}<p class="small muted" style="margin:.5rem 0 0">{{.VolumeNote}}</p>{{end}}
+</div>
+
+{{if .NeedsReply}}
+<h2>답장이 필요한 메일 ({{len .NeedsReply}})</h2>
+<div class="card"><table>
+  <thead><tr><th>보낸이</th><th>요청 내용</th><th></th></tr></thead>
+  <tbody>{{range .NeedsReply}}<tr>
+    <td>{{.Who}}</td><td>{{.What}}</td>
+    <td>{{if .MessageID}}<a href="/ui/messages/{{.MessageID}}">열기 →</a>{{end}}</td>
+  </tr>{{end}}</tbody>
+</table></div>
+{{end}}
+
+{{if .Deadlines}}
+<h2>마감·일정 ({{len .Deadlines}})</h2>
+<div class="card"><table>
+  <thead><tr><th>언제</th><th>내용</th><th></th></tr></thead>
+  <tbody>{{range .Deadlines}}<tr>
+    <td class="small"><b>{{.When}}</b></td><td>{{.What}}</td>
+    <td>{{if .MessageID}}<a href="/ui/messages/{{.MessageID}}">열기 →</a>{{end}}</td>
+  </tr>{{end}}</tbody>
+</table></div>
+{{end}}
+
+{{if .FYI}}
+<h2>참고</h2>
+<div class="card"><ul style="margin:0;padding-left:1.2rem">
+  {{range .FYI}}<li style="margin:.3rem 0">{{.}}</li>{{end}}
+</ul></div>
+{{end}}
+{{end}}
+
+{{if not .Digest}}{{if not .Error}}
+<div class="card empty"><p class="muted">기간을 고르고 <b>브리핑 생성</b>을 누르면 AI가 그동안의 메일을 요약합니다.</p></div>
+{{end}}{{end}}
+{{end}}

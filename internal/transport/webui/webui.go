@@ -70,7 +70,7 @@ func parseTemplates() map[string]*template.Template {
 	pages := []string{"search", "message", "draft", "send", "sent", "login", "error",
 		"accounts", "account_new", "account", "compose", "analysis", "job",
 		"setup", "admin_users", "admin_settings", "mcp_keys"}
-	pages = append(pages, "admin_ai", "admin_incidents")
+	pages = append(pages, "admin_ai", "admin_incidents", "digest")
 	out := make(map[string]*template.Template, len(pages))
 	for _, p := range pages {
 		t := template.Must(template.New("layout").Funcs(funcs).
@@ -115,6 +115,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /ui/admin/ai", s.gate(s.adminAISave))
 	mux.HandleFunc("POST /ui/admin/ai/test", s.gate(s.adminAITest))
 	mux.HandleFunc("POST /ui/admin/vector/test", s.gate(s.adminVectorTest))
+	mux.HandleFunc("GET /ui/digest", s.gate(s.digest))
 	mux.HandleFunc("GET /ui/", s.gate(s.search))
 	mux.HandleFunc("GET /ui/accounts", s.gate(s.accounts))
 	mux.HandleFunc("GET /ui/accounts/new", s.gate(s.accountNew))
@@ -1044,6 +1045,50 @@ func (s *Server) message(w http.ResponseWriter, r *http.Request) {
 	}
 	accounts, _ := s.app.ListAccounts(r.Context())
 	s.render(w, "message", http.StatusOK, map[string]any{"View": view, "Accounts": accounts})
+}
+
+// digestView is the parsed shape of a daily_digest analysis, so the template
+// renders structured sections instead of raw JSON.
+type digestView struct {
+	Headline   string `json:"headline"`
+	VolumeNote string `json:"volume_note"`
+	NeedsReply []struct {
+		MessageID string `json:"message_id"`
+		Who       string `json:"who"`
+		What      string `json:"what"`
+	} `json:"needs_reply"`
+	Deadlines []struct {
+		MessageID string `json:"message_id"`
+		What      string `json:"what"`
+		When      string `json:"when"`
+	} `json:"deadlines"`
+	FYI []string `json:"fyi"`
+}
+
+// digest renders the AI briefing of recent mail. Generation is on demand: the
+// page is cheap to open, and only the explicit button spends an AI call.
+func (s *Server) digest(w http.ResponseWriter, r *http.Request) {
+	hours, _ := strconv.Atoi(r.URL.Query().Get("hours"))
+	data := map[string]any{"Hours": hours}
+	if hours <= 0 {
+		data["Hours"] = 24
+		s.render(w, "digest", http.StatusOK, data)
+		return
+	}
+	an, err := s.app.GenerateDailyDigest(r.Context(), "", hours)
+	if err != nil {
+		data["Error"] = err.Error()
+		s.render(w, "digest", http.StatusOK, data)
+		return
+	}
+	var dv digestView
+	if jerr := json.Unmarshal([]byte(an.ResultJSON), &dv); jerr != nil {
+		data["Error"] = "브리핑 결과를 해석하지 못했습니다."
+		s.render(w, "digest", http.StatusOK, data)
+		return
+	}
+	data["Digest"] = dv
+	s.render(w, "digest", http.StatusOK, data)
 }
 
 // messageCalendarICS extracts the message's meetings/deadlines and returns them
