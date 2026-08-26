@@ -1452,7 +1452,10 @@ func (s *Server) analyze(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	metrics.UIActions.WithLabelValues("ai_analysis", "ok").Inc()
-	s.render(w, "analysis", http.StatusOK, map[string]any{"Analysis": an, "MessageID": r.PathValue("id")})
+	s.render(w, "analysis", http.StatusOK, map[string]any{
+		"Analysis": an, "MessageID": r.PathValue("id"),
+		"Fields": analysisFields(an.AnalysisType, an.ResultJSON),
+	})
 }
 
 func (s *Server) messageDraft(w http.ResponseWriter, r *http.Request) {

@@ -2,7 +2,37 @@
 {{define "content"}}
 <p class="small"><a href="/ui/messages/{{.MessageID}}" class="muted">← 메일</a></p>
 <h1>AI 분석 결과</h1>
-{{if .Error}}<div class="warn"><b>AI 분석을 실행할 수 없습니다.</b><br>{{.Error}}<br><span class="small">AI 서버 주소와 모델 설정, 외부 전송 정책을 확인하세요.</span></div>
-{{else}}<div class="card"><p><span class="tag">{{.Analysis.AnalysisType}}</span> <span class="small muted">{{.Analysis.Model}} · prompt {{.Analysis.PromptVersion}}</span></p>
-<div class="pre json">{{.Analysis.ResultJSON}}</div></div>{{end}}
+{{if .Error}}
+<div class="warn"><b>AI 분석을 실행할 수 없습니다.</b><br>{{.Error}}<br>
+  <span class="small">AI 서버 주소와 모델 설정, 외부 전송 정책을 확인하세요.</span></div>
+{{else}}
+<div class="card">
+  <p style="margin-top:0"><span class="tag">{{.Analysis.AnalysisType}}</span>
+    <span class="small muted">{{.Analysis.Model}} · prompt {{.Analysis.PromptVersion}}</span></p>
+
+  {{if .Fields}}
+  <dl class="kv analysis-kv">
+    {{range .Fields}}
+      <dt>{{.Label}}</dt>
+      <dd>
+        {{if .Items}}
+          <ul class="analysis-list">{{range .Items}}<li>{{.}}</li>{{end}}</ul>
+        {{else if .Badge}}
+          <span class="prio prio-{{.Badge}}">{{.Text}}</span>
+        {{else}}
+          {{.Text}}
+        {{end}}
+      </dd>
+    {{end}}
+  </dl>
+  {{else}}
+  <p class="muted">표시할 결과가 없습니다.</p>
+  {{end}}
+
+  <details class="mail-raw" style="margin-top:1rem">
+    <summary class="small muted">원본 응답(JSON) 보기</summary>
+    <div class="pre json">{{.Analysis.ResultJSON}}</div>
+  </details>
+</div>
+{{end}}
 {{end}}
