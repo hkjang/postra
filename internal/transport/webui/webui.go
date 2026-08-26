@@ -1198,7 +1198,10 @@ const threadCollapseAfter = 3
 
 // thread renders a conversation oldest-first, the way it was read.
 func (s *Server) thread(w http.ResponseWriter, r *http.Request) {
-	tv, err := s.app.GetThread(r.Context(), r.PathValue("id"), true)
+	// Metadata first: loading every body would fetch, decrypt and ship the
+	// whole conversation to the browser even though most of it renders
+	// collapsed. Only the messages actually shown in full get their bodies.
+	tv, err := s.app.GetThread(r.Context(), r.PathValue("id"), false)
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -1206,6 +1209,11 @@ func (s *Server) thread(w http.ResponseWriter, r *http.Request) {
 	expandFrom := len(tv.Messages) - threadCollapseAfter
 	if expandFrom < 0 {
 		expandFrom = 0
+	}
+	for i := expandFrom; i < len(tv.Messages); i++ {
+		if mv, merr := s.app.GetMessage(r.Context(), tv.Messages[i].Message.ID, true); merr == nil {
+			tv.Messages[i] = *mv
+		}
 	}
 	s.render(w, "thread", http.StatusOK, map[string]any{
 		"ThreadID": tv.ThreadID, "Messages": tv.Messages,

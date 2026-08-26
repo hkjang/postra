@@ -315,15 +315,25 @@ func TestThreadView(t *testing.T) {
 		t.Fatalf("thread page returned %d", rec.Code)
 	}
 	body := rec.Body.String()
-	if n := strings.Count(body, `class="tmsg`); n < 5 {
-		t.Fatalf("thread shows %d messages, want all 5", n)
-	}
-	// Older messages are collapsed so a long thread stays readable.
-	if n := strings.Count(body, "이전 메일 펼치기"); n != 2 {
+	// Every message is accounted for: the newest expanded, the rest as briefs.
+	if n := strings.Count(body, `class="tmsg-brief"`); n != 2 {
 		t.Fatalf("collapsed %d of 5 messages, want the 2 oldest", n)
 	}
-	if !strings.Contains(body, "내용 4") {
-		t.Fatal("the newest message's body should be expanded")
+	if n := strings.Count(body, `<article class="tmsg`); n != 3 {
+		t.Fatalf("expanded %d messages, want the 3 newest", n)
+	}
+	// The newest bodies are shown...
+	for _, want := range []string{"내용 2", "내용 3", "내용 4"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("expanded message body %q missing", want)
+		}
+	}
+	// ...and the collapsed ones are not fetched or shipped at all. Rendering
+	// them hidden would still send the whole conversation to the browser.
+	for _, unwanted := range []string{"내용 0", "내용 1"} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("collapsed message body %q was sent to the browser", unwanted)
+		}
 	}
 
 	// The detail view offers the conversation, with its size.

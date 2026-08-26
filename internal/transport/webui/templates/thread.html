@@ -8,41 +8,38 @@
 {{$expandFrom := .ExpandFrom}}
 {{range $i, $mv := .Messages}}
 {{$m := $mv.Message}}
-<article class="tmsg{{if $m.IsImportant}} is-important{{end}}">
-  <header class="tmsg-head">
-    <div class="tmsg-who">
-      <b>{{senderName $m.From}}</b>
-      <span class="small muted">{{addrs $m.To}}</span>
-    </div>
-    <div class="tmsg-side">
-      <time class="small muted" title="{{ts $m.Date}}">{{smartTime $m.Date}}</time>
-      <a class="small" href="/ui/messages/{{$m.ID}}">단독 보기 →</a>
-    </div>
-  </header>
-  {{if lt $i $expandFrom}}
-    <details class="tmsg-old">
-      <summary class="small muted">이전 메일 펼치기</summary>
-      {{template "threadbody" $mv}}
-    </details>
-  {{else}}
-    {{template "threadbody" $mv}}
-  {{end}}
-</article>
-{{end}}
-{{end}}
-
-{{define "threadbody"}}
-{{with .Body}}
-  {{if .Unavailable}}
-    <div class="warn">{{.UnavailableReason}}</div>
-  {{else if .HTMLSanitized}}
-    <div class="mail-body tmsg-body">{{mailHTML .HTMLSanitized}}</div>
-  {{else if .TextBody}}
-    <div class="mail-body mail-body-text tmsg-body">{{mailText .TextBody}}</div>
-  {{else}}
-    <p class="muted small">본문 없음.</p>
-  {{end}}
+{{if lt $i $expandFrom}}
+  <a class="tmsg-brief" href="/ui/messages/{{$m.ID}}">
+    <b>{{senderName $m.From}}</b>
+    <span class="small muted tmsg-brief-sub">이전 메일 · 열어서 보기</span>
+    <time class="small muted" title="{{ts $m.Date}}">{{smartTime $m.Date}}</time>
+  </a>
 {{else}}
-  <p class="muted small">본문 없음.</p>
+  <article class="tmsg{{if $m.IsImportant}} is-important{{end}}">
+    <header class="tmsg-head">
+      <div class="tmsg-who">
+        <b>{{senderName $m.From}}</b>
+        <span class="small muted">{{addrs $m.To}}</span>
+      </div>
+      <div class="tmsg-side">
+        <time class="small muted" title="{{ts $m.Date}}">{{smartTime $m.Date}}</time>
+        <a class="small" href="/ui/messages/{{$m.ID}}">단독 보기 →</a>
+      </div>
+    </header>
+    {{with $mv.Body}}
+      {{if .Unavailable}}
+        <div class="warn">{{.UnavailableReason}}</div>
+      {{else if .HTMLSanitized}}
+        <div class="mail-body tmsg-body">{{mailHTML .HTMLSanitized}}</div>
+      {{else if .TextBody}}
+        <div class="mail-body mail-body-text tmsg-body">{{mailText .TextBody}}</div>
+      {{else}}
+        <p class="muted small">본문 없음.</p>
+      {{end}}
+    {{else}}
+      <p class="muted small">본문 없음.</p>
+    {{end}}
+  </article>
+{{end}}
 {{end}}
 {{end}}
