@@ -2,13 +2,13 @@
 
 Docker 데몬 없이 빌드한, 오프라인망에서 바로 사용 가능한 산출물입니다.
 
-> **v0.17.1**: 받은편지함 본문 미리보기 — 목록의 각 메일에 본문 첫 줄 요약이 표시되어 열어보지 않고도 내용을 파악할 수 있습니다. 페이지당 한 번의 조회로 가져오며, 매우 긴 본문은 미리보기를 생략해 메모리 사용을 제한합니다.
+> **v0.17.2**: 받은편지함 일괄 작업 — 목록에서 여러 메일을 선택해 보관·중요 표시·중요 해제·삭제를 한 번에 처리할 수 있습니다. 처리 결과(성공/실패 건수)를 목록 상단에 표시하며, 삭제는 확인을 거치고 메일 서버 원본은 건드리지 않습니다.
 
 | 파일 | 설명 |
 | --- | --- |
-| `postra-0.17.1-linux-amd64-image.tar.gz` | `docker load` 로 불러오는 컨테이너 이미지 (`postra:0.17.1`, linux/amd64) |
-| `postra-0.17.1-linux-amd64` | 정적 링크 단일 실행 파일 (CGO 없음, 의존성 없음) |
-| `postra-0.17.1-sbom.cdx.json` | CycloneDX 소프트웨어 자재명세서 |
+| `postra-0.17.2-linux-amd64-image.tar.gz` | `docker load` 로 불러오는 컨테이너 이미지 (`postra:0.17.2`, linux/amd64) |
+| `postra-0.17.2-linux-amd64` | 정적 링크 단일 실행 파일 (CGO 없음, 의존성 없음) |
+| `postra-0.17.2-sbom.cdx.json` | CycloneDX 소프트웨어 자재명세서 |
 | `SHA256SUMS.txt` | 모든 릴리즈 파일의 SHA-256 체크섬 |
 
 이미지는 순수 Go 정적 바이너리 + CA 인증서 + 최소 rootfs 로만 구성됩니다(scratch 기반).
@@ -17,7 +17,7 @@ Docker 데몬 없이 빌드한, 오프라인망에서 바로 사용 가능한 �
 
 ```bash
 # 폐쇄망 호스트로 tar.gz 를 옮긴 뒤:
-docker load -i postra-0.17.1-linux-amd64-image.tar.gz     # gzip 자동 인식
+docker load -i postra-0.17.2-linux-amd64-image.tar.gz     # gzip 자동 인식
 docker image ls | grep postra
 
 # 오프라인망(평문 POP3/SMTP 허용) 실행 예시
@@ -27,7 +27,7 @@ docker run -d --name postra \
   -e POSTRA_HTTP_ADDR=0.0.0.0:8480 \
   -e POSTRA_ALLOW_INSECURE_MAIL=true \
   -e POSTRA_API_TOKEN=change-me \
-  postra:0.17.1
+  postra:0.17.2
 
 # CLI 사용 (같은 컨테이너)
 docker exec -it postra postra account list
@@ -39,9 +39,9 @@ REST API는 `/api`, Web UI는 `/ui`, MCP Streamable HTTP는 `/mcp`이며 모두 
 ## 2) 바이너리 단독 실행 (Docker 불필요)
 
 ```bash
-chmod +x postra-0.17.1-linux-amd64
-./postra-0.17.1-linux-amd64 init
-POSTRA_BOOTSTRAP_ADMIN_PASSWORD='replace-me' ./postra-0.17.1-linux-amd64 serve
+chmod +x postra-0.17.2-linux-amd64
+./postra-0.17.2-linux-amd64 init
+POSTRA_BOOTSTRAP_ADMIN_PASSWORD='replace-me' ./postra-0.17.2-linux-amd64 serve
 ```
 
 ## 데이터 / 비밀값
@@ -55,6 +55,6 @@ Docker 없이 이미지를 다시 만들려면:
 
 ```bash
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o postra ./cmd/postra
-go run scripts/mkimage.go postra postra-image.tar postra:0.17.1
+go run scripts/mkimage.go postra postra-image.tar postra:0.17.2
 gzip -9 postra-image.tar
 ```

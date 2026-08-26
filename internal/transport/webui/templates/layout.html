@@ -59,7 +59,12 @@ button.ghost,.btn.ghost{background:var(--card);color:var(--accent);border:1px so
 .mail-body h1{font-size:1.35rem}.mail-body h2{font-size:1.18rem}.mail-body h3,.mail-body .mb-h{font-size:1.05rem}
 .mail-body-text{font-size:.97rem}
 .maillist{padding:.35rem .4rem}
-.mailrow{display:flex;align-items:center;gap:1rem;padding:.7rem .85rem;border-radius:10px;text-decoration:none;color:inherit;transition:background .12s ease}
+.bulkbar{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;margin-bottom:.6rem}
+.bulkbar button{padding:.4rem .8rem;font-size:.85rem}
+.bulkbar-all{display:flex;align-items:center;gap:.35rem;font-size:.85rem;color:var(--muted);cursor:pointer}
+.mailrow{display:flex;align-items:center;gap:.6rem;padding:.7rem .85rem;border-radius:10px;color:inherit;transition:background .12s ease}
+.mailrow-check{display:flex;align-items:center;flex:none;cursor:pointer;padding:.15rem}
+.mailrow-link{display:flex;align-items:center;gap:1rem;flex:1;min-width:0;text-decoration:none;color:inherit}
 .mailrow+.mailrow{border-top:1px solid var(--line)}
 .mailrow:hover{background:var(--accent-soft)}
 .mailrow-main{min-width:0;flex:1}

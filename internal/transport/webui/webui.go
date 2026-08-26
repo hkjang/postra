@@ -10,6 +10,7 @@ import (
 	"embed"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"html/template"
 	"io"
 
@@ -216,6 +217,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /ui/admin/ai", s.gate(s.adminAISave))
 	mux.HandleFunc("POST /ui/admin/ai/test", s.gate(s.adminAITest))
 	mux.HandleFunc("POST /ui/admin/vector/test", s.gate(s.adminVectorTest))
+	mux.HandleFunc("POST /ui/messages/batch", s.gate(s.messagesBatch))
 	mux.HandleFunc("GET /ui/digest", s.gate(s.digest))
 	mux.HandleFunc("GET /ui/rules", s.gate(s.rules))
 	mux.HandleFunc("POST /ui/rules/draft", s.gate(s.ruleDraft))
@@ -912,6 +914,12 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 		"AccountID": accountID, "HasAccounts": len(accounts) > 0,
 		"HasMessages": len(res.Messages) > 0, "Label": label,
 	}
+	if v := r.URL.Query().Get("done"); v != "" {
+		data["BatchDone"], data["BatchFailed"] = v, r.URL.Query().Get("failed")
+	}
+	if r.URL.Query().Get("none") != "" {
+		data["BatchNone"] = true
+	}
 	if res.NextCursor != "" {
 		next := "/ui/?q=" + url.QueryEscape(q)
 		if accountID != "" {
@@ -1234,6 +1242,33 @@ func (s *Server) ruleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/ui/rules", http.StatusSeeOther)
+}
+
+// messagesBatch applies one action to the messages ticked in the list, then
+// returns to the same filtered view. Batch results are per-message, so the
+// banner reports failures instead of implying everything succeeded.
+func (s *Server) messagesBatch(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		s.fail(w, err)
+		return
+	}
+	ids := r.Form["ids"]
+	back := "/ui/?q=" + url.QueryEscape(r.FormValue("q")) +
+		"&account=" + url.QueryEscape(r.FormValue("account")) +
+		"&label=" + url.QueryEscape(r.FormValue("label"))
+	if len(ids) == 0 {
+		http.Redirect(w, r, back+"&none=1", http.StatusSeeOther)
+		return
+	}
+	res, err := s.app.BatchUpdateMessages(r.Context(), application.BatchUpdateOptions{
+		MessageIDs: ids,
+		Action:     application.BatchAction(r.FormValue("action")),
+	})
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	http.Redirect(w, r, fmt.Sprintf("%s&done=%d&failed=%d", back, res.Succeeded, res.Failed), http.StatusSeeOther)
 }
 
 // digestView is the parsed shape of a daily_digest analysis, so the template

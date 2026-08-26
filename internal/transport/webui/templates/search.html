@@ -28,10 +28,30 @@
   <a class="chip prio-high{{if eq .Label "ai/high"}} on{{end}}" href="/ui/?q={{$q}}&account={{$acc}}&label=ai%2Fhigh">높음</a>
   <a class="chip{{if eq .Label "ai/reply-needed"}} on{{end}}" href="/ui/?q={{$q}}&account={{$acc}}&label=ai%2Freply-needed">답장 필요</a>
 </div>
+{{if .BatchDone}}<div class="card" style="padding:.7rem 1rem;margin-bottom:.7rem">
+  <span class="ok">{{.BatchDone}}건 처리했습니다.</span>
+  {{if ne .BatchFailed "0"}} <span class="err">{{.BatchFailed}}건 실패</span>{{end}}
+</div>{{end}}
+{{if .BatchNone}}<div class="warn">선택된 메일이 없습니다.</div>{{end}}
 {{if .Messages}}
+  <form method="post" action="/ui/messages/batch">
+  <input type="hidden" name="q" value="{{.Query}}">
+  <input type="hidden" name="account" value="{{.AccountID}}">
+  <input type="hidden" name="label" value="{{.Label}}">
+  <div class="bulkbar">
+    <label class="bulkbar-all"><input type="checkbox" id="selectAll"> 전체 선택</label>
+    <span class="small muted">선택한 메일에</span>
+    <button class="ghost" type="submit" name="action" value="archive">보관</button>
+    <button class="ghost" type="submit" name="action" value="mark_important">중요 표시</button>
+    <button class="ghost" type="submit" name="action" value="unmark_important">중요 해제</button>
+    <button class="danger" type="submit" name="action" value="delete"
+      onclick="return confirm('선택한 메일을 로컬에서 삭제합니다. 메일 서버의 원본은 그대로입니다. 계속할까요?')">삭제</button>
+  </div>
   <div class="card maillist">
     {{range .Messages}}
-    <a class="mailrow{{if .IsImportant}} is-important{{end}}" href="/ui/messages/{{.ID}}">
+    <div class="mailrow{{if .IsImportant}} is-important{{end}}">
+      <label class="mailrow-check"><input type="checkbox" name="ids" value="{{.ID}}" aria-label="선택"></label>
+      <a class="mailrow-link" href="/ui/messages/{{.ID}}">
       <div class="mailrow-main">
         <div class="mailrow-top">
           {{$p := aiPriority .Labels}}{{if $p}}<span class="prio prio-{{$p}}">{{if eq $p "urgent"}}긴급{{else if eq $p "high"}}높음{{else if eq $p "normal"}}보통{{else}}낮음{{end}}</span>{{end}}
@@ -45,9 +65,18 @@
         </div>
       </div>
       <time class="mailrow-time" datetime="{{ts .Date}}" title="{{ts .Date}}">{{smartTime .Date}}</time>
-    </a>
+      </a>
+    </div>
     {{end}}
   </div>
+  </form>
+  <script>
+  // Progressive enhancement only: without JS every checkbox and button still
+  // works, this just saves ticking each row.
+  document.getElementById("selectAll")?.addEventListener("change", function (e) {
+    document.querySelectorAll('input[name="ids"]').forEach(function (b) { b.checked = e.target.checked; });
+  });
+  </script>
   {{if .NextURL}}<div class="actions"><a class="btn ghost" href="{{.NextURL}}">더 보기</a></div>{{end}}
 {{else}}
   <div class="card empty">

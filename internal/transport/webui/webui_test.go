@@ -268,7 +268,9 @@ func TestSearchPagination(t *testing.T) {
 	if !strings.Contains(body, "더 보기") {
 		t.Fatal("expected a '더 보기' pagination link on page 1")
 	}
-	if n := strings.Count(body, "/ui/messages/"); n != searchPageSize {
+	// Count rows by their markup: other controls on the page (the batch form)
+	// also point at /ui/messages/..., so a URL-prefix count is not a row count.
+	if n := strings.Count(body, `class="mailrow-link"`); n != searchPageSize {
 		t.Fatalf("page 1 row count = %d, want %d", n, searchPageSize)
 	}
 
@@ -282,7 +284,7 @@ func TestSearchPagination(t *testing.T) {
 	next := strings.ReplaceAll(rest[:strings.IndexByte(rest, '"')], "&amp;", "&")
 	rec2 := do(t, h, "GET", next, nil, nil)
 	body2 := rec2.Body.String()
-	if strings.Count(body2, "/ui/messages/") != 1 {
+	if strings.Count(body2, `class="mailrow-link"`) != 1 {
 		t.Fatalf("page 2 row count = %d, want 1", strings.Count(body2, "/ui/messages/"))
 	}
 	if strings.Contains(body2, "더 보기") {

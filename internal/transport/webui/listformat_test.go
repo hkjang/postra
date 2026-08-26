@@ -3,6 +3,7 @@ package webui
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -159,5 +160,69 @@ func TestInboxRendersPreview(t *testing.T) {
 	// Unknown IDs are simply absent, not an error that would break the listing.
 	if got, err := app.Store.BodyTextBatch(ctx, application.DefaultUserID, []string{"nope"}); err != nil || len(got) != 0 {
 		t.Fatalf("unknown id should yield an empty map, got %v (err=%v)", got, err)
+	}
+}
+
+// Bulk actions must act on exactly the ticked messages and report the outcome,
+// including partial failure — a silent "done" would hide it.
+func TestInboxBulkActions(t *testing.T) {
+	app, _ := newTestApp(t)
+	ctx := application.WithActor(context.Background(), "test")
+	now := time.Now().Unix()
+	for _, id := range []string{"msg_b1", "msg_b2"} {
+		m := &domain.Message{
+			ID: id, UserID: application.DefaultUserID, AccountID: "acc_b", UIDL: "u-" + id,
+			Subject: id, From: domain.Address{Email: "x@corp.local"},
+			RawHash: "h-" + id, RawURI: "mem://" + id, Date: now, CreatedAt: now,
+		}
+		if err := app.Store.InsertMessage(ctx, m, &domain.MessageBody{MessageID: id}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h := New(app, "").Handler()
+
+	// The list offers the controls.
+	body := do(t, h, http.MethodGet, "/ui/", nil, nil).Body.String()
+	for _, want := range []string{`name="ids"`, `value="archive"`, `value="mark_important"`, `value="delete"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("bulk control %q missing from the list", want)
+		}
+	}
+
+	// Marking one important must leave the other untouched.
+	rec := do(t, h, http.MethodPost, "/ui/messages/batch",
+		url.Values{"ids": {"msg_b1"}, "action": {"mark_important"}}, nil)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("batch returned %d", rec.Code)
+	}
+	if loc := rec.Header().Get("Location"); !strings.Contains(loc, "done=1") || !strings.Contains(loc, "failed=0") {
+		t.Fatalf("outcome not reported back to the list: %q", loc)
+	}
+	got, err := app.Store.GetMessage(ctx, application.DefaultUserID, "msg_b1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.IsImportant {
+		t.Fatal("ticked message was not marked important")
+	}
+	other, err := app.Store.GetMessage(ctx, application.DefaultUserID, "msg_b2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if other.IsImportant {
+		t.Fatal("an unticked message was modified")
+	}
+
+	// Submitting with nothing ticked must not be reported as work done.
+	rec = do(t, h, http.MethodPost, "/ui/messages/batch", url.Values{"action": {"archive"}}, nil)
+	if loc := rec.Header().Get("Location"); !strings.Contains(loc, "none=1") {
+		t.Fatalf("empty selection should say so, got %q", loc)
+	}
+
+	// A partial failure is surfaced, not swallowed.
+	rec = do(t, h, http.MethodPost, "/ui/messages/batch",
+		url.Values{"ids": {"msg_b2", "msg_missing"}, "action": {"archive"}}, nil)
+	if loc := rec.Header().Get("Location"); !strings.Contains(loc, "done=1") || !strings.Contains(loc, "failed=1") {
+		t.Fatalf("partial failure not reported: %q", loc)
 	}
 }
