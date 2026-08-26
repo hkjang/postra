@@ -614,3 +614,74 @@ func TestOutboundStatusPage(t *testing.T) {
 		t.Fatal("outbound does not mark itself as the current section")
 	}
 }
+
+// Action cards could be extracted, listed, progressed and exported — over CLI
+// and MCP only. In the browser they were invisible, so nothing could be acted on.
+func TestActionCardsPage(t *testing.T) {
+	app, _ := newTestApp(t)
+	ctx := application.WithActor(context.Background(), "test")
+	now := time.Now().Unix()
+	m := &domain.Message{
+		ID: "msg_card", UserID: application.DefaultUserID, AccountID: "acc_c", UIDL: "u-c",
+		Subject: "계약 검토 요청", From: domain.Address{Email: "x@corp.local"},
+		RawHash: "h-c", RawURI: "mem://c", Date: now, CreatedAt: now,
+	}
+	if err := app.Store.InsertMessage(ctx, m, &domain.MessageBody{MessageID: m.ID}, nil); err != nil {
+		t.Fatal(err)
+	}
+	card := &domain.ActionCard{
+		ID: "card_1", UserID: application.DefaultUserID, MessageID: m.ID,
+		Type: "approval", Title: "계약서 승인", Detail: "9월 1일까지 회신",
+		Due: "2026-09-01", Status: domain.ActionCardPending, Confidence: 0.9,
+	}
+	if err := app.Store.CreateActionCard(ctx, card); err != nil {
+		t.Fatal(err)
+	}
+	h := New(app, "").Handler()
+
+	body := do(t, h, http.MethodGet, "/ui/cards", nil, nil).Body.String()
+	for _, want := range []string{"계약서 승인", "9월 1일까지 회신", "2026-09-01",
+		`href="/ui/messages/msg_card"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("card list missing %q", want)
+		}
+	}
+	// The list must let the user progress a card, not just look at it.
+	if !strings.Contains(body, `value="done"`) {
+		t.Fatal("no way to progress a card from the list")
+	}
+
+	rec := do(t, h, http.MethodPost, "/ui/cards/card_1/status",
+		url.Values{"status": {"done"}, "filter": {"pending"}}, nil)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status update returned %d", rec.Code)
+	}
+	// The active filter survives the round trip, so the user is not thrown back
+	// to an unfiltered list after every action.
+	if loc := rec.Header().Get("Location"); !strings.Contains(loc, "status=pending") {
+		t.Fatalf("filter lost after updating: %q", loc)
+	}
+	got, err := app.Store.GetActionCard(ctx, application.DefaultUserID, "card_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != domain.ActionCardDone {
+		t.Fatalf("card status = %q, want done", got.Status)
+	}
+
+	// Filtering shows only the matching state.
+	pending := do(t, h, http.MethodGet, "/ui/cards?status=pending", nil, nil).Body.String()
+	if strings.Contains(pending, "계약서 승인") {
+		t.Error("a completed card still appears under the pending filter")
+	}
+	done := do(t, h, http.MethodGet, "/ui/cards?status=done", nil, nil).Body.String()
+	if !strings.Contains(done, "계약서 승인") {
+		t.Error("the completed card is missing from the done filter")
+	}
+
+	// And the message page offers extraction, so cards have a way to exist.
+	msg := do(t, h, http.MethodGet, "/ui/messages/msg_card", nil, nil).Body.String()
+	if !strings.Contains(msg, `action="/ui/messages/msg_card/cards"`) {
+		t.Fatal("the message page does not offer card extraction")
+	}
+}

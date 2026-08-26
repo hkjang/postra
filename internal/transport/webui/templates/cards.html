@@ -1,0 +1,55 @@
+{{define "title"}}할 일 카드{{end}}
+{{define "content"}}
+<h1>할 일 카드 <span class="small muted">메일에서 뽑아낸 처리 항목</span></h1>
+
+{{if .Done}}<div class="card" style="padding:.7rem 1rem;margin-bottom:.7rem">
+  <span class="ok">{{.Done}}건을 추출했습니다.</span></div>{{end}}
+
+{{$st := .Status}}
+<nav class="chips" aria-label="상태 필터">
+  <a class="chip{{if eq $st ""}} on{{end}}" href="/ui/cards">전체</a>
+  <a class="chip{{if eq $st "pending"}} on{{end}}" href="/ui/cards?status=pending">대기</a>
+  <a class="chip{{if eq $st "approved"}} on{{end}}" href="/ui/cards?status=approved">승인</a>
+  <a class="chip{{if eq $st "done"}} on{{end}}" href="/ui/cards?status=done">완료</a>
+  <a class="chip{{if eq $st "rejected"}} on{{end}}" href="/ui/cards?status=rejected">보류</a>
+</nav>
+
+{{if .Cards}}
+<div class="card"><table>
+  <thead><tr><th>항목</th><th>유형·기한</th><th>상태</th><th>처리</th></tr></thead>
+  <tbody>{{range .Cards}}<tr>
+    <td>
+      <b>{{.Title}}</b>
+      {{if .Detail}}<div class="small muted">{{.Detail}}</div>{{end}}
+      <div class="small"><a href="/ui/messages/{{.MessageID}}">원본 메일 →</a></div>
+    </td>
+    <td class="small">
+      <span class="tag">{{.Type}}</span>
+      {{if .Due}}<div>기한 {{.Due}}</div>{{end}}
+      {{if .Assignee}}<div class="muted">{{.Assignee}}</div>{{end}}
+    </td>
+    <td class="small">
+      {{if eq .Status "done"}}<span class="ok">완료</span>
+      {{else if eq .Status "approved"}}<span class="prio prio-high">승인</span>
+      {{else if eq .Status "rejected"}}<span class="muted">보류</span>
+      {{else if eq .Status "exported"}}<span class="tag">내보냄</span>
+      {{else}}<span class="prio prio-normal">대기</span>{{end}}
+    </td>
+    <td>
+      <form method="post" action="/ui/cards/{{.ID}}/status" class="actions" style="margin-top:0">
+        <input type="hidden" name="filter" value="{{$st}}">
+        <button class="ghost" type="submit" name="status" value="approved">승인</button>
+        <button class="ghost" type="submit" name="status" value="done">완료</button>
+        <button class="ghost" type="submit" name="status" value="rejected">보류</button>
+      </form>
+    </td>
+  </tr>{{end}}</tbody>
+</table></div>
+<p class="small muted">카드는 AI가 메일에서 추출한 제안입니다. 기한과 담당자는 메일에 적힌 내용을 그대로 옮긴 것이므로 처리 전에 확인하세요.</p>
+{{else}}
+<div class="card empty">
+  <p class="muted">{{if $st}}해당 상태의 카드가 없습니다.{{else}}아직 추출된 카드가 없습니다. 메일 화면에서 “할 일 카드 추출”을 눌러보세요.{{end}}</p>
+  <a class="btn ghost" href="/ui/">받은편지함</a>
+</div>
+{{end}}
+{{end}}

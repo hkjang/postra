@@ -73,6 +73,7 @@
   <form method="post" action="/ui/messages/{{$m.ID}}/analyze"><input type="hidden" name="type" value="entities"><button class="ghost" type="submit">인물·금액 추출</button></form>
   <form method="post" action="/ui/messages/{{$m.ID}}/analyze"><input type="hidden" name="type" value="phishing"><button class="ghost" type="submit">피싱 점검</button></form>
   <a class="btn ghost" href="/ui/messages/{{$m.ID}}/calendar.ics">📅 일정 추출 (.ics)</a>
+  <form method="post" action="/ui/messages/{{$m.ID}}/cards"><button class="ghost" type="submit">할 일 카드 추출</button></form>
 </div>
 <h2>답장</h2>
 <div class="card">

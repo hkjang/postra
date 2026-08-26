@@ -172,7 +172,7 @@ func parseTemplates() map[string]*template.Template {
 	pages := []string{"search", "message", "draft", "send", "sent", "login", "error",
 		"accounts", "account_new", "account", "compose", "analysis", "job",
 		"setup", "admin_users", "admin_settings", "mcp_keys"}
-	pages = append(pages, "admin_ai", "admin_incidents", "digest", "rules", "thread", "outbound")
+	pages = append(pages, "admin_ai", "admin_incidents", "digest", "rules", "thread", "outbound", "cards")
 	out := make(map[string]*template.Template, len(pages))
 	for _, p := range pages {
 		t := template.Must(template.New("layout").Funcs(funcs).
@@ -219,6 +219,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /ui/admin/vector/test", s.gate(s.adminVectorTest))
 	mux.HandleFunc("POST /ui/messages/batch", s.gate(s.messagesBatch))
 	mux.HandleFunc("POST /ui/messages/{id}/action", s.gate(s.messageAction))
+	mux.HandleFunc("GET /ui/cards", s.gate(s.cards))
+	mux.HandleFunc("POST /ui/cards/{id}/status", s.gate(s.cardStatus))
+	mux.HandleFunc("POST /ui/messages/{id}/cards", s.gate(s.messageCardsExtract))
 	mux.HandleFunc("GET /ui/outbound", s.gate(s.outbound))
 	mux.HandleFunc("GET /ui/digest", s.gate(s.digest))
 	mux.HandleFunc("GET /ui/rules", s.gate(s.rules))
@@ -1295,6 +1298,40 @@ func (s *Server) ruleDelete(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/ui/rules", http.StatusSeeOther)
 }
 
+// cards lists the actionable items extracted from mail. Extraction, status and
+// export have existed since the feature shipped, reachable only over CLI and
+// MCP — in the browser the cards were invisible, so nothing could be acted on.
+func (s *Server) cards(w http.ResponseWriter, r *http.Request) {
+	status := r.URL.Query().Get("status")
+	list, err := s.app.ListActionCards(r.Context(), status, 100)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	s.render(w, "cards", http.StatusOK, map[string]any{
+		"Cards": list, "Status": status, "Done": r.URL.Query().Get("done"),
+	})
+}
+
+func (s *Server) cardStatus(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.app.SetActionCardStatus(r.Context(), r.PathValue("id"), r.FormValue("status")); err != nil {
+		s.fail(w, err)
+		return
+	}
+	http.Redirect(w, r, "/ui/cards?status="+url.QueryEscape(r.FormValue("filter")), http.StatusSeeOther)
+}
+
+// messageCardsExtract pulls action items out of one message and shows them in
+// the card list, so extraction has somewhere to land.
+func (s *Server) messageCardsExtract(w http.ResponseWriter, r *http.Request) {
+	cards, err := s.app.ExtractActionCards(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	http.Redirect(w, r, fmt.Sprintf("/ui/cards?done=%d", len(cards)), http.StatusSeeOther)
+}
+
 // outbound shows what became of recent sends. A temporary SMTP failure parks a
 // message in the retry queue; without this the sender saw a success page and
 // had no way to learn the mail had not actually gone out.
@@ -1656,6 +1693,8 @@ func navSection(page string) string {
 		return "compose"
 	case "outbound":
 		return "outbound"
+	case "cards":
+		return "cards"
 	case "digest", "rules", "mcp_keys", "admin_ai", "admin_incidents":
 		return page
 	case "accounts", "account", "account_new":
