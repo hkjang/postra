@@ -12,8 +12,8 @@
 </div>
 {{else}}
 <form class="search" method="get" action="/ui/">
-  <input type="text" name="q" value="{{.Query}}" placeholder="제목·본문·보낸이 검색…" autofocus>
-  <select name="account">
+  <input type="text" name="q" value="{{.Query}}" placeholder="제목·본문·보낸이 검색…" aria-label="메일 검색" autofocus>
+  <select name="account" aria-label="계정 선택">
     <option value="">모든 계정</option>
     {{range .Accounts}}<option value="{{.ID}}" {{if eq $.AccountID .ID}}selected{{end}}>{{.Name}} · {{.Email}}</option>{{end}}
   </select>
@@ -21,13 +21,13 @@
   <button type="submit">검색</button>
 </form>
 {{$q := .Query}}{{$acc := .AccountID}}
-<div class="chips">
+<nav class="chips" aria-label="AI 우선순위 필터">
   <span class="small muted">AI 우선순위</span>
   <a class="chip{{if eq .Label ""}} on{{end}}" href="/ui/?q={{$q}}&account={{$acc}}">전체</a>
   <a class="chip prio-urgent{{if eq .Label "ai/urgent"}} on{{end}}" href="/ui/?q={{$q}}&account={{$acc}}&label=ai%2Furgent">긴급</a>
   <a class="chip prio-high{{if eq .Label "ai/high"}} on{{end}}" href="/ui/?q={{$q}}&account={{$acc}}&label=ai%2Fhigh">높음</a>
   <a class="chip{{if eq .Label "ai/reply-needed"}} on{{end}}" href="/ui/?q={{$q}}&account={{$acc}}&label=ai%2Freply-needed">답장 필요</a>
-</div>
+</nav>
 {{if .BatchDone}}<div class="card" style="padding:.7rem 1rem;margin-bottom:.7rem">
   <span class="ok">{{.BatchDone}}건 처리했습니다.</span>
   {{if ne .BatchFailed "0"}} <span class="err">{{.BatchFailed}}건 실패</span>{{end}}

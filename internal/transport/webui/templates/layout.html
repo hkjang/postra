@@ -19,6 +19,12 @@ header .brand{color:var(--fg);font-size:1.08rem;display:flex;align-items:center;
 header nav{display:flex;gap:.25rem;font-weight:560;height:100%;align-items:center}
 header nav a{color:var(--muted);padding:.55rem .75rem;border-radius:8px;transition:.16s ease}
 header nav a:hover{color:var(--accent);background:var(--accent-soft)}
+header nav a.on{color:var(--accent);background:var(--accent-soft);font-weight:700}
+/* Keyboard users need to see where they are; the ring is drawn only for
+   keyboard focus so it never appears on a mouse click. */
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
+.skip-link{position:absolute;left:-9999px;top:0;z-index:50;background:var(--card);color:var(--accent);padding:.6rem .9rem;border:1px solid var(--accent);border-radius:0 0 9px 0;font-weight:650}
+.skip-link:focus{left:0}
 .header-logout{margin-left:auto}.header-logout button{padding:.45rem .75rem}
 main{max-width:1180px;margin:2rem auto;padding:0 1.5rem}
 .auth-main{max-width:none;margin:0;padding:0;min-height:100vh}
@@ -138,18 +144,20 @@ button.ghost,.btn.ghost{background:var(--card);color:var(--accent);border:1px so
 </style>
 </head>
 <body>
-{{if not .AuthPage}}<header class="app-header">
+{{if not .AuthPage}}<a class="skip-link" href="#main">본문으로 건너뛰기</a>
+<header class="app-header">
   <a href="/ui/" class="brand"><img src="/ui/static/logo.png" alt="Postra Logo" class="brand-mark-img"><span>Postra</span><span class="tag">v{{.Version}}</span></a>
-  <nav>
-    <a href="/ui/">받은편지함</a>
-    <a href="/ui/compose">새 메일</a>
-    <a href="/ui/digest">브리핑</a>
-    <a href="/ui/rules">규칙</a>
-    <a href="/ui/accounts">계정</a>
-    <a href="/ui/mcp-keys">MCP Key</a>
-    <a href="/ui/admin/ai">AI</a>
-    <a href="/ui/admin/users">관리</a>
-    <a href="/ui/admin/incidents">오류/장애</a>
+  <nav aria-label="주요 메뉴">
+    {{$nav := .Nav}}
+    <a href="/ui/"{{if eq $nav "inbox"}} class="on" aria-current="page"{{end}}>받은편지함</a>
+    <a href="/ui/compose"{{if eq $nav "compose"}} class="on" aria-current="page"{{end}}>새 메일</a>
+    <a href="/ui/digest"{{if eq $nav "digest"}} class="on" aria-current="page"{{end}}>브리핑</a>
+    <a href="/ui/rules"{{if eq $nav "rules"}} class="on" aria-current="page"{{end}}>규칙</a>
+    <a href="/ui/accounts"{{if eq $nav "accounts"}} class="on" aria-current="page"{{end}}>계정</a>
+    <a href="/ui/mcp-keys"{{if eq $nav "mcp_keys"}} class="on" aria-current="page"{{end}}>MCP Key</a>
+    <a href="/ui/admin/ai"{{if eq $nav "admin_ai"}} class="on" aria-current="page"{{end}}>AI</a>
+    <a href="/ui/admin/users"{{if eq $nav "admin"}} class="on" aria-current="page"{{end}}>관리</a>
+    <a href="/ui/admin/incidents"{{if eq $nav "admin_incidents"}} class="on" aria-current="page"{{end}}>오류/장애</a>
   </nav>
   <div id="live-sync-badge" style="display:none;margin-left:auto;margin-right:1rem;font-size:0.825rem;align-items:center;gap:0.4rem;padding:0.2rem 0.6rem;background:rgba(59,130,246,0.1);border:1px solid var(--accent,#3b82f6);border-radius:1rem;color:var(--accent,#3b82f6)">
     <span>🔄</span>
@@ -159,7 +167,7 @@ button.ghost,.btn.ghost{background:var(--card);color:var(--accent);border:1px so
     <button type="submit" class="ghost">로그아웃</button>
   </form>
 </header>{{end}}
-<main{{if .AuthPage}} class="auth-main"{{end}}>
+<main id="main"{{if .AuthPage}} class="auth-main"{{end}}>
 {{block "content" .}}{{end}}
 </main>
 {{if not .AuthPage}}

@@ -351,3 +351,56 @@ func TestLoneMessageHasNoThreadLink(t *testing.T) {
 		t.Fatal("a single-message thread should not offer a conversation link")
 	}
 }
+
+// The header should say where the reader is — both visually and to a screen
+// reader — and detail pages belong to the section they were reached from.
+func TestNavigationMarksCurrentSection(t *testing.T) {
+	if got := navSection("message"); got != "inbox" {
+		t.Errorf("a message belongs to the inbox, got %q", got)
+	}
+	if got := navSection("thread"); got != "inbox" {
+		t.Errorf("a conversation belongs to the inbox, got %q", got)
+	}
+	if got := navSection("draft"); got != "compose" {
+		t.Errorf("a draft belongs to composing, got %q", got)
+	}
+	if got := navSection("account_new"); got != "accounts" {
+		t.Errorf("adding an account belongs to accounts, got %q", got)
+	}
+	if got := navSection("login"); got != "" {
+		t.Errorf("pages outside the app shell mark nothing, got %q", got)
+	}
+
+	app, _ := newTestApp(t)
+	ctx := application.WithActor(context.Background(), "test")
+	now := time.Now().Unix()
+	m := &domain.Message{
+		ID: "msg_nav", UserID: application.DefaultUserID, AccountID: "acc_n", UIDL: "u-nav",
+		Subject: "탐색", From: domain.Address{Email: "x@corp.local"},
+		RawHash: "h-nav", RawURI: "mem://nav", Date: now, CreatedAt: now,
+	}
+	if err := app.Store.InsertMessage(ctx, m, &domain.MessageBody{MessageID: m.ID, TextBody: "본문"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	h := New(app, "").Handler()
+
+	// Reading a message still shows the inbox as the current section.
+	body := do(t, h, http.MethodGet, "/ui/messages/msg_nav", nil, nil).Body.String()
+	if !strings.Contains(body, `<a href="/ui/" class="on" aria-current="page">받은편지함</a>`) {
+		t.Fatal("the inbox is not marked current while reading a message")
+	}
+	// Exactly one entry is current, or the header points two ways at once.
+	if n := strings.Count(body, `aria-current="page"`); n != 1 {
+		t.Fatalf("%d nav entries marked current, want 1", n)
+	}
+	// Keyboard users need a way past the header.
+	if !strings.Contains(body, `class="skip-link" href="#main"`) || !strings.Contains(body, `<main id="main"`) {
+		t.Fatal("no skip-to-content link targeting the main landmark")
+	}
+
+	// A different section marks itself, not the inbox.
+	rules := do(t, h, http.MethodGet, "/ui/rules", nil, nil).Body.String()
+	if !strings.Contains(rules, `<a href="/ui/rules" class="on" aria-current="page">규칙</a>`) {
+		t.Fatal("the rules page does not mark itself current")
+	}
+}

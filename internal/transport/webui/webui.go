@@ -1583,6 +1583,25 @@ func (s *Server) sendSubmit(w http.ResponseWriter, r *http.Request) {
 
 // ---------- render helpers ----------
 
+// navSection maps a page to the navigation entry it belongs under, so the
+// header can show where the reader is. Detail pages belong to the section they
+// were reached from — a message is part of the inbox, a draft part of composing.
+func navSection(page string) string {
+	switch page {
+	case "search", "message", "thread", "analysis", "job":
+		return "inbox"
+	case "compose", "draft", "send", "sent":
+		return "compose"
+	case "digest", "rules", "mcp_keys", "admin_ai", "admin_incidents":
+		return page
+	case "accounts", "account", "account_new":
+		return "accounts"
+	case "admin_users", "admin_settings":
+		return "admin"
+	}
+	return ""
+}
+
 func (s *Server) render(w http.ResponseWriter, page string, code int, data map[string]any) {
 	t, ok := s.tpl[page]
 	if !ok {
@@ -1593,6 +1612,7 @@ func (s *Server) render(w http.ResponseWriter, page string, code int, data map[s
 		data = map[string]any{}
 	}
 	data["Version"] = build.Version
+	data["Nav"] = navSection(page)
 	if page == "login" || page == "setup" {
 		data["AuthPage"] = true
 	}
