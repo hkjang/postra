@@ -672,3 +672,50 @@ func TestDraftBodyAuthorship(t *testing.T) {
 		t.Fatalf("arbitrary author accepted: %q", dv.Version.Author)
 	}
 }
+
+// The briefing and the RAG evidence set both read many messages to keep a few
+// hundred characters of each. A body past the fetch cap must be summarized
+// from its headers rather than pulled into memory whole.
+func TestDigestCapsOversizedBodies(t *testing.T) {
+	app, _, _, ai := newTestApp(t)
+	ai.response = `{"headline":"요약","needs_reply":[],"deadlines":[],"fyi":[],"volume_note":"2건"}`
+	ctx := WithActor(context.Background(), "test")
+	acc := mustAccount(t, app)
+	now := time.Now().Unix()
+
+	normal := &domain.Message{
+		ID: "msg_norm", UserID: DefaultUserID, AccountID: acc.ID, UIDL: "u-n",
+		Subject: "짧은 메일", From: domain.Address{Email: "a@x"},
+		RawHash: "h-n", RawURI: "mem://n", Date: now, CreatedAt: now,
+	}
+	if err := app.Store.InsertMessage(ctx, normal,
+		&domain.MessageBody{MessageID: normal.ID, TextBody: "정상 본문입니다."}, nil); err != nil {
+		t.Fatal(err)
+	}
+	huge := &domain.Message{
+		ID: "msg_huge", UserID: DefaultUserID, AccountID: acc.ID, UIDL: "u-h",
+		Subject: "거대 메일", From: domain.Address{Email: "b@x"},
+		RawHash: "h-h", RawURI: "mem://h", Date: now, CreatedAt: now,
+	}
+	if err := app.Store.InsertMessage(ctx, huge,
+		&domain.MessageBody{MessageID: huge.ID, TextBody: "거대표식" + strings.Repeat("가", 400000)}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := app.GenerateDailyDigest(ctx, "", 24); err != nil {
+		t.Fatal(err)
+	}
+	prompt := ai.lastRequest.Untrusted
+	// Both messages are listed, so the count and headlines stay honest.
+	for _, want := range []string{"msg_norm", "msg_huge", "거대 메일"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("briefing context missing %q", want)
+		}
+	}
+	if !strings.Contains(prompt, "정상 본문입니다") {
+		t.Error("a normal body should still reach the briefing")
+	}
+	if strings.Contains(prompt, "거대표식") {
+		t.Error("an oversized body was loaded into the briefing instead of being capped")
+	}
+}

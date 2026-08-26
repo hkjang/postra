@@ -2,13 +2,13 @@
 
 Docker 데몬 없이 빌드한, 오프라인망에서 바로 사용 가능한 산출물입니다.
 
-> **v0.17.6**: 대화 보기 성능 개선 — 접혀 있는 이전 메일까지 본문을 모두 불러와 브라우저로 보내던 동작을 고쳐, 펼쳐진 최근 메일의 본문만 조회합니다. 긴 대화에서 페이지 크기와 조회 부담이 크게 줄어듭니다.
+> **v0.17.7**: 브리핑·질의응답 조회 개선 — 최대 60통의 본문을 메일마다 개별 조회해 전부 불러온 뒤 일부만 쓰던 동작을, 한 번의 크기 제한 조회로 바꿨습니다. 매우 긴 본문은 제목 정보만 사용해 메모리 사용을 제한합니다.
 
 | 파일 | 설명 |
 | --- | --- |
-| `postra-0.17.6-linux-amd64-image.tar.gz` | `docker load` 로 불러오는 컨테이너 이미지 (`postra:0.17.6`, linux/amd64) |
-| `postra-0.17.6-linux-amd64` | 정적 링크 단일 실행 파일 (CGO 없음, 의존성 없음) |
-| `postra-0.17.6-sbom.cdx.json` | CycloneDX 소프트웨어 자재명세서 |
+| `postra-0.17.7-linux-amd64-image.tar.gz` | `docker load` 로 불러오는 컨테이너 이미지 (`postra:0.17.7`, linux/amd64) |
+| `postra-0.17.7-linux-amd64` | 정적 링크 단일 실행 파일 (CGO 없음, 의존성 없음) |
+| `postra-0.17.7-sbom.cdx.json` | CycloneDX 소프트웨어 자재명세서 |
 | `SHA256SUMS.txt` | 모든 릴리즈 파일의 SHA-256 체크섬 |
 
 이미지는 순수 Go 정적 바이너리 + CA 인증서 + 최소 rootfs 로만 구성됩니다(scratch 기반).
@@ -17,7 +17,7 @@ Docker 데몬 없이 빌드한, 오프라인망에서 바로 사용 가능한 �
 
 ```bash
 # 폐쇄망 호스트로 tar.gz 를 옮긴 뒤:
-docker load -i postra-0.17.6-linux-amd64-image.tar.gz     # gzip 자동 인식
+docker load -i postra-0.17.7-linux-amd64-image.tar.gz     # gzip 자동 인식
 docker image ls | grep postra
 
 # 오프라인망(평문 POP3/SMTP 허용) 실행 예시
@@ -27,7 +27,7 @@ docker run -d --name postra \
   -e POSTRA_HTTP_ADDR=0.0.0.0:8480 \
   -e POSTRA_ALLOW_INSECURE_MAIL=true \
   -e POSTRA_API_TOKEN=change-me \
-  postra:0.17.6
+  postra:0.17.7
 
 # CLI 사용 (같은 컨테이너)
 docker exec -it postra postra account list
@@ -39,9 +39,9 @@ REST API는 `/api`, Web UI는 `/ui`, MCP Streamable HTTP는 `/mcp`이며 모두 
 ## 2) 바이너리 단독 실행 (Docker 불필요)
 
 ```bash
-chmod +x postra-0.17.6-linux-amd64
-./postra-0.17.6-linux-amd64 init
-POSTRA_BOOTSTRAP_ADMIN_PASSWORD='replace-me' ./postra-0.17.6-linux-amd64 serve
+chmod +x postra-0.17.7-linux-amd64
+./postra-0.17.7-linux-amd64 init
+POSTRA_BOOTSTRAP_ADMIN_PASSWORD='replace-me' ./postra-0.17.7-linux-amd64 serve
 ```
 
 ## 데이터 / 비밀값
@@ -55,6 +55,6 @@ Docker 없이 이미지를 다시 만들려면:
 
 ```bash
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o postra ./cmd/postra
-go run scripts/mkimage.go postra postra-image.tar postra:0.17.6
+go run scripts/mkimage.go postra postra-image.tar postra:0.17.7
 gzip -9 postra-image.tar
 ```

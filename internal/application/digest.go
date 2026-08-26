@@ -36,15 +36,23 @@ func (a *App) GenerateDailyDigest(ctx context.Context, accountID string, hours i
 	if len(res.Messages) == 0 {
 		return nil, userErrf("최근 %d시간 동안 브리핑할 메일이 없습니다", hours)
 	}
+	// One batched, size-capped fetch for the whole briefing. Reading each body
+	// separately meant a query per message and loading every body in full to
+	// keep 800 characters of it; a message whose body exceeds the cap is
+	// summarized from its headers rather than pulling megabytes into the prompt.
+	ids := make([]string, 0, len(res.Messages))
+	for _, m := range res.Messages {
+		ids = append(ids, m.ID)
+	}
+	bodies, err := a.Store.BodyTextBatch(ctx, userIDFrom(ctx), ids)
+	if err != nil {
+		slog.Warn("digest: body fetch failed, briefing from headers only", "err", err)
+		bodies = map[string]string{}
+	}
 	var sb strings.Builder
 	for _, m := range res.Messages {
-		body, _ := a.Store.GetBody(ctx, userIDFrom(ctx), m.ID)
-		text := ""
-		if body != nil {
-			text = truncateRunes(body.TextBody, 800)
-		}
 		fmt.Fprintf(&sb, "[%s] Subject: %s | From: %s | Date: %s\n%s\n\n",
-			m.ID, m.Subject, m.From.Email, fmtUnix(m.Date), text)
+			m.ID, m.Subject, m.From.Email, fmtUnix(m.Date), truncateRunes(bodies[m.ID], 800))
 	}
 	return a.runAnalysis(ctx, "daily_digest", "digest",
 		fmt.Sprintf("%dh", hours), fmt.Sprintf("Period: last %d hours, %d messages.", hours, len(res.Messages)), sb.String())

@@ -352,13 +352,19 @@ func (a *App) AnswerQuestion(ctx context.Context, question, accountID string) (*
 	}
 	var sb strings.Builder
 	allowed := make(map[string]bool, len(msgs))
+	ids := make([]string, 0, len(msgs))
+	for _, m := range msgs {
+		ids = append(ids, m.ID)
+	}
+	// One batched, size-capped fetch: the evidence set is read in full only to
+	// keep a couple of thousand characters of each message.
+	bodies, err := a.Store.BodyTextBatch(ctx, userIDFrom(ctx), ids)
+	if err != nil {
+		bodies = map[string]string{}
+	}
 	for _, m := range msgs {
 		allowed[m.ID] = true
-		body, _ := a.Store.GetBody(ctx, userIDFrom(ctx), m.ID)
-		text := ""
-		if body != nil {
-			text = truncateRunes(body.TextBody, 2500)
-		}
+		text := truncateRunes(bodies[m.ID], 2500)
 		if m.HasAttachments {
 			text += a.AttachmentsTextForIndex(ctx, m.ID, 1500)
 		}
