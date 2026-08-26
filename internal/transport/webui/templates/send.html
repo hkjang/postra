@@ -6,6 +6,19 @@
 
 {{range $p.Warnings}}<div class="warn">⚠ {{.}}</div>{{end}}
 
+{{if $p.DLPFindings}}
+<div class="card{{if $p.DLPBlocked}} dlp-blocked{{end}}">
+  <h2 style="margin-top:0">{{if $p.DLPBlocked}}🚫 DLP 정책에 의해 발송이 차단됩니다{{else}}⚠ 민감 정보가 감지되었습니다{{end}}</h2>
+  <p class="small muted" style="margin:.2rem 0 .8rem">외부 도메인으로 보내는 메일에서 다음이 발견되었습니다. 초안에서 해당 내용을 제거한 뒤 다시 시도하세요.</p>
+  <table>
+    <thead><tr><th>유형</th><th>내용</th><th>건수</th></tr></thead>
+    <tbody>{{range $p.DLPFindings}}<tr>
+      <td><b>{{.Type}}</b></td><td class="small">{{if .Term}}{{.Term}}{{else}}—{{end}}</td><td class="small">{{.Count}}</td>
+    </tr>{{end}}</tbody>
+  </table>
+</div>
+{{end}}
+
 <div class="card">
   <dl class="kv">
     <dt>보낸이</dt><dd>{{$p.From}}</dd>
@@ -27,6 +40,11 @@
     <button type="submit" class="danger">발송 확정</button>
     <a class="btn ghost" href="/ui/drafts/{{$p.DraftID}}/send">취소</a>
   </form>
+{{else if $p.DLPBlocked}}
+  <div class="actions">
+    <a class="btn" href="/ui/drafts/{{$p.DraftID}}">초안 수정하기</a>
+  </div>
+  <p class="small muted">DLP 정책이 <b>차단</b>으로 설정되어 있어 이 내용으로는 발송할 수 없습니다. 위 항목을 초안에서 제거하면 승인 요청이 가능합니다.</p>
 {{else}}
   <form method="post" action="/ui/drafts/{{$p.DraftID}}/send" class="actions">
     <input type="hidden" name="action" value="approve">

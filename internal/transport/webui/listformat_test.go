@@ -414,3 +414,62 @@ func TestNavigationMarksCurrentSection(t *testing.T) {
 		t.Fatal("the rules page does not mark itself current")
 	}
 }
+
+// DLP is enforced at send time so an approval cannot be edited around. But the
+// preview already knows the send is blocked, so it must say so up front rather
+// than walking the user through approval to fail on the final click.
+func TestSendPreviewSurfacesDLPBlock(t *testing.T) {
+	app, _ := newTestApp(t)
+	app.Cfg.Send.DLPPolicy = "block"
+	app.Cfg.Send.DLPKeywords = []string{"대외비"}
+	ctx := application.WithActor(context.Background(), "test")
+
+	acc, err := app.CreateAccount(ctx, application.CreateAccountInput{
+		Name: "회사", Email: "me@corp.local",
+		POP3Host: "127.0.0.1", POP3Port: 1100, POP3Security: "none", POP3Username: "me",
+		SMTPHost: "127.0.0.1", SMTPPort: 1025, SMTPSecurity: "none", SMTPAuth: "none",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dv, err := app.CreateDraft(ctx, application.CreateDraftInput{
+		AccountID: acc.ID, Kind: "new",
+		To:      []string{"outsider@other.example"}, // external domain triggers DLP
+		Subject: "자료 전달", Body: "대외비 문서를 첨부합니다.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(app, "").Handler()
+
+	body := do(t, h, http.MethodGet, "/ui/drafts/"+dv.Draft.ID+"/send", nil, nil).Body.String()
+	if !strings.Contains(body, "DLP 정책에 의해 발송이 차단됩니다") {
+		t.Fatal("the preview does not say the send is blocked")
+	}
+	if !strings.Contains(body, "대외비") {
+		t.Fatal("the preview does not show what triggered the block")
+	}
+	// The approval button must not be offered when it cannot succeed.
+	if strings.Contains(body, `value="approve"`) {
+		t.Fatal("an approval that cannot succeed is still offered")
+	}
+	if !strings.Contains(body, "초안 수정하기") {
+		t.Fatal("no route back to fixing the draft")
+	}
+
+	// With the offending term removed, approval becomes available again.
+	if _, err := app.UpdateDraft(ctx, application.UpdateDraftInput{
+		DraftID: dv.Draft.ID, Body: strPtr("일반 문서를 첨부합니다."),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	body = do(t, h, http.MethodGet, "/ui/drafts/"+dv.Draft.ID+"/send", nil, nil).Body.String()
+	if !strings.Contains(body, `value="approve"`) {
+		t.Fatal("a clean draft should be approvable")
+	}
+	if strings.Contains(body, "DLP 정책에 의해 발송이 차단됩니다") {
+		t.Fatal("the block notice survived the fix")
+	}
+}
+
+func strPtr(s string) *string { return &s }

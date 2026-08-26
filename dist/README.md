@@ -2,13 +2,13 @@
 
 Docker 데몬 없이 빌드한, 오프라인망에서 바로 사용 가능한 산출물입니다.
 
-> **v0.17.8**: PostgreSQL 검증 — 이번 주기에 추가된 비밀·객체·장애기록·트리아지·본문 조회 등 PostgreSQL 전용 SQL을 실제 데이터베이스로 검증하는 통합 테스트를 추가했습니다. (`POSTRA_TEST_PG` 설정 시 실행, 미설정 시 자동 건너뜀)
+> **v0.17.9**: 발송 승인 화면 개선 — DLP 정책이 차단으로 설정된 경우, 승인 요청과 발송 확정을 모두 거친 뒤에야 실패하던 동작을 고쳐 미리보기에서 즉시 차단 사유(감지 항목·건수)를 표시하고 초안 수정으로 안내합니다. 발송 시점 재검사는 그대로 유지됩니다.
 
 | 파일 | 설명 |
 | --- | --- |
-| `postra-0.17.8-linux-amd64-image.tar.gz` | `docker load` 로 불러오는 컨테이너 이미지 (`postra:0.17.8`, linux/amd64) |
-| `postra-0.17.8-linux-amd64` | 정적 링크 단일 실행 파일 (CGO 없음, 의존성 없음) |
-| `postra-0.17.8-sbom.cdx.json` | CycloneDX 소프트웨어 자재명세서 |
+| `postra-0.17.9-linux-amd64-image.tar.gz` | `docker load` 로 불러오는 컨테이너 이미지 (`postra:0.17.9`, linux/amd64) |
+| `postra-0.17.9-linux-amd64` | 정적 링크 단일 실행 파일 (CGO 없음, 의존성 없음) |
+| `postra-0.17.9-sbom.cdx.json` | CycloneDX 소프트웨어 자재명세서 |
 | `SHA256SUMS.txt` | 모든 릴리즈 파일의 SHA-256 체크섬 |
 
 이미지는 순수 Go 정적 바이너리 + CA 인증서 + 최소 rootfs 로만 구성됩니다(scratch 기반).
@@ -17,7 +17,7 @@ Docker 데몬 없이 빌드한, 오프라인망에서 바로 사용 가능한 �
 
 ```bash
 # 폐쇄망 호스트로 tar.gz 를 옮긴 뒤:
-docker load -i postra-0.17.8-linux-amd64-image.tar.gz     # gzip 자동 인식
+docker load -i postra-0.17.9-linux-amd64-image.tar.gz     # gzip 자동 인식
 docker image ls | grep postra
 
 # 오프라인망(평문 POP3/SMTP 허용) 실행 예시
@@ -27,7 +27,7 @@ docker run -d --name postra \
   -e POSTRA_HTTP_ADDR=0.0.0.0:8480 \
   -e POSTRA_ALLOW_INSECURE_MAIL=true \
   -e POSTRA_API_TOKEN=change-me \
-  postra:0.17.8
+  postra:0.17.9
 
 # CLI 사용 (같은 컨테이너)
 docker exec -it postra postra account list
@@ -39,9 +39,9 @@ REST API는 `/api`, Web UI는 `/ui`, MCP Streamable HTTP는 `/mcp`이며 모두 
 ## 2) 바이너리 단독 실행 (Docker 불필요)
 
 ```bash
-chmod +x postra-0.17.8-linux-amd64
-./postra-0.17.8-linux-amd64 init
-POSTRA_BOOTSTRAP_ADMIN_PASSWORD='replace-me' ./postra-0.17.8-linux-amd64 serve
+chmod +x postra-0.17.9-linux-amd64
+./postra-0.17.9-linux-amd64 init
+POSTRA_BOOTSTRAP_ADMIN_PASSWORD='replace-me' ./postra-0.17.9-linux-amd64 serve
 ```
 
 ## 데이터 / 비밀값
@@ -55,6 +55,6 @@ Docker 없이 이미지를 다시 만들려면:
 
 ```bash
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o postra ./cmd/postra
-go run scripts/mkimage.go postra postra-image.tar postra:0.17.8
+go run scripts/mkimage.go postra postra-image.tar postra:0.17.9
 gzip -9 postra-image.tar
 ```
