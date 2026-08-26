@@ -1,8 +1,30 @@
 {{define "title"}}메일{{end}}
 {{define "content"}}
 {{$m := .View.Message}}
-<p class="small"><a href="/ui/" class="muted">← 검색</a></p>
+<p class="small"><a href="/ui/" class="muted">← 받은편지함</a></p>
 <h1>{{if $m.Subject}}{{$m.Subject}}{{else}}(제목 없음){{end}}</h1>
+<div class="msgbar">
+  {{if $m.IsImportant}}<span class="prio prio-high">중요</span>{{end}}
+  {{if $m.IsArchived}}<span class="tag">보관됨</span>{{end}}
+  <form method="post" action="/ui/messages/{{$m.ID}}/action">
+    {{if $m.IsImportant}}
+      <input type="hidden" name="action" value="unmark_important"><button class="ghost" type="submit">중요 해제</button>
+    {{else}}
+      <input type="hidden" name="action" value="mark_important"><button class="ghost" type="submit">중요 표시</button>
+    {{end}}
+  </form>
+  <form method="post" action="/ui/messages/{{$m.ID}}/action">
+    {{if $m.IsArchived}}
+      <input type="hidden" name="action" value="unarchive"><button class="ghost" type="submit">보관 해제</button>
+    {{else}}
+      <input type="hidden" name="action" value="archive"><button class="ghost" type="submit">보관</button>
+    {{end}}
+  </form>
+  <form method="post" action="/ui/messages/{{$m.ID}}/action"
+    onsubmit="return confirm('이 메일을 로컬에서 삭제합니다. 메일 서버의 원본은 그대로입니다. 계속할까요?')">
+    <input type="hidden" name="action" value="delete"><button class="danger" type="submit">삭제</button>
+  </form>
+</div>
 <div class="card">
   <dl class="kv">
     <dt>보낸이</dt><dd>{{addr $m.From}}</dd>

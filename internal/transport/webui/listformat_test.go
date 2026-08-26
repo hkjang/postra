@@ -226,3 +226,62 @@ func TestInboxBulkActions(t *testing.T) {
 		t.Fatalf("partial failure not reported: %q", loc)
 	}
 }
+
+// Reading a message and filing it is the common pair, so the detail view must
+// offer the actions itself — and reflect the state it just changed.
+func TestMessageDetailActions(t *testing.T) {
+	app, _ := newTestApp(t)
+	ctx := application.WithActor(context.Background(), "test")
+	now := time.Now().Unix()
+	m := &domain.Message{
+		ID: "msg_act", UserID: application.DefaultUserID, AccountID: "acc_a", UIDL: "u-act",
+		Subject: "처리 대상", From: domain.Address{Email: "x@corp.local"},
+		RawHash: "h-act", RawURI: "mem://act", Date: now, CreatedAt: now,
+	}
+	if err := app.Store.InsertMessage(ctx, m, &domain.MessageBody{MessageID: m.ID, TextBody: "본문"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	h := New(app, "").Handler()
+
+	// Not important yet: the view offers to mark it.
+	body := do(t, h, http.MethodGet, "/ui/messages/msg_act", nil, nil).Body.String()
+	if !strings.Contains(body, `value="mark_important"`) {
+		t.Fatal("detail view offers no way to mark the message important")
+	}
+
+	rec := do(t, h, http.MethodPost, "/ui/messages/msg_act/action",
+		url.Values{"action": {"mark_important"}}, nil)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("action returned %d", rec.Code)
+	}
+	// A reversible flag keeps the reader where they were.
+	if loc := rec.Header().Get("Location"); loc != "/ui/messages/msg_act" {
+		t.Fatalf("marking important should stay on the message, went to %q", loc)
+	}
+	got, err := app.Store.GetMessage(ctx, application.DefaultUserID, "msg_act")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.IsImportant {
+		t.Fatal("message was not marked important")
+	}
+
+	// Now the control flips rather than offering the same thing twice.
+	body = do(t, h, http.MethodGet, "/ui/messages/msg_act", nil, nil).Body.String()
+	if !strings.Contains(body, `value="unmark_important"`) || strings.Contains(body, `value="mark_important"`) {
+		t.Fatal("the important control did not flip to its inverse")
+	}
+
+	// Archiving removes it from the inbox view, so return to the list.
+	rec = do(t, h, http.MethodPost, "/ui/messages/msg_act/action", url.Values{"action": {"archive"}}, nil)
+	if loc := rec.Header().Get("Location"); loc != "/ui/" {
+		t.Fatalf("archiving should return to the list, went to %q", loc)
+	}
+	got, err = app.Store.GetMessage(ctx, application.DefaultUserID, "msg_act")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.IsArchived {
+		t.Fatal("message was not archived")
+	}
+}

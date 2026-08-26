@@ -218,6 +218,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /ui/admin/ai/test", s.gate(s.adminAITest))
 	mux.HandleFunc("POST /ui/admin/vector/test", s.gate(s.adminVectorTest))
 	mux.HandleFunc("POST /ui/messages/batch", s.gate(s.messagesBatch))
+	mux.HandleFunc("POST /ui/messages/{id}/action", s.gate(s.messageAction))
 	mux.HandleFunc("GET /ui/digest", s.gate(s.digest))
 	mux.HandleFunc("GET /ui/rules", s.gate(s.rules))
 	mux.HandleFunc("POST /ui/rules/draft", s.gate(s.ruleDraft))
@@ -1242,6 +1243,33 @@ func (s *Server) ruleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/ui/rules", http.StatusSeeOther)
+}
+
+// messageAction applies a single filing action to the message being read.
+// Reading a message and then filing it is the common pair, so the detail view
+// should not send the user back to the list to tick a box. Reversible flags
+// return to the message; actions that remove it from view return to the list,
+// since staying would show something no longer there.
+func (s *Server) messageAction(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	action := application.BatchAction(r.FormValue("action"))
+	res, err := s.app.BatchUpdateMessages(r.Context(), application.BatchUpdateOptions{
+		MessageIDs: []string{id}, Action: action,
+	})
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if res.Failed > 0 {
+		s.fail(w, fmt.Errorf("%s: %s", action, res.Results[0].Error))
+		return
+	}
+	switch action {
+	case application.BatchActionDelete, application.BatchActionArchive:
+		http.Redirect(w, r, "/ui/", http.StatusSeeOther)
+	default:
+		http.Redirect(w, r, "/ui/messages/"+id, http.StatusSeeOther)
+	}
 }
 
 // messagesBatch applies one action to the messages ticked in the list, then
