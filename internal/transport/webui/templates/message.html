@@ -75,6 +75,46 @@
   <a class="btn ghost" href="/ui/messages/{{$m.ID}}/calendar.ics">📅 일정 추출 (.ics)</a>
   <form method="post" action="/ui/messages/{{$m.ID}}/cards"><button class="ghost" type="submit">할 일 카드 추출</button></form>
 </div>
+<h2>처리 상태</h2>
+<div class="card">
+  <div class="actions" style="margin-top:0">
+    {{with .Collab}}
+      <span class="small muted">담당자</span>
+      <b>{{if .Assignee}}{{.Assignee}}{{else}}미지정{{end}}</b>
+      <span class="small muted">·</span>
+      {{if eq .Status "resolved"}}<span class="ok">완료</span>
+      {{else if eq .Status "pending"}}<span class="prio prio-high">처리 중</span>
+      {{else}}<span class="prio prio-normal">진행 전</span>{{end}}
+    {{else}}<span class="small muted">아직 지정된 담당자가 없습니다.</span>{{end}}
+    <a class="small" href="/ui/team">팀 처리함 →</a>
+  </div>
+  <form method="post" action="/ui/messages/{{$m.ID}}/collab" class="actions">
+    <input type="hidden" name="op" value="assign">
+    <input type="text" name="assignee" placeholder="담당자 (예: kim)" aria-label="담당자 지정">
+    <button class="ghost" type="submit">담당 지정</button>
+  </form>
+  <form method="post" action="/ui/messages/{{$m.ID}}/collab" class="actions">
+    <input type="hidden" name="op" value="status">
+    <button class="ghost" type="submit" name="status" value="open">진행 전</button>
+    <button class="ghost" type="submit" name="status" value="pending">처리 중</button>
+    <button class="ghost" type="submit" name="status" value="resolved">완료</button>
+  </form>
+
+  {{if .Notes}}
+  <ul class="notes">
+    {{range .Notes}}<li><b class="small">{{.Author}}</b>
+      <span class="small muted">{{ts .CreatedAt}}</span>
+      <div>{{.Body}}</div></li>{{end}}
+  </ul>
+  {{end}}
+  <form method="post" action="/ui/messages/{{$m.ID}}/collab">
+    <input type="hidden" name="op" value="note">
+    <div class="field"><label>메모 남기기</label>
+      <textarea name="body" rows="2" placeholder="처리 경과나 인수인계 내용을 적어두세요"></textarea></div>
+    <button class="ghost" type="submit">메모 추가</button>
+  </form>
+</div>
+
 <h2>답장</h2>
 <div class="card">
   <div class="actions" style="margin-top:0;justify-content:space-between">

@@ -685,3 +685,70 @@ func TestActionCardsPage(t *testing.T) {
 		t.Fatal("the message page does not offer card extraction")
 	}
 }
+
+// Assignment, work status and notes existed only over CLI and MCP, so a shared
+// mailbox had no way to see who had picked something up.
+func TestCollaborationFromMessageAndTeamInbox(t *testing.T) {
+	app, _ := newTestApp(t)
+	ctx := application.WithActor(context.Background(), "test")
+	now := time.Now().Unix()
+	m := &domain.Message{
+		ID: "msg_team", UserID: application.DefaultUserID, AccountID: "acc_t", UIDL: "u-t",
+		Subject: "고객 문의 처리", From: domain.Address{Name: "고객사", Email: "c@corp.local"},
+		RawHash: "h-t", RawURI: "mem://t", Date: now, CreatedAt: now,
+	}
+	if err := app.Store.InsertMessage(ctx, m, &domain.MessageBody{MessageID: m.ID, TextBody: "본문"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	h := New(app, "").Handler()
+
+	// Nothing assigned yet: the team view says so rather than showing a stale list.
+	empty := do(t, h, http.MethodGet, "/ui/team", nil, nil).Body.String()
+	if !strings.Contains(empty, "아직 담당자를 지정하거나") {
+		t.Fatal("empty team inbox does not explain itself")
+	}
+
+	// Assign and progress the message from where it is read.
+	do(t, h, http.MethodPost, "/ui/messages/msg_team/collab",
+		url.Values{"op": {"assign"}, "assignee": {"kim"}}, nil)
+	do(t, h, http.MethodPost, "/ui/messages/msg_team/collab",
+		url.Values{"op": {"status"}, "status": {"pending"}}, nil)
+	do(t, h, http.MethodPost, "/ui/messages/msg_team/collab",
+		url.Values{"op": {"note"}, "body": {"고객에게 1차 회신 완료"}}, nil)
+
+	// The message page reflects what was just set, including the note.
+	msg := do(t, h, http.MethodGet, "/ui/messages/msg_team", nil, nil).Body.String()
+	for _, want := range []string{"kim", "처리 중", "고객에게 1차 회신 완료"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("message page missing collaboration state %q", want)
+		}
+	}
+
+	// The team view lists it, identifiable by its subject rather than an ID.
+	team := do(t, h, http.MethodGet, "/ui/team", nil, nil).Body.String()
+	if !strings.Contains(team, "고객 문의 처리") || !strings.Contains(team, "kim") {
+		t.Fatal("the team inbox does not show the assigned message")
+	}
+
+	// Filters narrow by status and assignee.
+	if body := do(t, h, http.MethodGet, "/ui/team?status=resolved", nil, nil).Body.String(); strings.Contains(body, "고객 문의 처리") {
+		t.Error("a pending item appears under the resolved filter")
+	}
+	if body := do(t, h, http.MethodGet, "/ui/team?assignee=park", nil, nil).Body.String(); strings.Contains(body, "고객 문의 처리") {
+		t.Error("an item assigned to someone else was returned")
+	}
+	if body := do(t, h, http.MethodGet, "/ui/team?assignee=kim", nil, nil).Body.String(); !strings.Contains(body, "고객 문의 처리") {
+		t.Error("filtering by the actual assignee lost the item")
+	}
+
+	// An empty note must not create a blank entry.
+	do(t, h, http.MethodPost, "/ui/messages/msg_team/collab",
+		url.Values{"op": {"note"}, "body": {"   "}}, nil)
+	cv, err := app.GetMessageCollab(ctx, "msg_team")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cv.Notes) != 1 {
+		t.Fatalf("note count = %d, want 1 (blank note should be ignored)", len(cv.Notes))
+	}
+}

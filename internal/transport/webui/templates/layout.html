@@ -74,6 +74,8 @@ button.ghost,.btn.ghost{background:var(--card);color:var(--accent);border:1px so
 .tmsg-brief{display:flex;align-items:baseline;gap:.7rem;padding:.6rem .9rem;margin-bottom:.4rem;border:1px solid var(--line);border-radius:11px;background:var(--bg);text-decoration:none;color:inherit}
 .tmsg-brief:hover{border-color:var(--accent)}
 .tmsg-brief-sub{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.notes{list-style:none;margin:.9rem 0;padding:0;display:grid;gap:.5rem}
+.notes li{border-left:3px solid var(--accent-soft);padding:.4rem 0 .4rem .7rem}
 .analysis-kv{grid-template-columns:130px 1fr;gap:.55rem .9rem;align-items:baseline}
 .analysis-list{margin:0;padding-left:1.1rem}
 .analysis-list li{margin:.15rem 0}
@@ -158,6 +160,7 @@ button.ghost,.btn.ghost{background:var(--card);color:var(--accent);border:1px so
     <a href="/ui/"{{if eq $nav "inbox"}} class="on" aria-current="page"{{end}}>받은편지함</a>
     <a href="/ui/compose"{{if eq $nav "compose"}} class="on" aria-current="page"{{end}}>새 메일</a>
     <a href="/ui/outbound"{{if eq $nav "outbound"}} class="on" aria-current="page"{{end}}>발송 상태</a>
+    <a href="/ui/team"{{if eq $nav "team"}} class="on" aria-current="page"{{end}}>팀</a>
     <a href="/ui/cards"{{if eq $nav "cards"}} class="on" aria-current="page"{{end}}>할 일</a>
     <a href="/ui/digest"{{if eq $nav "digest"}} class="on" aria-current="page"{{end}}>브리핑</a>
     <a href="/ui/rules"{{if eq $nav "rules"}} class="on" aria-current="page"{{end}}>규칙</a>

@@ -1,0 +1,44 @@
+{{define "title"}}팀 처리함{{end}}
+{{define "content"}}
+<h1>팀 처리함 <span class="small muted">누가 무엇을 맡고 있는지</span></h1>
+
+{{$st := .Status}}{{$as := .Assignee}}
+<form class="search" method="get" action="/ui/team">
+  <input type="text" name="assignee" value="{{$as}}" placeholder="담당자로 좁히기…" aria-label="담당자">
+  <input type="hidden" name="status" value="{{$st}}">
+  <button type="submit">검색</button>
+</form>
+<nav class="chips" aria-label="처리 상태">
+  <a class="chip{{if eq $st ""}} on{{end}}" href="/ui/team?assignee={{$as}}">전체</a>
+  <a class="chip{{if eq $st "open"}} on{{end}}" href="/ui/team?status=open&assignee={{$as}}">진행 전</a>
+  <a class="chip{{if eq $st "pending"}} on{{end}}" href="/ui/team?status=pending&assignee={{$as}}">처리 중</a>
+  <a class="chip{{if eq $st "resolved"}} on{{end}}" href="/ui/team?status=resolved&assignee={{$as}}">완료</a>
+</nav>
+
+{{if .Items}}
+<div class="card"><table>
+  <thead><tr><th>메일</th><th>담당자</th><th>상태</th><th>기한</th><th>변경</th></tr></thead>
+  <tbody>{{range .Items}}{{$c := .Collab}}<tr>
+    <td>
+      {{with .Message}}<a href="/ui/messages/{{.ID}}">{{if .Subject}}{{.Subject}}{{else}}(제목 없음){{end}}</a>
+        <div class="small muted">{{senderName .From}}</div>
+      {{else}}<span class="muted">삭제된 메일</span>
+        <div class="small muted">{{$c.MessageID}}</div>{{end}}
+    </td>
+    <td class="small">{{if $c.Assignee}}{{$c.Assignee}}{{else}}<span class="muted">미지정</span>{{end}}</td>
+    <td class="small">
+      {{if eq $c.Status "resolved"}}<span class="ok">완료</span>
+      {{else if eq $c.Status "pending"}}<span class="prio prio-high">처리 중</span>
+      {{else}}<span class="prio prio-normal">진행 전</span>{{end}}
+    </td>
+    <td class="small muted">{{if $c.SLADue}}{{ts $c.SLADue}}{{else}}—{{end}}</td>
+    <td class="small muted">{{if $c.UpdatedBy}}{{$c.UpdatedBy}} · {{end}}{{smartTime $c.UpdatedAt}}</td>
+  </tr>{{end}}</tbody>
+</table></div>
+{{else}}
+<div class="card empty">
+  <p class="muted">{{if or $st $as}}조건에 맞는 항목이 없습니다.{{else}}아직 담당자를 지정하거나 처리 상태를 표시한 메일이 없습니다. 메일 화면에서 지정할 수 있습니다.{{end}}</p>
+  <a class="btn ghost" href="/ui/">받은편지함</a>
+</div>
+{{end}}
+{{end}}

@@ -172,7 +172,7 @@ func parseTemplates() map[string]*template.Template {
 	pages := []string{"search", "message", "draft", "send", "sent", "login", "error",
 		"accounts", "account_new", "account", "compose", "analysis", "job",
 		"setup", "admin_users", "admin_settings", "mcp_keys"}
-	pages = append(pages, "admin_ai", "admin_incidents", "digest", "rules", "thread", "outbound", "cards")
+	pages = append(pages, "admin_ai", "admin_incidents", "digest", "rules", "thread", "outbound", "cards", "team")
 	out := make(map[string]*template.Template, len(pages))
 	for _, p := range pages {
 		t := template.Must(template.New("layout").Funcs(funcs).
@@ -219,6 +219,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /ui/admin/vector/test", s.gate(s.adminVectorTest))
 	mux.HandleFunc("POST /ui/messages/batch", s.gate(s.messagesBatch))
 	mux.HandleFunc("POST /ui/messages/{id}/action", s.gate(s.messageAction))
+	mux.HandleFunc("GET /ui/team", s.gate(s.team))
+	mux.HandleFunc("POST /ui/messages/{id}/collab", s.gate(s.messageCollab))
 	mux.HandleFunc("GET /ui/cards", s.gate(s.cards))
 	mux.HandleFunc("POST /ui/cards/{id}/status", s.gate(s.cardStatus))
 	mux.HandleFunc("POST /ui/messages/{id}/cards", s.gate(s.messageCardsExtract))
@@ -1194,7 +1196,12 @@ func (s *Server) message(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	accounts, _ := s.app.ListAccounts(r.Context())
-	data := map[string]any{"View": view, "Accounts": accounts}
+	data := map[string]any{"View": view, "Accounts": accounts, "CSRF": csrfFromRequest(r)}
+	// Best-effort: collaboration state is optional context, never a reason to
+	// fail reading the mail.
+	if cv, cerr := s.app.GetMessageCollab(r.Context(), view.Message.ID); cerr == nil {
+		data["Collab"], data["Notes"] = cv.Collab, cv.Notes
+	}
 	// Offer the conversation only when there is one: a "대화 보기" link that
 	// leads to this same message alone is noise.
 	if tid := view.Message.ThreadID; tid != "" {
@@ -1296,6 +1303,50 @@ func (s *Server) ruleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/ui/rules", http.StatusSeeOther)
+}
+
+// team shows which mail is being worked on and by whom. Assignment, work
+// status and notes existed only over CLI and MCP, so shared mailboxes had no
+// way to see who had picked something up.
+func (s *Server) team(w http.ResponseWriter, r *http.Request) {
+	status := r.URL.Query().Get("status")
+	assignee := strings.TrimSpace(r.URL.Query().Get("assignee"))
+	items, err := s.app.TeamInbox(r.Context(), status, assignee, 100)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	s.render(w, "team", http.StatusOK, map[string]any{
+		"Items": items, "Status": status, "Assignee": assignee, "CSRF": csrfFromRequest(r),
+	})
+}
+
+// messageCollab applies one collaboration change from the message page:
+// assigning it, moving its work status, or adding a note.
+func (s *Server) messageCollab(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var err error
+	switch r.FormValue("op") {
+	case "assign":
+		_, err = s.app.AssignMessage(r.Context(), id, strings.TrimSpace(r.FormValue("assignee")))
+	case "status":
+		_, err = s.app.SetMessageWorkStatus(r.Context(), id, r.FormValue("status"))
+	case "note":
+		body := strings.TrimSpace(r.FormValue("body"))
+		if body == "" {
+			http.Redirect(w, r, "/ui/messages/"+id, http.StatusSeeOther)
+			return
+		}
+		_, err = s.app.AddMessageNote(r.Context(), id, body)
+	default:
+		http.Redirect(w, r, "/ui/messages/"+id, http.StatusSeeOther)
+		return
+	}
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	http.Redirect(w, r, "/ui/messages/"+id, http.StatusSeeOther)
 }
 
 // cards lists the actionable items extracted from mail. Extraction, status and
@@ -1695,6 +1746,8 @@ func navSection(page string) string {
 		return "outbound"
 	case "cards":
 		return "cards"
+	case "team":
+		return "team"
 	case "digest", "rules", "mcp_keys", "admin_ai", "admin_incidents":
 		return page
 	case "accounts", "account", "account_new":
