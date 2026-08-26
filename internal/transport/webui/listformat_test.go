@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -283,5 +284,70 @@ func TestMessageDetailActions(t *testing.T) {
 	}
 	if !got.IsArchived {
 		t.Fatal("message was not archived")
+	}
+}
+
+// A conversation was only reachable over CLI and MCP; the browser had no way
+// to see the replies that make a message make sense.
+func TestThreadView(t *testing.T) {
+	app, _ := newTestApp(t)
+	ctx := application.WithActor(context.Background(), "test")
+	now := time.Now().Unix()
+	// Five messages so the collapse rule (newest few expanded) actually applies.
+	for i := 0; i < 5; i++ {
+		id := "msg_t" + strconv.Itoa(i)
+		m := &domain.Message{
+			ID: id, UserID: application.DefaultUserID, AccountID: "acc_t", UIDL: "u-" + id,
+			Subject: "예산 협의", From: domain.Address{Name: "참여자" + strconv.Itoa(i), Email: "p@corp.local"},
+			To:      []domain.Address{{Email: "me@corp.local"}},
+			RawHash: "h-" + id, RawURI: "mem://" + id,
+			Date: now - int64((5-i)*3600), CreatedAt: now, ThreadID: "thr_1",
+		}
+		if err := app.Store.InsertMessage(ctx, m,
+			&domain.MessageBody{MessageID: id, TextBody: "내용 " + strconv.Itoa(i)}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h := New(app, "").Handler()
+
+	rec := do(t, h, http.MethodGet, "/ui/threads/thr_1", nil, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("thread page returned %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if n := strings.Count(body, `class="tmsg`); n < 5 {
+		t.Fatalf("thread shows %d messages, want all 5", n)
+	}
+	// Older messages are collapsed so a long thread stays readable.
+	if n := strings.Count(body, "이전 메일 펼치기"); n != 2 {
+		t.Fatalf("collapsed %d of 5 messages, want the 2 oldest", n)
+	}
+	if !strings.Contains(body, "내용 4") {
+		t.Fatal("the newest message's body should be expanded")
+	}
+
+	// The detail view offers the conversation, with its size.
+	msgPage := do(t, h, http.MethodGet, "/ui/messages/msg_t0", nil, nil).Body.String()
+	if !strings.Contains(msgPage, `href="/ui/threads/thr_1"`) || !strings.Contains(msgPage, "대화 보기 (5)") {
+		t.Fatal("message detail does not link to its conversation")
+	}
+}
+
+// A message that is its own thread must not advertise a conversation.
+func TestLoneMessageHasNoThreadLink(t *testing.T) {
+	app, _ := newTestApp(t)
+	ctx := application.WithActor(context.Background(), "test")
+	now := time.Now().Unix()
+	m := &domain.Message{
+		ID: "msg_solo", UserID: application.DefaultUserID, AccountID: "acc_s", UIDL: "u-solo",
+		Subject: "단독", From: domain.Address{Email: "x@corp.local"},
+		RawHash: "h-solo", RawURI: "mem://solo", Date: now, CreatedAt: now, ThreadID: "thr_solo",
+	}
+	if err := app.Store.InsertMessage(ctx, m, &domain.MessageBody{MessageID: m.ID, TextBody: "본문"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	body := do(t, New(app, "").Handler(), http.MethodGet, "/ui/messages/msg_solo", nil, nil).Body.String()
+	if strings.Contains(body, "대화 보기") {
+		t.Fatal("a single-message thread should not offer a conversation link")
 	}
 }

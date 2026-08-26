@@ -172,7 +172,7 @@ func parseTemplates() map[string]*template.Template {
 	pages := []string{"search", "message", "draft", "send", "sent", "login", "error",
 		"accounts", "account_new", "account", "compose", "analysis", "job",
 		"setup", "admin_users", "admin_settings", "mcp_keys"}
-	pages = append(pages, "admin_ai", "admin_incidents", "digest", "rules")
+	pages = append(pages, "admin_ai", "admin_incidents", "digest", "rules", "thread")
 	out := make(map[string]*template.Template, len(pages))
 	for _, p := range pages {
 		t := template.Must(template.New("layout").Funcs(funcs).
@@ -236,6 +236,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /ui/jobs/{id}", s.gate(s.job))
 	mux.HandleFunc("GET /ui/compose", s.gate(s.composeForm))
 	mux.HandleFunc("POST /ui/compose", s.gate(s.composeSubmit))
+	mux.HandleFunc("GET /ui/threads/{id}", s.gate(s.thread))
 	mux.HandleFunc("GET /ui/messages/{id}", s.gate(s.message))
 	mux.HandleFunc("GET /ui/messages/{id}/attachments/{att}", s.gate(s.attachment))
 	mux.HandleFunc("POST /ui/messages/{id}/analyze", s.gate(s.analyze))
@@ -1179,7 +1180,37 @@ func (s *Server) message(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	accounts, _ := s.app.ListAccounts(r.Context())
-	s.render(w, "message", http.StatusOK, map[string]any{"View": view, "Accounts": accounts})
+	data := map[string]any{"View": view, "Accounts": accounts}
+	// Offer the conversation only when there is one: a "대화 보기" link that
+	// leads to this same message alone is noise.
+	if tid := view.Message.ThreadID; tid != "" {
+		if tv, terr := s.app.GetThread(r.Context(), tid, false); terr == nil && len(tv.Messages) > 1 {
+			data["ThreadID"], data["ThreadCount"] = tid, len(tv.Messages)
+		}
+	}
+	s.render(w, "message", http.StatusOK, data)
+}
+
+// threadCollapseAfter is how many of the most recent messages open expanded.
+// A long thread is mostly context you have already read, so older messages are
+// collapsed rather than rendered in full.
+const threadCollapseAfter = 3
+
+// thread renders a conversation oldest-first, the way it was read.
+func (s *Server) thread(w http.ResponseWriter, r *http.Request) {
+	tv, err := s.app.GetThread(r.Context(), r.PathValue("id"), true)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	expandFrom := len(tv.Messages) - threadCollapseAfter
+	if expandFrom < 0 {
+		expandFrom = 0
+	}
+	s.render(w, "thread", http.StatusOK, map[string]any{
+		"ThreadID": tv.ThreadID, "Messages": tv.Messages,
+		"Count": len(tv.Messages), "ExpandFrom": expandFrom,
+	})
 }
 
 // rules lists the user's automation rules and offers the plain-language

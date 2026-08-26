@@ -1,0 +1,48 @@
+{{define "title"}}대화{{end}}
+{{define "content"}}
+<p class="small"><a href="/ui/" class="muted">← 받은편지함</a></p>
+{{$first := index .Messages 0}}
+<h1>{{if $first.Message.Subject}}{{$first.Message.Subject}}{{else}}(제목 없음){{end}}</h1>
+<p class="small muted" style="margin:-.8rem 0 1.2rem">메일 {{.Count}}통 · 오래된 순</p>
+
+{{$expandFrom := .ExpandFrom}}
+{{range $i, $mv := .Messages}}
+{{$m := $mv.Message}}
+<article class="tmsg{{if $m.IsImportant}} is-important{{end}}">
+  <header class="tmsg-head">
+    <div class="tmsg-who">
+      <b>{{senderName $m.From}}</b>
+      <span class="small muted">{{addrs $m.To}}</span>
+    </div>
+    <div class="tmsg-side">
+      <time class="small muted" title="{{ts $m.Date}}">{{smartTime $m.Date}}</time>
+      <a class="small" href="/ui/messages/{{$m.ID}}">단독 보기 →</a>
+    </div>
+  </header>
+  {{if lt $i $expandFrom}}
+    <details class="tmsg-old">
+      <summary class="small muted">이전 메일 펼치기</summary>
+      {{template "threadbody" $mv}}
+    </details>
+  {{else}}
+    {{template "threadbody" $mv}}
+  {{end}}
+</article>
+{{end}}
+{{end}}
+
+{{define "threadbody"}}
+{{with .Body}}
+  {{if .Unavailable}}
+    <div class="warn">{{.UnavailableReason}}</div>
+  {{else if .HTMLSanitized}}
+    <div class="mail-body tmsg-body">{{mailHTML .HTMLSanitized}}</div>
+  {{else if .TextBody}}
+    <div class="mail-body mail-body-text tmsg-body">{{mailText .TextBody}}</div>
+  {{else}}
+    <p class="muted small">본문 없음.</p>
+  {{end}}
+{{else}}
+  <p class="muted small">본문 없음.</p>
+{{end}}
+{{end}}
