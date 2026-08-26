@@ -881,6 +881,15 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 	cursor := r.URL.Query().Get("cursor")
 	accountID := r.URL.Query().Get("account")
 	label := r.URL.Query().Get("label")
+	// Without a folder the store applies no filter at all, so archived and
+	// snoozed mail stayed in the list and the archive button did nothing
+	// visible. The inbox is the default view; other folders are explicit.
+	folder := r.URL.Query().Get("folder")
+	switch folder {
+	case "archive", "important", "snoozed":
+	default:
+		folder = "inbox"
+	}
 	accounts, err := s.app.ListAccounts(r.Context())
 	if err != nil {
 		s.fail(w, err)
@@ -888,7 +897,7 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := s.app.Search(r.Context(), domain.SearchQuery{
 		UserID: application.DefaultUserID, Text: q, AccountID: accountID,
-		Label: label, Limit: searchPageSize, Cursor: cursor,
+		Label: label, Folder: folder, Limit: searchPageSize, Cursor: cursor,
 	})
 	if err != nil {
 		s.fail(w, err)
@@ -914,7 +923,7 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 	data := map[string]any{
 		"Query": q, "Messages": res.Messages, "Accounts": accounts, "Snippets": snippets,
 		"AccountID": accountID, "HasAccounts": len(accounts) > 0,
-		"HasMessages": len(res.Messages) > 0, "Label": label,
+		"HasMessages": len(res.Messages) > 0, "Label": label, "Folder": folder,
 	}
 	if v := r.URL.Query().Get("done"); v != "" {
 		data["BatchDone"], data["BatchFailed"] = v, r.URL.Query().Get("failed")
@@ -930,6 +939,7 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 		if label != "" {
 			next += "&label=" + url.QueryEscape(label)
 		}
+		next += "&folder=" + url.QueryEscape(folder)
 		data["NextURL"] = next + "&cursor=" + url.QueryEscape(res.NextCursor)
 	}
 	s.render(w, "search", http.StatusOK, data)
@@ -1284,6 +1294,22 @@ func (s *Server) ruleDelete(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/ui/rules", http.StatusSeeOther)
 }
 
+// snoozeUntil turns a chosen duration into an absolute time. Snoozing is only
+// meaningful against a clock, and the choices are the ones people actually
+// reach for rather than an arbitrary number of hours.
+func snoozeUntil(choice string) int64 {
+	now := time.Now()
+	switch choice {
+	case "3d":
+		return now.AddDate(0, 0, 3).Unix()
+	case "week":
+		return now.AddDate(0, 0, 7).Unix()
+	default: // tomorrow morning
+		t := time.Date(now.Year(), now.Month(), now.Day(), 8, 0, 0, 0, now.Location()).AddDate(0, 0, 1)
+		return t.Unix()
+	}
+}
+
 // messageAction applies a single filing action to the message being read.
 // Reading a message and then filing it is the common pair, so the detail view
 // should not send the user back to the list to tick a box. Reversible flags
@@ -1292,9 +1318,11 @@ func (s *Server) ruleDelete(w http.ResponseWriter, r *http.Request) {
 func (s *Server) messageAction(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	action := application.BatchAction(r.FormValue("action"))
-	res, err := s.app.BatchUpdateMessages(r.Context(), application.BatchUpdateOptions{
-		MessageIDs: []string{id}, Action: action,
-	})
+	opts := application.BatchUpdateOptions{MessageIDs: []string{id}, Action: action}
+	if action == application.BatchActionSnooze {
+		opts.SnoozedUntil = snoozeUntil(r.FormValue("snooze"))
+	}
+	res, err := s.app.BatchUpdateMessages(r.Context(), opts)
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -1304,7 +1332,7 @@ func (s *Server) messageAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch action {
-	case application.BatchActionDelete, application.BatchActionArchive:
+	case application.BatchActionDelete, application.BatchActionArchive, application.BatchActionSnooze:
 		http.Redirect(w, r, "/ui/", http.StatusSeeOther)
 	default:
 		http.Redirect(w, r, "/ui/messages/"+id, http.StatusSeeOther)
@@ -1322,15 +1350,18 @@ func (s *Server) messagesBatch(w http.ResponseWriter, r *http.Request) {
 	ids := r.Form["ids"]
 	back := "/ui/?q=" + url.QueryEscape(r.FormValue("q")) +
 		"&account=" + url.QueryEscape(r.FormValue("account")) +
-		"&label=" + url.QueryEscape(r.FormValue("label"))
+		"&label=" + url.QueryEscape(r.FormValue("label")) +
+		"&folder=" + url.QueryEscape(r.FormValue("folder"))
 	if len(ids) == 0 {
 		http.Redirect(w, r, back+"&none=1", http.StatusSeeOther)
 		return
 	}
-	res, err := s.app.BatchUpdateMessages(r.Context(), application.BatchUpdateOptions{
-		MessageIDs: ids,
-		Action:     application.BatchAction(r.FormValue("action")),
-	})
+	action := application.BatchAction(r.FormValue("action"))
+	opts := application.BatchUpdateOptions{MessageIDs: ids, Action: action}
+	if action == application.BatchActionSnooze {
+		opts.SnoozedUntil = snoozeUntil(r.FormValue("snooze"))
+	}
+	res, err := s.app.BatchUpdateMessages(r.Context(), opts)
 	if err != nil {
 		s.fail(w, err)
 		return

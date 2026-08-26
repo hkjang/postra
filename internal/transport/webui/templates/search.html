@@ -18,15 +18,23 @@
     {{range .Accounts}}<option value="{{.ID}}" {{if eq $.AccountID .ID}}selected{{end}}>{{.Name}} · {{.Email}}</option>{{end}}
   </select>
   <input type="hidden" name="label" value="{{.Label}}">
+  <input type="hidden" name="folder" value="{{.Folder}}">
   <button type="submit">검색</button>
 </form>
-{{$q := .Query}}{{$acc := .AccountID}}
+{{$fq := .Query}}{{$fa := .AccountID}}{{$fl := .Label}}
+<nav class="chips" aria-label="폴더">
+  <a class="chip{{if eq .Folder "inbox"}} on{{end}}" href="/ui/?q={{$fq}}&account={{$fa}}&label={{$fl}}&folder=inbox">받은편지함</a>
+  <a class="chip{{if eq .Folder "important"}} on{{end}}" href="/ui/?q={{$fq}}&account={{$fa}}&label={{$fl}}&folder=important">중요</a>
+  <a class="chip{{if eq .Folder "archive"}} on{{end}}" href="/ui/?q={{$fq}}&account={{$fa}}&label={{$fl}}&folder=archive">보관함</a>
+  <a class="chip{{if eq .Folder "snoozed"}} on{{end}}" href="/ui/?q={{$fq}}&account={{$fa}}&label={{$fl}}&folder=snoozed">스누즈</a>
+</nav>
+{{$q := .Query}}{{$acc := .AccountID}}{{$fd := .Folder}}
 <nav class="chips" aria-label="AI 우선순위 필터">
   <span class="small muted">AI 우선순위</span>
-  <a class="chip{{if eq .Label ""}} on{{end}}" href="/ui/?q={{$q}}&account={{$acc}}">전체</a>
-  <a class="chip prio-urgent{{if eq .Label "ai/urgent"}} on{{end}}" href="/ui/?q={{$q}}&account={{$acc}}&label=ai%2Furgent">긴급</a>
-  <a class="chip prio-high{{if eq .Label "ai/high"}} on{{end}}" href="/ui/?q={{$q}}&account={{$acc}}&label=ai%2Fhigh">높음</a>
-  <a class="chip{{if eq .Label "ai/reply-needed"}} on{{end}}" href="/ui/?q={{$q}}&account={{$acc}}&label=ai%2Freply-needed">답장 필요</a>
+  <a class="chip{{if eq .Label ""}} on{{end}}" href="/ui/?q={{$q}}&account={{$acc}}&folder={{$fd}}">전체</a>
+  <a class="chip prio-urgent{{if eq .Label "ai/urgent"}} on{{end}}" href="/ui/?q={{$q}}&account={{$acc}}&folder={{$fd}}&label=ai%2Furgent">긴급</a>
+  <a class="chip prio-high{{if eq .Label "ai/high"}} on{{end}}" href="/ui/?q={{$q}}&account={{$acc}}&folder={{$fd}}&label=ai%2Fhigh">높음</a>
+  <a class="chip{{if eq .Label "ai/reply-needed"}} on{{end}}" href="/ui/?q={{$q}}&account={{$acc}}&folder={{$fd}}&label=ai%2Freply-needed">답장 필요</a>
 </nav>
 {{if .BatchDone}}<div class="card" style="padding:.7rem 1rem;margin-bottom:.7rem">
   <span class="ok">{{.BatchDone}}건 처리했습니다.</span>
@@ -38,10 +46,25 @@
   <input type="hidden" name="q" value="{{.Query}}">
   <input type="hidden" name="account" value="{{.AccountID}}">
   <input type="hidden" name="label" value="{{.Label}}">
+  <input type="hidden" name="folder" value="{{.Folder}}">
   <div class="bulkbar">
     <label class="bulkbar-all"><input type="checkbox" id="selectAll"> 전체 선택</label>
     <span class="small muted">선택한 메일에</span>
-    <button class="ghost" type="submit" name="action" value="archive">보관</button>
+    {{if eq .Folder "archive"}}
+      <button class="ghost" type="submit" name="action" value="unarchive">보관 해제</button>
+    {{else}}
+      <button class="ghost" type="submit" name="action" value="archive">보관</button>
+    {{end}}
+    {{if eq .Folder "snoozed"}}
+      <button class="ghost" type="submit" name="action" value="unsnooze">스누즈 해제</button>
+    {{else}}
+      <select name="snooze" aria-label="스누즈 기간">
+        <option value="tomorrow">내일 아침</option>
+        <option value="3d">3일 후</option>
+        <option value="week">다음 주</option>
+      </select>
+      <button class="ghost" type="submit" name="action" value="snooze">스누즈</button>
+    {{end}}
     <button class="ghost" type="submit" name="action" value="mark_important">중요 표시</button>
     <button class="ghost" type="submit" name="action" value="unmark_important">중요 해제</button>
     <button class="danger" type="submit" name="action" value="delete"
@@ -80,8 +103,15 @@
   {{if .NextURL}}<div class="actions"><a class="btn ghost" href="{{.NextURL}}">더 보기</a></div>{{end}}
 {{else}}
   <div class="card empty">
-    <p class="muted">{{if .Query}}검색 결과가 없습니다.{{else}}동기화된 메일이 없습니다. 계정 화면에서 첫 동기화를 시작하세요.{{end}}</p>
-    <a class="btn ghost" href="/ui/accounts">계정·동기화</a>
+    <p class="muted">
+      {{if .Query}}검색 결과가 없습니다.
+      {{else if eq .Folder "archive"}}보관한 메일이 없습니다.
+      {{else if eq .Folder "snoozed"}}스누즈한 메일이 없습니다. 다시 볼 시각이 되면 받은편지함에 나타납니다.
+      {{else if eq .Folder "important"}}중요 표시한 메일이 없습니다.
+      {{else}}동기화된 메일이 없습니다. 계정 화면에서 첫 동기화를 시작하세요.{{end}}
+    </p>
+    {{if or .Query (ne .Folder "inbox")}}<a class="btn ghost" href="/ui/?folder=inbox">받은편지함으로</a>
+    {{else}}<a class="btn ghost" href="/ui/accounts">계정·동기화</a>{{end}}
   </div>
 {{end}}
 {{end}}

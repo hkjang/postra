@@ -473,3 +473,89 @@ func TestSendPreviewSurfacesDLPBlock(t *testing.T) {
 }
 
 func strPtr(s string) *string { return &s }
+
+// Archiving and snoozing only mean something if the inbox stops showing the
+// message. The list never asked for a folder, so the store applied no filter
+// and both actions changed a flag while the mail stayed exactly where it was.
+func TestFoldersHideAndRecoverMail(t *testing.T) {
+	app, _ := newTestApp(t)
+	ctx := application.WithActor(context.Background(), "test")
+	now := time.Now().Unix()
+	for _, spec := range []struct{ id, subj string }{
+		{"msg_keep", "그대로 둘 메일"},
+		{"msg_arch", "보관할 메일"},
+		{"msg_snz", "미뤄둘 메일"},
+	} {
+		m := &domain.Message{
+			ID: spec.id, UserID: application.DefaultUserID, AccountID: "acc_f", UIDL: "u-" + spec.id,
+			Subject: spec.subj, From: domain.Address{Email: "x@corp.local"},
+			RawHash: "h-" + spec.id, RawURI: "mem://" + spec.id, Date: now, CreatedAt: now,
+		}
+		if err := app.Store.InsertMessage(ctx, m, &domain.MessageBody{MessageID: spec.id}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h := New(app, "").Handler()
+
+	do(t, h, http.MethodPost, "/ui/messages/msg_arch/action", url.Values{"action": {"archive"}}, nil)
+	do(t, h, http.MethodPost, "/ui/messages/msg_snz/action",
+		url.Values{"action": {"snooze"}, "snooze": {"week"}}, nil)
+
+	inbox := do(t, h, http.MethodGet, "/ui/", nil, nil).Body.String()
+	if !strings.Contains(inbox, "그대로 둘 메일") {
+		t.Fatal("ordinary mail vanished from the inbox")
+	}
+	if strings.Contains(inbox, "보관할 메일") {
+		t.Error("archived mail is still listed in the inbox")
+	}
+	if strings.Contains(inbox, "미뤄둘 메일") {
+		t.Error("snoozed mail is still listed in the inbox")
+	}
+
+	// Filed mail must be recoverable, or archiving is indistinguishable from
+	// deleting.
+	archive := do(t, h, http.MethodGet, "/ui/?folder=archive", nil, nil).Body.String()
+	if !strings.Contains(archive, "보관할 메일") || strings.Contains(archive, "그대로 둘 메일") {
+		t.Error("the archive folder does not show exactly the archived mail")
+	}
+	snoozed := do(t, h, http.MethodGet, "/ui/?folder=snoozed", nil, nil).Body.String()
+	if !strings.Contains(snoozed, "미뤄둘 메일") {
+		t.Error("the snoozed folder does not show the snoozed mail")
+	}
+	// The archive view offers the way back rather than only the way in.
+	if !strings.Contains(archive, `value="unarchive"`) {
+		t.Error("no way to unarchive from the archive view")
+	}
+
+	// Unarchiving returns it to the inbox.
+	do(t, h, http.MethodPost, "/ui/messages/batch",
+		url.Values{"ids": {"msg_arch"}, "action": {"unarchive"}, "folder": {"archive"}}, nil)
+	inbox = do(t, h, http.MethodGet, "/ui/", nil, nil).Body.String()
+	if !strings.Contains(inbox, "보관할 메일") {
+		t.Error("unarchived mail did not return to the inbox")
+	}
+}
+
+// A snooze is only meaningful against a clock.
+func TestSnoozeUntilChoices(t *testing.T) {
+	now := time.Now()
+	if got := snoozeUntil("week"); got < now.AddDate(0, 0, 6).Unix() || got > now.AddDate(0, 0, 8).Unix() {
+		t.Errorf("week snooze landed outside the expected range: %d", got)
+	}
+	if got := snoozeUntil("3d"); got <= now.Unix() {
+		t.Errorf("3d snooze is not in the future: %d", got)
+	}
+	// Tomorrow morning must be tomorrow, and in the morning.
+	tm := time.Unix(snoozeUntil("tomorrow"), 0)
+	if tm.Before(now) {
+		t.Error("tomorrow-morning snooze is in the past")
+	}
+	if tm.Hour() != 8 {
+		t.Errorf("tomorrow-morning snooze is at %02d:00, want 08:00", tm.Hour())
+	}
+	// An unknown choice must still produce a future time, not zero (which the
+	// batch API rejects, and which would read as "never snoozed").
+	if got := snoozeUntil("garbage"); got <= now.Unix() {
+		t.Errorf("unknown choice produced %d, want a future time", got)
+	}
+}

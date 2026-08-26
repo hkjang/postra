@@ -276,16 +276,18 @@ func TestSearchPagination(t *testing.T) {
 
 	// Follow the cursor link → page 2 with the remaining item, no further link.
 	// html/template escapes & as &amp; in the href; a browser decodes it back.
-	i := strings.Index(body, `href="/ui/?q=page&amp;cursor=`)
+	// Find the pagination link by what it is, not by the order its parameters
+	// happen to be built in — that order is presentation, not behaviour.
+	i := strings.Index(body, `cursor=`)
 	if i < 0 {
 		t.Fatal("no cursor link found")
 	}
-	rest := body[i+len(`href="`):]
-	next := strings.ReplaceAll(rest[:strings.IndexByte(rest, '"')], "&amp;", "&")
+	start := strings.LastIndex(body[:i], `href="`) + len(`href="`)
+	next := strings.ReplaceAll(body[start:i+strings.IndexByte(body[i:], '"')], "&amp;", "&")
 	rec2 := do(t, h, "GET", next, nil, nil)
 	body2 := rec2.Body.String()
 	if strings.Count(body2, `class="mailrow-link"`) != 1 {
-		t.Fatalf("page 2 row count = %d, want 1", strings.Count(body2, "/ui/messages/"))
+		t.Fatalf("page 2 row count = %d, want 1", strings.Count(body2, `class="mailrow-link"`))
 	}
 	if strings.Contains(body2, "더 보기") {
 		t.Fatal("page 2 should not offer a further page")
