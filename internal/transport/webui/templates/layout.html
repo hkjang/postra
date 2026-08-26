@@ -157,6 +157,7 @@ button.ghost,.btn.ghost{background:var(--card);color:var(--accent);border:1px so
     {{$nav := .Nav}}
     <a href="/ui/"{{if eq $nav "inbox"}} class="on" aria-current="page"{{end}}>받은편지함</a>
     <a href="/ui/compose"{{if eq $nav "compose"}} class="on" aria-current="page"{{end}}>새 메일</a>
+    <a href="/ui/outbound"{{if eq $nav "outbound"}} class="on" aria-current="page"{{end}}>발송 상태</a>
     <a href="/ui/digest"{{if eq $nav "digest"}} class="on" aria-current="page"{{end}}>브리핑</a>
     <a href="/ui/rules"{{if eq $nav "rules"}} class="on" aria-current="page"{{end}}>규칙</a>
     <a href="/ui/accounts"{{if eq $nav "accounts"}} class="on" aria-current="page"{{end}}>계정</a>

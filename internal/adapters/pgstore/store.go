@@ -1940,6 +1940,28 @@ func (s *Store) MarkOutboundRetry(ctx context.Context, id, smtpResponse string, 
 	return err
 }
 
+// ListOutbound returns a user's recent outbound messages, newest first.
+func (s *Store) ListOutbound(ctx context.Context, userID string, limit int) ([]domain.OutboundMessage, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := s.pool.Query(ctx, `SELECT `+outboundCols+`
+	 FROM outbound_messages WHERE user_id=$1 ORDER BY created_at DESC, id DESC LIMIT $2`, userID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.OutboundMessage
+	for rows.Next() {
+		o, err := scanOutbound(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *o)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) ListDueRetries(ctx context.Context, nowTS int64, limit int) ([]domain.OutboundMessage, error) {
 	if limit <= 0 {
 		limit = 50

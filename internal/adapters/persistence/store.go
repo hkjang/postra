@@ -2064,6 +2064,29 @@ func (s *Store) MarkOutboundRetry(ctx context.Context, id, smtpResponse string, 
 
 // ListDueRetries returns outbound messages awaiting a retry whose backoff has
 // elapsed (across all users; the worker acts on the whole outbox).
+// ListOutbound returns a user's recent outbound messages, newest first, so the
+// UI can show what actually happened to a send rather than assuming it left.
+func (s *Store) ListOutbound(ctx context.Context, userID string, limit int) ([]domain.OutboundMessage, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT `+outboundCols+`
+	 FROM outbound_messages WHERE user_id=? ORDER BY created_at DESC, id DESC LIMIT ?`, userID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.OutboundMessage
+	for rows.Next() {
+		o, err := scanOutbound(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *o)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) ListDueRetries(ctx context.Context, nowTS int64, limit int) ([]domain.OutboundMessage, error) {
 	if limit <= 0 {
 		limit = 50

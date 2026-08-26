@@ -92,6 +92,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/messages/{id}/calendar.ics", s.messageCalendarICS)
 	mux.HandleFunc("POST /api/rules/draft", s.draftRule)
 	mux.HandleFunc("POST /api/digest", s.dailyDigest)
+	mux.HandleFunc("GET /api/outbound", s.listOutbound)
 	mux.HandleFunc("POST /api/threads/{id}/summarize", s.summarizeThread)
 	mux.HandleFunc("POST /api/qa", s.questionAnswer)
 	mux.HandleFunc("POST /api/eval", s.evalPrompt)
@@ -851,6 +852,16 @@ func (s *Server) draftRule(w http.ResponseWriter, r *http.Request) {
 	}
 	// Preview only — the caller confirms and POSTs it to /api/rules to save.
 	writeJSON(w, http.StatusOK, map[string]any{"rule": rule, "saved": false})
+}
+
+func (s *Server) listOutbound(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	out, err := s.app.ListOutbound(r.Context(), limit)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) dailyDigest(w http.ResponseWriter, r *http.Request) {

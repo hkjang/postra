@@ -172,7 +172,7 @@ func parseTemplates() map[string]*template.Template {
 	pages := []string{"search", "message", "draft", "send", "sent", "login", "error",
 		"accounts", "account_new", "account", "compose", "analysis", "job",
 		"setup", "admin_users", "admin_settings", "mcp_keys"}
-	pages = append(pages, "admin_ai", "admin_incidents", "digest", "rules", "thread")
+	pages = append(pages, "admin_ai", "admin_incidents", "digest", "rules", "thread", "outbound")
 	out := make(map[string]*template.Template, len(pages))
 	for _, p := range pages {
 		t := template.Must(template.New("layout").Funcs(funcs).
@@ -219,6 +219,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /ui/admin/vector/test", s.gate(s.adminVectorTest))
 	mux.HandleFunc("POST /ui/messages/batch", s.gate(s.messagesBatch))
 	mux.HandleFunc("POST /ui/messages/{id}/action", s.gate(s.messageAction))
+	mux.HandleFunc("GET /ui/outbound", s.gate(s.outbound))
 	mux.HandleFunc("GET /ui/digest", s.gate(s.digest))
 	mux.HandleFunc("GET /ui/rules", s.gate(s.rules))
 	mux.HandleFunc("POST /ui/rules/draft", s.gate(s.ruleDraft))
@@ -1294,6 +1295,25 @@ func (s *Server) ruleDelete(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/ui/rules", http.StatusSeeOther)
 }
 
+// outbound shows what became of recent sends. A temporary SMTP failure parks a
+// message in the retry queue; without this the sender saw a success page and
+// had no way to learn the mail had not actually gone out.
+func (s *Server) outbound(w http.ResponseWriter, r *http.Request) {
+	list, err := s.app.ListOutbound(r.Context(), 50)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	var pending int
+	for _, v := range list {
+		switch v.Outbound.Status {
+		case domain.OutboundQueued, domain.OutboundRetryWait, domain.OutboundUncertain:
+			pending++
+		}
+	}
+	s.render(w, "outbound", http.StatusOK, map[string]any{"Items": list, "Pending": pending})
+}
+
 // snoozeUntil turns a chosen duration into an absolute time. Snoozing is only
 // meaningful against a clock, and the choices are the ones people actually
 // reach for rather than an arbitrary number of hours.
@@ -1634,6 +1654,8 @@ func navSection(page string) string {
 		return "inbox"
 	case "compose", "draft", "send", "sent":
 		return "compose"
+	case "outbound":
+		return "outbound"
 	case "digest", "rules", "mcp_keys", "admin_ai", "admin_incidents":
 		return page
 	case "accounts", "account", "account_new":

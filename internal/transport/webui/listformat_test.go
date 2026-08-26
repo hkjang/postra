@@ -559,3 +559,58 @@ func TestSnoozeUntilChoices(t *testing.T) {
 		t.Errorf("unknown choice produced %d, want a future time", got)
 	}
 }
+
+// A temporary SMTP failure parks a message in the retry queue. Until now that
+// was visible only to the worker: the sender saw a success page and had no way
+// to learn the mail had not gone out.
+func TestOutboundStatusPage(t *testing.T) {
+	app, _ := newTestApp(t)
+	ctx := application.WithActor(context.Background(), "test")
+
+	acc, err := app.CreateAccount(ctx, application.CreateAccountInput{
+		Name: "회사", Email: "me@corp.local",
+		POP3Host: "127.0.0.1", POP3Port: 1100, POP3Security: "none", POP3Username: "me",
+		SMTPHost: "127.0.0.1", SMTPPort: 1025, SMTPSecurity: "none", SMTPAuth: "none",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dv, err := app.CreateDraft(ctx, application.CreateDraftInput{
+		AccountID: acc.ID, Kind: "new", To: []string{"them@corp.local"},
+		Subject: "지연된 보고", Body: "본문",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := &domain.OutboundMessage{
+		ID: "out_1", UserID: application.DefaultUserID, DraftID: dv.Draft.ID, DraftVersion: 1,
+		IdempotencyKey: "k1", Status: domain.OutboundQueued,
+	}
+	if err := app.Store.CreateOutbound(ctx, out); err != nil {
+		t.Fatal(err)
+	}
+	// Reach the retry state the way a real temporary failure does, rather than
+	// writing a row the send path would never produce.
+	if err := app.Store.MarkOutboundRetry(ctx, out.ID, "451 temporary failure", 2,
+		time.Now().Add(10*time.Minute).Unix()); err != nil {
+		t.Fatal(err)
+	}
+
+	body := do(t, New(app, "").Handler(), http.MethodGet, "/ui/outbound", nil, nil).Body.String()
+	// The message is identifiable, not just an opaque ID.
+	if !strings.Contains(body, "지연된 보고") || !strings.Contains(body, "them@corp.local") {
+		t.Fatal("the delivery is not identifiable from the page")
+	}
+	// Its true state and the reason are both shown.
+	if !strings.Contains(body, "재시도 대기") || !strings.Contains(body, "451 temporary failure") {
+		t.Fatal("retry state or server response missing")
+	}
+	// And the page warns that something is still outstanding.
+	if !strings.Contains(body, "발송이 끝나지 않은 메일이 1건") {
+		t.Fatal("pending deliveries are not summarized")
+	}
+	// The section marks itself in the header rather than borrowing 새 메일.
+	if !strings.Contains(body, `<a href="/ui/outbound" class="on" aria-current="page">발송 상태</a>`) {
+		t.Fatal("outbound does not mark itself as the current section")
+	}
+}

@@ -423,6 +423,38 @@ func isTemporary(err error) bool {
 	return errors.As(err, &t) && t.Temporary()
 }
 
+// OutboundView pairs a delivery record with enough of its draft to be
+// recognisable. An ID alone tells the sender nothing about which mail is stuck.
+type OutboundView struct {
+	Outbound domain.OutboundMessage `json:"outbound"`
+	Subject  string                 `json:"subject,omitempty"`
+	To       []string               `json:"to,omitempty"`
+}
+
+// ListOutbound reports recent sends and their outcome. A temporary SMTP
+// failure parks a message in the retry queue, which until now was visible only
+// to the worker — the sender saw a success page and never learned otherwise.
+func (a *App) ListOutbound(ctx context.Context, limit int) ([]OutboundView, error) {
+	userID := userIDFrom(ctx)
+	rows, err := a.Store.ListOutbound(ctx, userID, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]OutboundView, 0, len(rows))
+	for _, o := range rows {
+		view := OutboundView{Outbound: o}
+		// Best-effort enrichment: a discarded draft must not hide its delivery.
+		if _, v, derr := a.Store.GetDraft(ctx, userID, o.DraftID); derr == nil && v != nil {
+			view.Subject = v.Subject
+			for _, addr := range v.To {
+				view.To = append(view.To, addr.Email)
+			}
+		}
+		out = append(out, view)
+	}
+	return out, nil
+}
+
 func (a *App) GetOutbound(ctx context.Context, id string) (*domain.OutboundMessage, error) {
 	return a.Store.GetOutbound(ctx, userIDFrom(ctx), id)
 }

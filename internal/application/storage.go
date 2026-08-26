@@ -134,6 +134,9 @@ type Storage interface {
 	UpdateOutbound(ctx context.Context, id string, status domain.OutboundStatus, smtpResponse string, attempts int) error
 	MarkOutboundRetry(ctx context.Context, id, smtpResponse string, attempts int, nextAttemptAt int64) error
 	ListDueRetries(ctx context.Context, nowTS int64, limit int) ([]domain.OutboundMessage, error)
+	// ListOutbound reports a user's recent sends and their outcome, so a
+	// delivery still waiting on a retry is visible rather than assumed sent.
+	ListOutbound(ctx context.Context, userID string, limit int) ([]domain.OutboundMessage, error)
 
 	CreateJob(ctx context.Context, j *domain.Job) error
 	UpdateJob(ctx context.Context, j *domain.Job) error
