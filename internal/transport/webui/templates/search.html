@@ -21,6 +21,33 @@
   <input type="hidden" name="folder" value="{{.Folder}}">
   <button type="submit">검색</button>
 </form>
+{{with .Filters}}
+<details class="advsearch"{{if .Active}} open{{end}}>
+  <summary class="small muted">상세 조건{{if .Active}} · 적용 중{{end}}</summary>
+  <form method="get" action="/ui/" class="card advgrid">
+    <input type="hidden" name="q" value="{{.Query}}">
+    <input type="hidden" name="account" value="{{.AccountID}}">
+    <input type="hidden" name="label" value="{{.Label}}">
+    <input type="hidden" name="folder" value="{{.Folder}}">
+    <div class="field"><label for="f-from">보낸이</label>
+      <input id="f-from" type="text" name="from" value="{{.From}}" placeholder="이름 또는 주소 일부"></div>
+    <div class="field"><label for="f-to">받는이</label>
+      <input id="f-to" type="text" name="to" value="{{.To}}" placeholder="주소 일부"></div>
+    <div class="field"><label for="f-subject">제목</label>
+      <input id="f-subject" type="text" name="subject" value="{{.Subject}}"></div>
+    <div class="field"><label for="f-since">받은 날짜 (시작)</label>
+      <input id="f-since" type="date" name="since" value="{{.Since}}"></div>
+    <div class="field"><label for="f-until">받은 날짜 (종료)</label>
+      <input id="f-until" type="date" name="until" value="{{.Until}}"></div>
+    <div class="field"><label for="f-att">첨부</label>
+      <label class="small"><input id="f-att" type="checkbox" name="att" value="1"{{if .HasAttachment}} checked{{end}}> 첨부가 있는 메일만</label></div>
+    <div class="actions">
+      <button type="submit">이 조건으로 검색</button>
+      <a class="btn ghost" href="/ui/?q={{.Query}}&account={{.AccountID}}&label={{.Label}}&folder={{.Folder}}">조건 지우기</a>
+    </div>
+  </form>
+</details>
+{{end}}
 {{$fq := .Query}}{{$fa := .AccountID}}{{$fl := .Label}}
 <nav class="chips" aria-label="폴더">
   <a class="chip{{if eq .Folder "inbox"}} on{{end}}" href="/ui/?q={{$fq}}&account={{$fa}}&label={{$fl}}&folder=inbox">받은편지함</a>

@@ -100,6 +100,13 @@ button.ghost,.btn.ghost{background:var(--card);color:var(--accent);border:1px so
 /* Important mail earns a quiet left rule rather than shouting in colour. */
 .mailrow.is-important{box-shadow:inset 3px 0 0 var(--accent)}
 @media(max-width:560px){.mailrow{gap:.6rem;padding:.65rem .5rem}.mailrow-time{align-self:flex-start}}
+.advsearch{margin:-.4rem 0 1rem}
+.advsearch summary{cursor:pointer;padding:.3rem 0;list-style:none}
+.advsearch summary::-webkit-details-marker{display:none}
+.advsearch summary:before{content:"▸ ";color:var(--muted)}
+.advsearch[open] summary:before{content:"▾ "}
+.advgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:.2rem 1rem;margin-top:.4rem}
+.advgrid .actions{grid-column:1/-1;margin-top:.3rem}
 .chips{display:flex;gap:.4rem;align-items:center;flex-wrap:wrap;margin:-.4rem 0 1rem}
 .chip{display:inline-block;font-size:.82rem;padding:.28rem .7rem;border-radius:99px;border:1px solid var(--line);color:var(--muted);text-decoration:none;background:var(--card);transition:.15s ease}
 .chip:hover{border-color:var(--accent);color:var(--accent)}

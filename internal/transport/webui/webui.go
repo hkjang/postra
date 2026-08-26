@@ -882,29 +882,97 @@ func (s *Server) adminVectorTest(w http.ResponseWriter, r *http.Request) {
 
 const searchPageSize = 50
 
+// searchFilters is the set of narrowing options the list understands. The
+// store has supported all of them since search shipped; the page offered only
+// free text, an account and an AI label.
+type searchFilters struct {
+	Query, AccountID, Label, Folder string
+	From, To, Subject, Since, Until string
+	HasAttachment                   bool
+}
+
+// Active reports whether anything beyond the basic bar is narrowing the list,
+// so the advanced panel opens showing the criteria already in force rather
+// than hiding them behind a closed fold.
+func (f searchFilters) Active() bool {
+	return f.From != "" || f.To != "" || f.Subject != "" ||
+		f.Since != "" || f.Until != "" || f.HasAttachment
+}
+
+// values renders the filters as query parameters, so pagination and every
+// in-page link carry the current search rather than silently dropping it.
+func (f searchFilters) values() url.Values {
+	v := url.Values{}
+	for key, val := range map[string]string{
+		"q": f.Query, "account": f.AccountID, "label": f.Label, "folder": f.Folder,
+		"from": f.From, "to": f.To, "subject": f.Subject, "since": f.Since, "until": f.Until,
+	} {
+		if val != "" {
+			v.Set(key, val)
+		}
+	}
+	if f.HasAttachment {
+		v.Set("att", "1")
+	}
+	return v
+}
+
+// dayStart/dayEnd turn a date picker's YYYY-MM-DD into the instant a person
+// means: "since the 4th" includes the whole 4th, and so does "until the 4th".
+func dayStart(date string) int64 {
+	t, err := time.ParseInLocation("2006-01-02", date, time.Local)
+	if err != nil {
+		return 0
+	}
+	return t.Unix()
+}
+
+func dayEnd(date string) int64 {
+	t, err := time.ParseInLocation("2006-01-02", date, time.Local)
+	if err != nil {
+		return 0
+	}
+	return t.AddDate(0, 0, 1).Add(-time.Second).Unix()
+}
+
 func (s *Server) search(w http.ResponseWriter, r *http.Request) {
-	q := strings.TrimSpace(r.URL.Query().Get("q"))
-	cursor := r.URL.Query().Get("cursor")
-	accountID := r.URL.Query().Get("account")
-	label := r.URL.Query().Get("label")
+	qs := r.URL.Query()
+	f := searchFilters{
+		Query:         strings.TrimSpace(qs.Get("q")),
+		AccountID:     qs.Get("account"),
+		Label:         qs.Get("label"),
+		Folder:        qs.Get("folder"),
+		From:          strings.TrimSpace(qs.Get("from")),
+		To:            strings.TrimSpace(qs.Get("to")),
+		Subject:       strings.TrimSpace(qs.Get("subject")),
+		Since:         qs.Get("since"),
+		Until:         qs.Get("until"),
+		HasAttachment: qs.Get("att") != "",
+	}
 	// Without a folder the store applies no filter at all, so archived and
 	// snoozed mail stayed in the list and the archive button did nothing
 	// visible. The inbox is the default view; other folders are explicit.
-	folder := r.URL.Query().Get("folder")
-	switch folder {
+	switch f.Folder {
 	case "archive", "important", "snoozed":
 	default:
-		folder = "inbox"
+		f.Folder = "inbox"
 	}
 	accounts, err := s.app.ListAccounts(r.Context())
 	if err != nil {
 		s.fail(w, err)
 		return
 	}
-	res, err := s.app.Search(r.Context(), domain.SearchQuery{
-		UserID: application.DefaultUserID, Text: q, AccountID: accountID,
-		Label: label, Folder: folder, Limit: searchPageSize, Cursor: cursor,
-	})
+	query := domain.SearchQuery{
+		UserID: application.DefaultUserID, Text: f.Query, AccountID: f.AccountID,
+		Label: f.Label, Folder: f.Folder, From: f.From, To: f.To, Subject: f.Subject,
+		Since: dayStart(f.Since), Until: dayEnd(f.Until),
+		Limit: searchPageSize, Cursor: qs.Get("cursor"),
+	}
+	if f.HasAttachment {
+		yes := true
+		query.HasAttachment = &yes
+	}
+	res, err := s.app.Search(r.Context(), query)
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -927,26 +995,21 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := map[string]any{
-		"Query": q, "Messages": res.Messages, "Accounts": accounts, "Snippets": snippets,
-		"AccountID": accountID, "HasAccounts": len(accounts) > 0,
-		"HasMessages": len(res.Messages) > 0, "Label": label, "Folder": folder,
+		"Query": f.Query, "Messages": res.Messages, "Accounts": accounts, "Snippets": snippets,
+		"AccountID": f.AccountID, "HasAccounts": len(accounts) > 0,
+		"HasMessages": len(res.Messages) > 0, "Label": f.Label, "Folder": f.Folder,
+		"Filters": f,
 	}
-	if v := r.URL.Query().Get("done"); v != "" {
-		data["BatchDone"], data["BatchFailed"] = v, r.URL.Query().Get("failed")
+	if v := qs.Get("done"); v != "" {
+		data["BatchDone"], data["BatchFailed"] = v, qs.Get("failed")
 	}
-	if r.URL.Query().Get("none") != "" {
+	if qs.Get("none") != "" {
 		data["BatchNone"] = true
 	}
 	if res.NextCursor != "" {
-		next := "/ui/?q=" + url.QueryEscape(q)
-		if accountID != "" {
-			next += "&account=" + url.QueryEscape(accountID)
-		}
-		if label != "" {
-			next += "&label=" + url.QueryEscape(label)
-		}
-		next += "&folder=" + url.QueryEscape(folder)
-		data["NextURL"] = next + "&cursor=" + url.QueryEscape(res.NextCursor)
+		nv := f.values()
+		nv.Set("cursor", res.NextCursor)
+		data["NextURL"] = "/ui/?" + nv.Encode()
 	}
 	s.render(w, "search", http.StatusOK, data)
 }

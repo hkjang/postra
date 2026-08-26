@@ -752,3 +752,70 @@ func TestCollaborationFromMessageAndTeamInbox(t *testing.T) {
 		t.Fatalf("note count = %d, want 1 (blank note should be ignored)", len(cv.Notes))
 	}
 }
+
+// The store has supported sender, recipient, subject, date range and
+// attachment filters since search shipped; the page exposed only free text,
+// an account and an AI label.
+func TestAdvancedSearchFilters(t *testing.T) {
+	app, _ := newTestApp(t)
+	ctx := application.WithActor(context.Background(), "test")
+	now := time.Now()
+	seed := func(id, subj, from string, when time.Time, att bool) {
+		m := &domain.Message{
+			ID: id, UserID: application.DefaultUserID, AccountID: "acc_s", UIDL: "u-" + id,
+			Subject: subj, From: domain.Address{Email: from},
+			To:      []domain.Address{{Email: "me@corp.local"}},
+			RawHash: "h-" + id, RawURI: "mem://" + id,
+			Date: when.Unix(), CreatedAt: now.Unix(), HasAttachments: att,
+		}
+		if err := app.Store.InsertMessage(ctx, m, &domain.MessageBody{MessageID: id}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seed("msg_a", "계약 검토", "alice@corp.local", now.AddDate(0, 0, -1), true)
+	seed("msg_b", "회식 공지", "bob@corp.local", now.AddDate(0, 0, -20), false)
+	h := New(app, "").Handler()
+
+	// Sender narrows the list.
+	body := do(t, h, http.MethodGet, "/ui/?from=alice", nil, nil).Body.String()
+	if !strings.Contains(body, "계약 검토") || strings.Contains(body, "회식 공지") {
+		t.Error("sender filter did not narrow the list")
+	}
+	// Subject narrows independently of the free-text box.
+	body = do(t, h, http.MethodGet, "/ui/?subject=회식", nil, nil).Body.String()
+	if !strings.Contains(body, "회식 공지") || strings.Contains(body, "계약 검토") {
+		t.Error("subject filter did not narrow the list")
+	}
+	// Attachment-only.
+	body = do(t, h, http.MethodGet, "/ui/?att=1", nil, nil).Body.String()
+	if !strings.Contains(body, "계약 검토") || strings.Contains(body, "회식 공지") {
+		t.Error("attachment filter did not narrow the list")
+	}
+	// A date range covering only the recent message. "since the Nth" must
+	// include the whole of that day, which a naive midnight bound would miss.
+	since := now.AddDate(0, 0, -1).Format("2006-01-02")
+	body = do(t, h, http.MethodGet, "/ui/?since="+since, nil, nil).Body.String()
+	if !strings.Contains(body, "계약 검토") {
+		t.Error("a message sent on the start date was excluded by the range")
+	}
+	if strings.Contains(body, "회식 공지") {
+		t.Error("an older message survived the start date")
+	}
+	// ...and "until" includes its whole day too.
+	until := now.AddDate(0, 0, -20).Format("2006-01-02")
+	body = do(t, h, http.MethodGet, "/ui/?until="+until, nil, nil).Body.String()
+	if !strings.Contains(body, "회식 공지") {
+		t.Error("a message sent on the end date was excluded by the range")
+	}
+
+	// Active filters keep the panel open and are carried through pagination.
+	if !strings.Contains(body, "<details class=\"advsearch\" open>") {
+		t.Error("the advanced panel hides criteria that are currently in force")
+	}
+	// An unparseable date must be ignored, not turned into a bogus bound that
+	// silently empties the list.
+	body = do(t, h, http.MethodGet, "/ui/?since=not-a-date", nil, nil).Body.String()
+	if !strings.Contains(body, "계약 검토") || !strings.Contains(body, "회식 공지") {
+		t.Error("an invalid date filtered mail out instead of being ignored")
+	}
+}
