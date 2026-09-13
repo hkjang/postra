@@ -24,7 +24,3 @@ config.json
 /.gitframe/
 /output/
 
-# kanpic 저장소가 통째로 복제되어 들어와 있다(144MB, 자체 .git 과 go.mod).
-# 참조하려고 둔 것으로 보이는데 이 저장소가 가질 것은 아니다 — 지워도
-# 된다면 지우고 이 줄도 함께 빼면 된다.
-/docs/kanpic/
