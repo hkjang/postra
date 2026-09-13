@@ -12,6 +12,7 @@ import (
 
 	"postra/internal/domain"
 	"postra/internal/platform/config"
+	"postra/internal/platform/handoff"
 	"postra/internal/platform/tracking"
 )
 
@@ -96,6 +97,10 @@ func init() {
 	for _, key := range tracking.SettingKeys {
 		allowedSettings[key] = true
 	}
+	// Likewise the handoff allow list.
+	for _, key := range handoff.SettingKeys {
+		allowedSettings[key] = true
+	}
 }
 
 func (a *App) SystemSettings(ctx context.Context) (map[string]string, error) {
@@ -162,6 +167,9 @@ func (a *App) SystemSettings(ctx context.Context) (map[string]string, error) {
 		SettingMCPPolicy:              "",
 	}
 	for key, value := range tracking.Defaults {
+		defaults[key] = value
+	}
+	for key, value := range handoff.Defaults {
 		defaults[key] = value
 	}
 	for key, value := range defaults {
@@ -252,6 +260,9 @@ func (a *App) AdminSaveSettings(ctx context.Context, values map[string]string, o
 		}
 	}
 	if err := validateTrackingSettings(storedBefore, clean); err != nil {
+		return err
+	}
+	if err := validateHandoffSettings(clean); err != nil {
 		return err
 	}
 	if oidcClientSecret != "" {

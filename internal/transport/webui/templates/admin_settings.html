@@ -55,6 +55,12 @@
   <p><label><input type="checkbox" name="security.encrypt_at_rest" value="true" {{if eq (index $s "security.encrypt_at_rest") "true"}}checked{{end}}> 저장 콘텐츠 암호화</label></p>
   <p class="small muted">OIDC·세션 설정은 즉시 적용됩니다. 메일·AI·발송·첨부 정책은 저장 후 재시작 시 적용됩니다. 데이터 경로, 스토리지 드라이버, 바인드 주소처럼 프로세스 시작 전에 필요한 인프라 설정은 환경변수/설정 파일로 관리합니다. 비밀값은 암호화 SecretStore에 저장됩니다.</p>
 </div>
+<div class="card" id="handoff"><h2>다른 서비스로 보내기</h2>
+  <p class="small muted">메일 화면에서 이 메일을 마크다운 문서로 다른 사내 서비스(muni·ptium·weekly 등)에 넘길 수 있습니다. 사람이 파일을 내려받지 않고, 서비스끼리 자격 증명을 들고 있지도 않습니다 — 5분짜리 일회용 표(claim)를 발급하고 받는 쪽이 여기서 직접 받아 갑니다. 목록이 비어 있으면(기본값) 메일 화면에 보내기 단추가 나타나지 않습니다. <code>markdown</code> 을 받지 않는 서비스는 적어도 단추가 생기지 않습니다.</p>
+  <div class="field"><label>보낼 곳 (JSON 배열, 최대 20개)</label><textarea name="handoff.targets" rows="5" placeholder='[{"name":"Ptium","origin":"https://ptium.intra","formats":["markdown","docx","csv","xlsx","txt"]}]'>{{index $s "handoff.targets"}}</textarea></div>
+  <div class="field"><label>이 서비스의 공개 주소 (오리진)</label><input type="text" name="handoff.source_origin" value="{{index $s "handoff.source_origin"}}" placeholder="https://postra.intra (비우면 요청이 들어온 주소를 씁니다)"></div>
+  <p class="small muted">받는 서비스는 이 주소를 자기 허용 목록과 대조하므로 그쪽 표기(스킴·호스트·포트)와 정확히 같아야 합니다.</p>
+</div>
 <div class="card" id="tracking"><h2>방문 추적</h2>
   <p class="small muted">관리자가 켜기 전까지는 어떤 화면에도 스크립트가 붙지 않습니다. 화면 정책은 <code>script-src 'self'</code> 에 요청마다 다른 nonce 를 더해 잠겨 있고, 스니펫의 모든 <code>&lt;script&gt;</code> 에 그 nonce 가 붙습니다. 스니펫이 부르는 http(s) 출처는 자동으로 정책에 더해지며, 그래도 막힌 출처는 아래 "차단된 출처" 에 나타납니다. <code>'unsafe-inline'</code> 은 쓰지 않습니다.</p>
   <p><label><input type="checkbox" name="tracking.enabled" value="true" {{if eq (index $s "tracking.enabled") "true"}}checked{{end}}> 방문 추적 켜기</label></p>

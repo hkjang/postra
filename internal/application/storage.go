@@ -127,6 +127,14 @@ type Storage interface {
 	InsertApproval(ctx context.Context, id, userID, actionType, draftID string, draftVersion int, payloadHash, tokenHash, approver string, expiresAt int64) error
 	ConsumeApproval(ctx context.Context, tokenHash, payloadHash string) (string, int, error)
 
+	// Handoff claims: single-use tickets another service collects a message
+	// with. ConsumeHandoffClaim removes the unexpired row for digest and
+	// returns it in one step, so two collectors can never both succeed;
+	// a missing, spent or expired claim is ErrNotFound alike.
+	InsertHandoffClaim(ctx context.Context, c *domain.HandoffClaim) error
+	ConsumeHandoffClaim(ctx context.Context, digest string, nowTS int64) (*domain.HandoffClaim, error)
+	SweepHandoffClaims(ctx context.Context, nowTS int64) error
+
 	CreateOutbound(ctx context.Context, o *domain.OutboundMessage) error
 	GetOutboundByIdemKey(ctx context.Context, userID, key string) (*domain.OutboundMessage, error)
 	GetOutbound(ctx context.Context, userID, id string) (*domain.OutboundMessage, error)

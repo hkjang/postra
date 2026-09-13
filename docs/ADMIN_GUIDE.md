@@ -283,6 +283,55 @@ Content-Security-Policy: default-src 'self';
 2. **방문 추적 켜기**를 체크하고 저장합니다. provider 에 필요한 값이 비어 있거나 스니펫이 8KB 를 넘으면 저장이 거부되고 이유가 화면에 표시됩니다.
 3. 일반 화면(예: `/ui/`)을 띄워 수집기에 이벤트가 들어오는지 확인합니다. 들어오지 않으면 설정 화면의 **차단된 출처** 표를 보고 **허용**을 누른 뒤 다시 띄웁니다.
 
+### 6.4 다른 서비스로 보내기 (문서 넘기기, `handoff.*`)
+
+메일에서 시작한 일이 muni 의 문서가 되고 ptium 의 슬라이드가 되어 weekly 의 보고로 들어갈 때, 단계마다 사람이 파일을 내려받아 다시 올리던 손을 없앱니다. Postra 는 사내 표준(aidev `HANDOFF-STANDARD.md`)의 **보내는 쪽**이며 보내는 형식은 `markdown` 하나입니다 — 메일 한 통을 제목·보낸이·받는이·날짜·첨부 이름과 본문 텍스트로 이루어진 마크다운 문서로 넘깁니다. **받는 쪽은 만들지 않습니다.**
+
+**어떻게 넘어가는가**
+
+1. 사용자가 메일 화면(`/ui/messages/{id}`)의 **다른 서비스로 보내기** 카드에서 서비스 이름을 고릅니다.
+2. 브라우저가 `POST /api/v1/handoff/claims` 로 **표(claim)** 를 발급받습니다 — 256비트 난수, **5분**, **한 번**만 쓸 수 있고, 그 사용자가 읽을 수 있는 그 메일 하나에만 묶입니다. 남의 메일로는 `404` 입니다.
+3. 새 창에서 받는 서비스의 `https://<서비스>/handoff?source=<Postra 주소>&claim=<표>` 가 열립니다. 사람이 파일을 내려받지 않습니다.
+4. 받는 서비스가 `GET <Postra 주소>/api/v1/handoff/claims/<표>` 로 문서를 받아 갑니다. 로그인은 없습니다 — 표가 곧 자격입니다. 받아 가는 순간 표는 지워지고, 두 번째 요청·만료된 표·발급된 적 없는 표는 모두 같은 `404` 로 답하며 이유를 구별해 주지 않습니다.
+
+서비스끼리 서로의 자격 증명을 들고 있지 않습니다. 표는 `handoff_claims` 표(SQLite·PostgreSQL 모두)에 **SHA-256 다이제스트로만** 저장되므로 DB 를 읽어도 제시할 수 있는 값은 없고, 여러 replica 가 같은 DB 를 볼 때 어느 pod 가 받아도 됩니다. 문서 본문은 표에 저장하지 않고 받아 갈 때 다시 만듭니다(메일은 바뀌지 않으므로 발급 때 알린 `bytes` 와 같습니다) — 암호화된 본문 컬럼 밖에 평문 사본이 생기지 않습니다. 만료된 행은 다음 표를 발급할 때 정리됩니다. 발급과 수령은 감사 로그(`handoff_claim_issued` · `handoff_claim_collected`)에 남지만 **표 자체는 어떤 로그·감사 기록에도 남지 않습니다.**
+
+**허용 목록 설정**
+
+`/ui/admin/settings` → **다른 서비스로 보내기** 카드. 설정은 추적 설정과 같은 자리(시스템 설정 저장소)에 들어가며 REST `PATCH /api/admin/settings` 로도 바꿀 수 있습니다. **기본값은 비어 있고**, 그때는 메일 화면에 보내기 단추가 나타나지 않습니다 — 새로 설치한 곳에서는 아무것도 달라지지 않습니다.
+
+| 설정 키 | 기본값 | 뜻 |
+| --- | --- | --- |
+| `handoff.targets` | (없음) | 보낼 곳의 JSON 배열. 항목마다 `name`(메뉴에 보이는 이름), `origin`(`https://ptium.intra` 처럼 **스킴과 호스트(포트)까지만** — 경로·쿼리·자격 증명이 있으면 저장되지 않음), `formats`(그 서비스가 받는 형식: `markdown` `docx` `csv` `xlsx` `txt` `pptx`). 같은 주소를 두 번 적을 수 없고, 20개까지입니다. |
+| `handoff.source_origin` | (없음) | 받는 쪽이 보게 될 **Postra 의 공개 주소**(오리진). 비우면 요청이 들어온 주소(`X-Forwarded-Proto` · `X-Forwarded-Host` 반영)를 씁니다. |
+
+Postra 는 `markdown` 만 보내므로 **`formats` 에 `markdown` 이 없는 항목은 저장되어도 단추가 생기지 않습니다.** 표준의 형식 표대로면 `muni` · `ptium` · `weekly` 가 `markdown` 을 받고 `kanpic` 은 받지 않습니다. 잘못된 JSON, 경로가 붙은 주소, 모르는 형식은 저장이 거부되고 이유가 화면에 표시됩니다.
+
+```json
+[
+  {"name": "Muni",   "origin": "https://muni.intra",   "formats": ["markdown"]},
+  {"name": "Ptium",  "origin": "https://ptium.intra",  "formats": ["markdown", "docx", "csv", "xlsx", "txt"]},
+  {"name": "Weekly", "origin": "https://weekly.intra", "formats": ["markdown", "docx", "pptx"]}
+]
+```
+
+REST 로는 위 배열을 문자열로 담아 보냅니다.
+
+```bash
+curl -X PATCH -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  https://postra.intra/api/admin/settings \
+  -d '{"values":{"handoff.source_origin":"https://postra.intra",
+       "handoff.targets":"[{\"name\":\"Ptium\",\"origin\":\"https://ptium.intra\",\"formats\":[\"markdown\"]}]"}}'
+```
+
+**받는 쪽에 알려 줄 것** — 받는 서비스의 관리자는 자기 허용 목록에 Postra 의 오리진(`handoff.source_origin`, 비웠다면 실제 접속 주소)을 **스킴·호스트·포트까지 똑같이** 적어야 합니다. 그쪽 목록에 없으면 받는 서비스는 Postra 에 아무 요청도 보내지 않고 거절합니다 — 그것이 표준입니다.
+
+**확인 절차**
+1. 목록이 비어 있을 때 메일 화면에 **다른 서비스로 보내기** 카드가 없는지 봅니다.
+2. 서비스를 하나 적고 저장한 뒤 카드에 그 이름이 나오는지, 누르면 새 창에 받는 서비스의 `/handoff?source=…&claim=…` 가 열리는지 봅니다. 팝업이 막히면 화면이 그렇게 말합니다.
+3. 같은 표로 두 번 받으면 두 번째는 `404` 입니다: `curl -i https://postra.intra/api/v1/handoff/claims/<표>` 를 두 번 실행해 봅니다.
+4. 서버 로그와 감사 로그(`/ui/admin` · `GET /api/audit`)에 표 문자열이 없는지 확인합니다.
+
 ---
 
 ## 7. 전체 릴리즈 이력 (Release History: v0.1.0 ~ v0.10.5)

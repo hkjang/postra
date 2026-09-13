@@ -212,6 +212,40 @@ button.ghost,.btn.ghost{background:var(--card);color:var(--accent);border:1px so
     }
   });
 
+  // Handing a mail to another service: ask our own server for a single-use
+  // claim, then open the receiving service with it. The window is opened in
+  // the click itself — a window opened after an await is one the popup
+  // blocker may refuse — and pointed at the service once the claim arrives.
+  document.addEventListener('click', function (e) {
+    var btn = e.target && e.target.closest ? e.target.closest('[data-handoff-origin]') : null;
+    if (!btn) return;
+    e.preventDefault();
+    var origin = btn.getAttribute('data-handoff-origin');
+    var resource = btn.getAttribute('data-handoff-resource');
+    var opened = window.open('', '_blank');
+    if (!opened) {
+      window.alert('팝업이 막혔습니다. 이 사이트의 팝업을 허용한 뒤 다시 시도하세요.');
+      return;
+    }
+    btn.disabled = true;
+    fetch('/api/v1/handoff/claims', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ resource: resource, format: 'markdown' })
+    }).then(function (r) {
+      return r.json().then(function (d) {
+        if (!r.ok) throw new Error(d && d.error ? d.error : ('HTTP ' + r.status));
+        return d;
+      });
+    }).then(function (claim) {
+      var q = new URLSearchParams({ source: claim.source, claim: claim.claim });
+      opened.location.href = origin + '/handoff?' + q.toString();
+    }).catch(function (err) {
+      opened.close();
+      window.alert('보내지 못했습니다: ' + err.message);
+    }).then(function () { btn.disabled = false; });
+  });
+
   // Silent SSO bookkeeping: a page behind the gate means a session exists, so
   // the one-attempt and signed-out markers are cleared; a deliberate logout
   // sets the signed-out marker so the login page does not sign us back in.
