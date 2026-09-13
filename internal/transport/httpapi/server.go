@@ -834,7 +834,10 @@ func (s *Server) messageCalendarICS(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/calendar; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="postra-events.ics"`)
-	_, _ = io.WriteString(w, out.ICS())
+	// gosec G705(XSS): iCalendar 본문이고 Content-Type 은 text/calendar,
+	// Content-Disposition 은 attachment 입니다. 브라우저가 HTML 로 그리지
+	// 않습니다.
+	_, _ = io.WriteString(w, out.ICS()) // #nosec G705 -- text/calendar 첨부, HTML 아님
 }
 
 func (s *Server) draftRule(w http.ResponseWriter, r *http.Request) {

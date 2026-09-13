@@ -518,13 +518,15 @@ func serve(configPath string) error {
 	hostname, _ := os.Hostname()
 	crashPath := filepath.Join(cfg.DataDir, "crash.log")
 	hadCrash := false
-	if b, rerr := os.ReadFile(crashPath); rerr == nil && len(strings.TrimSpace(string(b))) > 0 {
+	// G304: crashPath 는 바로 위에서 운영자 설정인 DataDir 에 고정 파일명을
+	// 붙여 만든 것입니다. 밖에서 들어오는 값이 섞이지 않습니다.
+	if b, rerr := os.ReadFile(crashPath); rerr == nil && len(strings.TrimSpace(string(b))) > 0 { // #nosec G304 -- DataDir + 고정 파일명
 		hadCrash = true
 		app.IngestCrashReport(string(b))
 		_ = os.Rename(crashPath, crashPath+".old")
 		slog.Error("previous run crashed with a fatal runtime error; dump recorded as incident", "file", crashPath+".old")
 	}
-	if f, oerr := os.OpenFile(crashPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600); oerr == nil {
+	if f, oerr := os.OpenFile(crashPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600); oerr == nil { // #nosec G304 -- DataDir + 고정 파일명
 		if serr := debug.SetCrashOutput(f, debug.CrashOptions{}); serr != nil {
 			slog.Warn("fatal-error capture unavailable", "err", serr)
 		}
@@ -987,7 +989,9 @@ func rulesCmd(args []string) error {
 		if *file == "-" {
 			data, err = io.ReadAll(os.Stdin)
 		} else {
-			data, err = os.ReadFile(*file) // #nosec G304 -- operator-supplied path
+			// G703/G304: --file 로 운영자가 직접 준 경로입니다. 이 명령을 실행하는
+			// 사람이 곧 그 경로를 고른 사람이라 더 좁힐 것이 없습니다.
+			data, err = os.ReadFile(*file) // #nosec G304,G703 -- 운영자가 인자로 준 경로
 		}
 		if err != nil {
 			return err

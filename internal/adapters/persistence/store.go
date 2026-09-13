@@ -904,7 +904,10 @@ func (s *Store) ListIncidents(ctx context.Context, f domain.IncidentFilter) ([]d
 	if limit <= 0 || limit > 500 {
 		limit = 200
 	}
-	q += fmt.Sprintf(" LIMIT %d", limit)
+	// gosec G202(SQL concat): conds 는 위에서 만든 고정 문자열뿐이고 값은
+	// 모두 ? 로 묶입니다. 여기 이어 붙이는 것은 바로 위에서 1..500 으로
+	// 자른 정수입니다.
+	q += fmt.Sprintf(" LIMIT %d", limit) // #nosec G202 -- 고정 문구 + 범위 제한된 정수
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
@@ -1412,10 +1415,12 @@ func (s *Store) BodyTextBatch(ctx context.Context, userID string, messageIDs []s
 		args = append(args, id)
 	}
 	args = append(args, bodySnippetMaxStored)
+	// gosec G202(SQL concat): 이어 붙이는 것은 바로 위에서 만든 "?" 목록뿐입니다.
+	// messageIDs 의 값은 하나도 문장에 들어가지 않고 전부 args 로 묶입니다.
 	rows, err := s.db.QueryContext(ctx, `SELECT b.message_id, b.text_body
 	 FROM message_bodies b JOIN messages m ON m.id=b.message_id
 	 WHERE m.user_id=? AND b.message_id IN (`+strings.Join(placeholders, ",")+`)
-	   AND length(b.text_body) <= ?`, args...)
+	   AND length(b.text_body) <= ?`, args...) // #nosec G202 -- ? 자리표시자만 이어 붙임
 	if err != nil {
 		return nil, err
 	}
