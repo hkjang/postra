@@ -271,6 +271,9 @@ func run(cmd string, args []string) error {
 	case "version":
 		fs.Parse(args)
 		fmt.Printf("postra %s (%s %s/%s)\n", build.Version, runtime.Version(), runtime.GOOS, runtime.GOARCH)
+		// 버전만으로는 같은 태그를 두 번 빌드한 것을 구분할 수 없다. 사고가
+		// 났을 때 필요한 것은 어느 커밋이 돌고 있느냐다.
+		fmt.Printf("commit %s\nbuilt  %s\n", build.Commit, build.BuildTime)
 		return nil
 
 	case "init":

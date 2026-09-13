@@ -34,7 +34,10 @@ jobs:
         run: |
           mkdir -p dist
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
-            -ldflags="-s -w -X postra/internal/platform/build.Version=${{ steps.v.outputs.tag }}" \
+            -ldflags="-s -w \
+              -X postra/internal/platform/build.Version=${{ steps.v.outputs.tag }} \
+              -X postra/internal/platform/build.Commit=${{ github.sha }} \
+              -X postra/internal/platform/build.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             -o dist/postra-${{ steps.v.outputs.num }}-linux-amd64 ./cmd/postra
 
       - name: Build offline image tarball
@@ -42,7 +45,9 @@ jobs:
           go run scripts/mkimage.go \
             dist/postra-${{ steps.v.outputs.num }}-linux-amd64 \
             dist/postra-${{ steps.v.outputs.num }}-linux-amd64-image.tar \
-            postra:${{ steps.v.outputs.num }}
+            postra:${{ steps.v.outputs.num }} \
+            ${{ steps.v.outputs.tag }} \
+            ${{ github.sha }}
           gzip -9 -f dist/postra-${{ steps.v.outputs.num }}-linux-amd64-image.tar
 
       - name: Generate SBOM
