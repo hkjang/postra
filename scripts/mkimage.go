@@ -15,9 +15,22 @@ import (
 )
 
 func main() {
+	if len(os.Args) < 4 {
+		fmt.Fprintln(os.Stderr, "usage: mkimage <binary> <out.tar> <tag> [version] [commit]")
+		os.Exit(2)
+	}
 	binPath := os.Args[1]
 	outPath := os.Args[2]
 	tag := os.Args[3]
+	// 버전과 커밋은 선택 인자다. 주지 않으면 라벨에 unknown 이 들어간다 —
+	// 라벨을 통째로 빼면 "붙이지 않았다" 와 "모른다" 를 구분할 수 없다.
+	version, commit := "unknown", "unknown"
+	if len(os.Args) > 4 && os.Args[4] != "" {
+		version = os.Args[4]
+	}
+	if len(os.Args) > 5 && os.Args[5] != "" {
+		commit = os.Args[5]
+	}
 
 	bin, err := os.ReadFile(binPath)
 	must(err)
@@ -73,6 +86,17 @@ func main() {
 			"WorkingDir":   "/app",
 			"ExposedPorts": map[string]any{"8480/tcp": map[string]any{}, "8481/tcp": map[string]any{}},
 			"Volumes":      map[string]any{"/data": map[string]any{}},
+			// 이미지만 받아 든 사람이 어느 버전·어느 커밋인지 알 수 있어야
+			// 한다. 바이너리 안에만 새기면 docker image inspect 로도
+			// 보이지 않는다.
+			"Labels": map[string]any{
+				"org.opencontainers.image.title":       "Postra",
+				"org.opencontainers.image.description": "Postra mail workspace server",
+				"org.opencontainers.image.source":      "https://github.com/hkjang/postra",
+				"org.opencontainers.image.version":     version,
+				"org.opencontainers.image.revision":    commit,
+				"org.opencontainers.image.created":     now.Format(time.RFC3339),
+			},
 		},
 		"rootfs": map[string]any{
 			"type":     "layers",
@@ -112,7 +136,7 @@ func main() {
 	fmt.Printf("wrote:       %s\n", outPath)
 }
 
-func writeDir(w *tar.Writer, name string, t time.Time)           { writeDirMode(w, name, 0o755, t) }
+func writeDir(w *tar.Writer, name string, t time.Time) { writeDirMode(w, name, 0o755, t) }
 func writeDirMode(w *tar.Writer, name string, mode int64, t time.Time) {
 	must(w.WriteHeader(&tar.Header{
 		Name: name, Typeflag: tar.TypeDir, Mode: mode, ModTime: t,
