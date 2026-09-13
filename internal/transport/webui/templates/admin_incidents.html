@@ -37,7 +37,7 @@
   <td class="small muted">{{ts .LastSeen}}</td>
   <td>
     {{if .Resolved}}<span class="small muted">해결됨<br>{{.ResolvedBy}}<br>{{ts .ResolvedAt}}</span>
-    {{else}}<form method="post" action="/ui/admin/incidents/{{.ID}}/resolve" onsubmit="return confirm('이 항목을 해결됨으로 표시하시겠습니까?')"><button class="ghost" type="submit">해결 처리</button></form>{{end}}
+    {{else}}<form method="post" action="/ui/admin/incidents/{{.ID}}/resolve" data-confirm="이 항목을 해결됨으로 표시하시겠습니까?"><button class="ghost" type="submit">해결 처리</button></form>{{end}}
   </td>
 </tr>{{end}}</tbody></table></div>
 {{end}}

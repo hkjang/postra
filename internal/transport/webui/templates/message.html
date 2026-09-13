@@ -22,7 +22,7 @@
     {{end}}
   </form>
   <form method="post" action="/ui/messages/{{$m.ID}}/action"
-    onsubmit="return confirm('이 메일을 로컬에서 삭제합니다. 메일 서버의 원본은 그대로입니다. 계속할까요?')">
+    data-confirm="이 메일을 로컬에서 삭제합니다. 메일 서버의 원본은 그대로입니다. 계속할까요?">
     <input type="hidden" name="action" value="delete"><button class="danger" type="submit">삭제</button>
   </form>
 </div>
@@ -59,7 +59,7 @@
   {{range .View.Attachments}}
     <tr><td>{{.Name}}</td><td class="small muted">{{.MIMEType}}</td><td class="small">{{size .Size}}</td>
       <td class="small">{{.ScanStatus}}</td>
-      <td>{{if eq .ScanStatus "blocked"}}<span class="err">차단됨</span>{{else if eq .ScanStatus "clean"}}<a href="/ui/messages/{{$m.ID}}/attachments/{{.ID}}">다운로드</a>{{else}}<a class="err" href="/ui/messages/{{$m.ID}}/attachments/{{.ID}}?ack=true" onclick="return confirm('격리 또는 의심 첨부입니다. 위험을 이해하고 다운로드하시겠습니까?')">확인 후 다운로드</a>{{end}}</td></tr>
+      <td>{{if eq .ScanStatus "blocked"}}<span class="err">차단됨</span>{{else if eq .ScanStatus "clean"}}<a href="/ui/messages/{{$m.ID}}/attachments/{{.ID}}">다운로드</a>{{else}}<a class="err" href="/ui/messages/{{$m.ID}}/attachments/{{.ID}}?ack=true" data-confirm="격리 또는 의심 첨부입니다. 위험을 이해하고 다운로드하시겠습니까?">확인 후 다운로드</a>{{end}}</td></tr>
   {{end}}
   </tbody>
 </table></div>

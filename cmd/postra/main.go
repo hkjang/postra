@@ -40,6 +40,7 @@ import (
 	"postra/internal/platform/config"
 	"postra/internal/platform/crypto"
 	"postra/internal/platform/telemetry"
+	"postra/internal/platform/tracking"
 	"postra/internal/transport/httpapi"
 	"postra/internal/transport/mcpserver"
 	"postra/internal/transport/webui"
@@ -576,6 +577,7 @@ func serve(configPath string) error {
 		root.Handle("/favicon.ico", uiHandler)
 		root.Handle("/favicon.png", uiHandler)
 		root.Handle("/logo.png", uiHandler)
+		root.Handle(tracking.ProxyPath+"/", uiHandler) // same-origin Momento proxy; 404 unless enabled
 		slog.Info("web UI enabled", "path", "/ui/")
 	}
 	restSrv := &http.Server{

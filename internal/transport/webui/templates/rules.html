@@ -53,7 +53,7 @@
     </td>
     <td class="small">{{range .Actions}}<div>{{.Type}}{{if .Value}} → {{.Value}}{{end}}</div>{{end}}</td>
     <td class="small">{{if .Enabled}}<span class="ok">사용 중</span>{{else}}<span class="muted">중지됨</span>{{end}}</td>
-    <td><form method="post" action="/ui/rules/{{.ID}}/delete" onsubmit="return confirm('이 규칙을 삭제하시겠습니까?')"><button class="danger" type="submit">삭제</button></form></td>
+    <td><form method="post" action="/ui/rules/{{.ID}}/delete" data-confirm="이 규칙을 삭제하시겠습니까?"><button class="danger" type="submit">삭제</button></form></td>
   </tr>{{end}}</tbody>
 </table></div>
 {{else}}

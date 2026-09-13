@@ -12,6 +12,7 @@ import (
 
 	"postra/internal/domain"
 	"postra/internal/platform/config"
+	"postra/internal/platform/tracking"
 )
 
 const (
@@ -88,6 +89,14 @@ var allowedSettings = map[string]bool{
 	SettingMCPPolicy: true,
 }
 
+func init() {
+	// Visitor tracking keys live in the tracking package so the snippet and
+	// policy code never drifts from what the store accepts.
+	for _, key := range tracking.SettingKeys {
+		allowedSettings[key] = true
+	}
+}
+
 func (a *App) SystemSettings(ctx context.Context) (map[string]string, error) {
 	stored, err := a.Store.GetSettings(ctx)
 	if err != nil {
@@ -149,6 +158,9 @@ func (a *App) SystemSettings(ctx context.Context) (map[string]string, error) {
 		SettingVectorMilvusTokenRef:   "",
 		SettingVectorMilvusCollection: "postra_emails",
 		SettingMCPPolicy:              "",
+	}
+	for key, value := range tracking.Defaults {
+		defaults[key] = value
 	}
 	for key, value := range defaults {
 		if _, ok := stored[key]; !ok {
@@ -237,6 +249,9 @@ func (a *App) AdminSaveSettings(ctx context.Context, values map[string]string, o
 			return userErrf("OIDC issuer: %v", err)
 		}
 	}
+	if err := validateTrackingSettings(storedBefore, clean); err != nil {
+		return err
+	}
 	if oidcClientSecret != "" {
 		ref, err := a.RegisterSecret(ctx, domain.SecretAPIKey, "OIDC client secret",
 			domain.NewSecretHandle([]byte(oidcClientSecret)))
@@ -288,6 +303,69 @@ func (a *App) AdminSaveSettings(ctx context.Context, values map[string]string, o
 	}
 
 	a.audit(ctx, "settings_update", "system", "ok", "keys="+strconv.Itoa(len(clean)))
+	return nil
+}
+
+// validateTrackingSettings checks the tracking configuration that would result
+// from a save, so a snippet over the size limit or a provider missing its id
+// is refused before it reaches the store.
+func validateTrackingSettings(stored, incoming map[string]string) error {
+	touched := false
+	for _, key := range tracking.SettingKeys {
+		if _, ok := incoming[key]; ok {
+			touched = true
+			break
+		}
+	}
+	if !touched {
+		return nil
+	}
+	merged := make(map[string]string, len(stored)+len(incoming))
+	for key, value := range stored {
+		merged[key] = value
+	}
+	for key, value := range incoming {
+		merged[key] = value
+	}
+	if err := tracking.ReadConfig(merged).Validate(); err != nil {
+		return userErrf("방문 추적: %v", err)
+	}
+	return nil
+}
+
+// TrackingConfig reads the visitor tracking settings. Any failure reads as
+// "off" so a settings outage never breaks a page.
+func (a *App) TrackingConfig(ctx context.Context) tracking.Config {
+	values, err := a.Store.GetSettings(ctx)
+	if err != nil {
+		return tracking.Config{}
+	}
+	return tracking.ReadConfig(values)
+}
+
+// AdminAllowTrackingHost appends one blocked origin to the tracking allow
+// list — the one-click fix for a policy report on the admin screen.
+func (a *App) AdminAllowTrackingHost(ctx context.Context, origin string) error {
+	if _, err := requireAdmin(ctx); err != nil {
+		return err
+	}
+	origin = strings.TrimSpace(origin)
+	lower := strings.ToLower(origin)
+	if origin == "" || !(strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://")) || strings.ContainsAny(origin, " ,;'\"") {
+		return userErrf("허용할 출처가 올바르지 않습니다: http(s)://호스트 형식이어야 합니다")
+	}
+	stored, err := a.Store.GetSettings(ctx)
+	if err != nil {
+		return err
+	}
+	updated := tracking.AddAllowedHost(stored[tracking.SettingAllowedHosts], origin)
+	if err := a.Store.UpsertSettings(ctx, map[string]string{tracking.SettingAllowedHosts: updated}); err != nil {
+		return err
+	}
+	if notifier, ok := a.Store.(interface{ NotifySettingsChange(ctx context.Context) }); ok {
+		notifier.NotifySettingsChange(ctx)
+	}
+	a.audit(ctx, "settings_update", "system", "ok", "tracking.allowed_hosts+="+origin)
 	return nil
 }
 

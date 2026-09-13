@@ -11,6 +11,7 @@
     <div><b>DB 상태 (Ping):</b> <span class="ok">정상 (Healthy)</span></div>
   </div>
 </div>
+{{if .Error}}<div class="warn">{{.Error}}</div>{{end}}
 <form method="post" action="/ui/admin/settings">
 <div class="card"><h2>Keycloak OIDC SSO</h2><div class="grid">
 
@@ -53,6 +54,32 @@
   <p><label><input type="checkbox" name="security.encrypt_at_rest" value="true" {{if eq (index $s "security.encrypt_at_rest") "true"}}checked{{end}}> 저장 콘텐츠 암호화</label></p>
   <p class="small muted">OIDC·세션 설정은 즉시 적용됩니다. 메일·AI·발송·첨부 정책은 저장 후 재시작 시 적용됩니다. 데이터 경로, 스토리지 드라이버, 바인드 주소처럼 프로세스 시작 전에 필요한 인프라 설정은 환경변수/설정 파일로 관리합니다. 비밀값은 암호화 SecretStore에 저장됩니다.</p>
 </div>
+<div class="card" id="tracking"><h2>방문 추적</h2>
+  <p class="small muted">관리자가 켜기 전까지는 어떤 화면에도 스크립트가 붙지 않습니다. 화면 정책은 <code>script-src 'self'</code> 에 요청마다 다른 nonce 를 더해 잠겨 있고, 스니펫의 모든 <code>&lt;script&gt;</code> 에 그 nonce 가 붙습니다. 스니펫이 부르는 http(s) 출처는 자동으로 정책에 더해지며, 그래도 막힌 출처는 아래 "차단된 출처" 에 나타납니다. <code>'unsafe-inline'</code> 은 쓰지 않습니다.</p>
+  <p><label><input type="checkbox" name="tracking.enabled" value="true" {{if eq (index $s "tracking.enabled") "true"}}checked{{end}}> 방문 추적 켜기</label></p>
+  <div class="grid">
+    <div class="field"><label>Provider</label><select name="tracking.provider">{{$provider := index $s "tracking.provider"}}{{range .TrackingProviders}}<option value="{{.}}" {{if eq . $provider}}selected{{end}}>{{if eq . "none"}}none (사용 안 함){{else if eq . "momento"}}momento (사내 수집기){{else if eq . "ga4"}}ga4 (Google Analytics 4){{else if eq . "gtm"}}gtm (Google Tag Manager){{else if eq . "matomo"}}matomo{{else}}custom (스니펫 붙여넣기){{end}}</option>{{end}}</select></div>
+    <div class="field"><label>배치</label><select name="tracking.placement">{{$placement := index $s "tracking.placement"}}<option value="head" {{if ne $placement "body"}}selected{{end}}>head</option><option value="body" {{if eq $placement "body"}}selected{{end}}>body (문서 끝)</option></select></div>
+    <div class="field"><label>Momento 수집기 주소</label><input type="text" name="tracking.momento_url" value="{{index $s "tracking.momento_url"}}" placeholder="https://momento.corp.example"></div>
+    <div class="field"><label>Momento 사이트 id</label><input type="text" name="tracking.momento_site_id" value="{{index $s "tracking.momento_site_id"}}"></div>
+    <div class="field"><label>GA4 · GTM measurement id</label><input type="text" name="tracking.measurement_id" value="{{index $s "tracking.measurement_id"}}" placeholder="G-XXXXXXX / GTM-XXXXXX"></div>
+    <div class="field"><label>Matomo 주소</label><input type="text" name="tracking.matomo_url" value="{{index $s "tracking.matomo_url"}}" placeholder="https://matomo.example"></div>
+    <div class="field"><label>Matomo 사이트 id</label><input type="text" name="tracking.matomo_site_id" value="{{index $s "tracking.matomo_site_id"}}"></div>
+    <div class="field"><label>추가 허용 출처 (쉼표 구분)</label><input type="text" name="tracking.allowed_hosts" value="{{index $s "tracking.allowed_hosts"}}" placeholder="https://pixel.corp.example"></div>
+  </div>
+  <p><label><input type="checkbox" name="tracking.momento_proxy" value="true" {{if eq (index $s "tracking.momento_proxy") "true"}}checked{{end}}> Momento 를 같은 오리진 프록시(<code>/momento/*</code>)로 넘기기 — 외부 출처가 정책에 등장하지 않습니다</label></p>
+  <p><label><input type="checkbox" name="tracking.include_admin" value="true" {{if eq (index $s "tracking.include_admin") "true"}}checked{{end}}> 관리 화면(<code>/ui/admin/*</code>)에서도 추적</label></p>
+  <div class="field"><label>custom 스니펫 (최대 8KB)</label><textarea name="tracking.custom_snippet" rows="6" placeholder="&lt;script async src=&quot;https://tracker.example/t.js&quot;&gt;&lt;/script&gt;">{{index $s "tracking.custom_snippet"}}</textarea></div>
+</div>
 <button type="submit">설정 저장</button>
 </form>
+<div class="card"><h2>차단된 출처</h2>
+  <p class="small muted">추적이 켜져 있는 동안 브라우저가 정책에 막힌 요청을 신고합니다. 여기 보이는 출처를 "허용" 하면 추가 허용 출처에 들어갑니다. 서로 다른 출처 {{len .TrackingViolations}}개 (최대 100개 보관).</p>
+  {{if .TrackingViolations}}<table><thead><tr><th>출처</th><th>지시어</th><th>화면</th><th>횟수</th><th>마지막</th><th></th></tr></thead><tbody>
+  {{range .TrackingViolations}}<tr><td><code>{{.Origin}}</code></td><td>{{.Directive}}</td><td class="small muted">{{.Page}}</td><td>{{.Count}}</td><td class="small muted">{{.LastSeen.Format "01-02 15:04"}}</td>
+    <td>{{if .Allowed}}<span class="ok">허용됨</span>{{else}}<form method="post" action="/ui/admin/tracking/allow"><input type="hidden" name="origin" value="{{.Origin}}"><button class="ghost" type="submit">허용</button></form>{{end}}</td></tr>{{end}}
+  </tbody></table>
+  <form method="post" action="/ui/admin/tracking/forget" class="actions"><button class="ghost" type="submit">기록 지우기</button></form>
+  {{else}}<p class="muted">기록된 차단이 없습니다.</p>{{end}}
+</div>
 {{end}}

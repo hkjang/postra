@@ -394,6 +394,11 @@ func publicPath(p string) bool {
 
 func (s *Server) middleware(mux *http.ServeMux) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Nothing here is a page, so nothing may run or load: the API gets a
+		// policy narrower than the UI's, and the tracking snippet never
+		// reaches it.
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
 		// /metrics bypasses auth and is not self-instrumented.
 		if r.URL.Path == "/metrics" {
 			mux.ServeHTTP(w, r)
