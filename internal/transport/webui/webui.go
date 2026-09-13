@@ -416,8 +416,13 @@ func (s *Server) loginForm(w http.ResponseWriter, r *http.Request) {
 		}
 		if c, err := r.Cookie(cookieName); err == nil {
 			if _, _, err := s.app.AuthenticateSession(r.Context(), c.Value); err == nil {
+				// gosec G710(open redirect): SafeReturnTo 가 통과시키는 것은
+				// 같은 오리진의 상대 경로뿐입니다 — "/" 로 시작해야 하고,
+				// "//"(프로토콜 상대)·"/\\"·절대 URL·Host 가 있는 값·날것의
+				// CR/LF 를 모두 거절합니다. taint 분석은 그 판정을 지나
+				// 볼 수 없어 물음표를 답니다.
 				if returnTo := r.URL.Query().Get("return_to"); application.SafeReturnTo(returnTo) {
-					http.Redirect(w, r, returnTo, http.StatusFound)
+					http.Redirect(w, r, returnTo, http.StatusFound) // #nosec G710 -- SafeReturnTo 가 같은 오리진 경로만 통과시킴
 					return
 				}
 				redirectRelative(w, "./")
