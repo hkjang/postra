@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
 	"os"
 	"strconv"
@@ -18,6 +19,7 @@ import (
 	"postra/internal/application"
 	"postra/internal/domain"
 	"postra/internal/platform/build"
+	"postra/internal/platform/handoff"
 	"postra/internal/platform/metrics"
 )
 
@@ -132,6 +134,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/outbound/{id}", s.getOutbound)
 
 	mux.HandleFunc("GET /api/audit", s.audit)
+
+	// Handing a message to another in-house service (HANDOFF-STANDARD.md).
+	// Issuing a claim needs the signed-in user; collecting one needs no login
+	// at all — the claim is the credential — so it is listed as public below.
+	mux.HandleFunc("POST /api/v1/handoff/claims", s.issueHandoffClaim)
+	mux.HandleFunc("GET /api/v1/handoff/claims/{claim}", s.collectHandoffClaim)
 	// Probes (unauthenticated): livez = process is up; readyz/healthz = backing
 	// store reachable, 503 otherwise. healthz keeps the readiness meaning it
 	// had documented while livez separates pure liveness for orchestrators.
@@ -389,7 +397,8 @@ func publicPath(p string) bool {
 	case "/api/livez", "/api/readyz", "/api/healthz":
 		return true
 	}
-	return false
+	// Collecting a handoff claim: the claim in the path is the credential.
+	return strings.HasPrefix(p, handoffCollectPrefix) && len(p) > len(handoffCollectPrefix)
 }
 
 func (s *Server) middleware(mux *http.ServeMux) http.Handler {
@@ -454,6 +463,84 @@ func (s *Server) authenticate(r *http.Request) (domain.Principal, bool) {
 		}
 	}
 	return domain.Principal{}, false
+}
+
+// ---------- handoff ----------
+
+const handoffCollectPrefix = "/api/v1/handoff/claims/"
+
+type handoffClaimBody struct {
+	Resource string `json:"resource"`
+	Format   string `json:"format"`
+}
+
+// issueHandoffClaim mints a single-use claim for one of the caller's
+// messages. The body must really be JSON: the session cookie is accepted
+// here and a cross-site HTML form cannot send application/json, so the
+// content type is the request's proof that a script on this origin made it.
+func (s *Server) issueHandoffClaim(w http.ResponseWriter, r *http.Request) {
+	if mediaType, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); mediaType != "application/json" {
+		writeJSON(w, http.StatusUnsupportedMediaType, map[string]string{"error": "Content-Type must be application/json"})
+		return
+	}
+	in, err := decode[handoffClaimBody](r)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	claim, err := s.app.IssueHandoffClaim(r.Context(), in.Resource, in.Format, requestOrigin(r))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusCreated, claim)
+}
+
+// collectHandoffClaim serves the document a claim was issued for, once. Any
+// claim that cannot be served — unknown, spent, expired — is a bare 404 that
+// gives nothing away; only a backend failure is a 500.
+func (s *Server) collectHandoffClaim(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	doc, err := s.app.CollectHandoffClaim(r.Context(), r.PathValue("claim"))
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+			return
+		}
+		writeErr(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", doc.ContentType)
+	w.Header().Set("Content-Disposition", handoff.ContentDisposition(doc.Filename))
+	w.Header().Set("Content-Length", strconv.Itoa(len(doc.Body)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(doc.Body)
+}
+
+// requestOrigin is the scheme://host this request arrived on as the browser
+// sees it, honouring the usual reverse-proxy headers. It is the announced
+// source of a claim when the administrator has not pinned a public origin.
+func requestOrigin(r *http.Request) string {
+	scheme := "http"
+	if r.TLS != nil || strings.EqualFold(firstForwarded(r.Header.Get("X-Forwarded-Proto")), "https") {
+		scheme = "https"
+	}
+	host := firstForwarded(r.Header.Get("X-Forwarded-Host"))
+	if host == "" {
+		host = r.Host
+	}
+	if host == "" {
+		return ""
+	}
+	return scheme + "://" + host
+}
+
+func firstForwarded(value string) string {
+	if value, _, ok := strings.Cut(value, ","); ok {
+		return strings.TrimSpace(value)
+	}
+	return strings.TrimSpace(value)
 }
 
 // ---------- helpers ----------

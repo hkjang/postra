@@ -64,6 +64,13 @@
   </tbody>
 </table></div>
 {{end}}
+{{if .HandoffTargets}}
+<h2>다른 서비스로 보내기</h2>
+<div class="card actions" id="handoff">
+  <span class="small muted">이 메일을 마크다운 문서로 넘깁니다. 파일을 내려받지 않고, 고른 서비스가 새 창에서 열립니다.</span>
+  {{range .HandoffTargets}}<button type="button" class="ghost" data-handoff-origin="{{.Origin}}" data-handoff-resource="{{$m.ID}}">{{.Name}} 으로 보내기</button>{{end}}
+</div>
+{{end}}
 <h2>AI 도구</h2>
 <div class="card actions">
   <form method="post" action="/ui/messages/{{$m.ID}}/analyze"><input type="hidden" name="type" value="triage"><button type="submit">업무 트리아지</button></form>

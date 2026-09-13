@@ -873,7 +873,7 @@ func (s *Server) adminSettingsSave(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(key, "auth.") || strings.HasPrefix(key, "sync.") ||
 			strings.HasPrefix(key, "ai.") || strings.HasPrefix(key, "send.") ||
 			strings.HasPrefix(key, "security.") || strings.HasPrefix(key, "attachments.") ||
-			strings.HasPrefix(key, "tracking.") {
+			strings.HasPrefix(key, "tracking.") || strings.HasPrefix(key, "handoff.") {
 			values[key] = r.FormValue(key)
 		}
 	}
@@ -1366,6 +1366,10 @@ func (s *Server) message(w http.ResponseWriter, r *http.Request) {
 	}
 	accounts, _ := s.app.ListAccounts(r.Context())
 	data := map[string]any{"View": view, "Accounts": accounts, "CSRF": csrfFromRequest(r)}
+	// Where this mail may be handed on. Empty (the default) draws no button.
+	if targets := s.app.HandoffTargets(r.Context()); len(targets) > 0 {
+		data["HandoffTargets"] = targets
+	}
 	// Best-effort: collaboration state is optional context, never a reason to
 	// fail reading the mail.
 	if cv, cerr := s.app.GetMessageCollab(r.Context(), view.Message.ID); cerr == nil {
