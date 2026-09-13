@@ -8,6 +8,7 @@
   <p class="muted">조직의 안전한 메일 워크스페이스에 로그인하세요.</p>
   {{if .Error}}<div class="warn">{{.Error}}</div>{{end}}
   <form method="post" action="/ui/login" autocomplete="on">
+    {{if .ReturnTo}}<input type="hidden" name="return_to" value="{{.ReturnTo}}">{{end}}
     {{if .LocalAuth}}
     <div class="field"><label>로그인 ID</label><input type="text" name="login_id" placeholder="아이디를 입력하세요" required autofocus autocomplete="username"></div>
     <div class="field"><label>비밀번호</label><input type="password" name="password" required autocomplete="current-password"></div>
@@ -16,7 +17,7 @@
     {{end}}
     <button type="submit" class="auth-submit">로그인</button>
   </form>
-  {{if .OIDCEnabled}}<div class="auth-divider">또는</div><a class="btn ghost sso-button" href="/ui/auth/oidc/start">Keycloak SSO로 계속하기</a>{{end}}
+  {{if .OIDCEnabled}}<div class="auth-divider">또는</div><a class="btn ghost sso-button" href="/ui/auth/oidc/start{{if .ReturnTo}}?return_to={{.ReturnTo}}{{end}}">Keycloak SSO로 계속하기</a>{{end}}
   <p class="small muted" style="margin-top:1.5rem">접속 기록은 보안 감사 목적으로 기록됩니다. · Postra v{{.Version}}</p>
   </div>
 
@@ -30,4 +31,40 @@
   </div>
 </aside>
 </div>
+{{if .SSOSignedOut}}
+<script>
+// Deliberate logout: remember it for this tab so silent SSO does not sign the
+// person straight back in (which would look like logout is broken).
+try { window.sessionStorage.setItem('postra.sso.signedOut', 'true'); } catch (e) { /* login page fails closed */ }
+</script>
+{{end}}
+{{if .SilentSSO}}
+<script>
+// Silent SSO: someone already signed in to Keycloak should not see this page.
+// prompt=none never renders provider UI — it either returns a code or comes
+// back with login_required — so the whole job here is to try at most once per
+// tab session. The server only renders this block when auto_login is on, no
+// error is being shown and the address carries no sso= marker; the callback,
+// error and logout landings never carry it.
+(function () {
+  var ATTEMPTED = 'postra.sso.silentAttempted', SIGNED_OUT = 'postra.sso.signedOut';
+  // sessionStorage, not localStorage: a new tab tries again, a reload after a
+  // refusal does not. Storage that cannot be read (private mode, blocked site
+  // data) counts as "already attempted" — failing open would loop.
+  function flag(key) { try { return window.sessionStorage.getItem(key) === 'true'; } catch (e) { return true; } }
+  function mark(key) { try { window.sessionStorage.setItem(key, 'true'); } catch (e) { /* fail closed above */ } }
+  var params = new URLSearchParams(window.location.search);
+  // sso=none is left in the address by the callback after a refusal, so the
+  // refusal is remembered even if storage was cleared in between.
+  if (params.get('sso')) return;
+  if (flag(SIGNED_OUT) || flag(ATTEMPTED)) return;
+  mark(ATTEMPTED);
+  var returnTo = params.get('return_to') || '/ui/';
+  if (returnTo.charAt(0) !== '/' || returnTo.indexOf('//') === 0) returnTo = '/ui/';
+  // Top-level navigation rather than a hidden iframe: works with third-party
+  // cookies blocked and regardless of the provider's frame policy.
+  window.location.assign('/ui/auth/oidc/start?prompt=none&return_to=' + encodeURIComponent(returnTo));
+})();
+</script>
+{{end}}
 {{end}}

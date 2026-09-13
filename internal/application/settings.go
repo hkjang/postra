@@ -23,6 +23,7 @@ const (
 	SettingOIDCRedirectURL        = "auth.oidc.redirect_url" // #nosec G101 -- setting key, not a credential
 	SettingOIDCAutoProvision      = "auth.oidc.auto_provision"
 	SettingOIDCAdminGroup         = "auth.oidc.admin_group"
+	SettingOIDCAutoLogin          = "auth.oidc.auto_login" // silent prompt=none sign-in; off by default
 	SettingSyncAutoMinutes        = "sync.auto_sync_minutes"
 	SettingSyncInitialWindowDays  = "sync.initial_window_days"
 	SettingSyncMaxMessageBytes    = "sync.max_message_bytes"
@@ -70,7 +71,7 @@ const (
 var allowedSettings = map[string]bool{
 	SettingAuthSessionHours: true, SettingOIDCIssuer: true, SettingOIDCClientID: true,
 	SettingOIDCSecretRef: true, SettingOIDCRedirectURL: true, SettingOIDCAutoProvision: true,
-	SettingOIDCAdminGroup: true, SettingSyncAutoMinutes: true, SettingSyncInitialWindowDays: true,
+	SettingOIDCAdminGroup: true, SettingOIDCAutoLogin: true, SettingSyncAutoMinutes: true, SettingSyncInitialWindowDays: true,
 	SettingSyncMaxMessageBytes: true, SettingSyncMaxPerSync: true, SettingSyncConnectTimeout: true,
 	SettingSyncCommandTimeout: true, SettingAIBaseURL: true, SettingAIModel: true,
 	SettingAIEmbedModel: true, SettingAIAPIKeyRef: true, SettingAITimeout: true,
@@ -118,6 +119,7 @@ func (a *App) SystemSettings(ctx context.Context) (map[string]string, error) {
 		SettingOIDCSecretRef: a.Cfg.Auth.OIDCSecretRef, SettingOIDCRedirectURL: a.Cfg.Auth.OIDCRedirectURL,
 		SettingOIDCAutoProvision:     strconv.FormatBool(a.Cfg.Auth.OIDCAutoProvision),
 		SettingOIDCAdminGroup:        a.Cfg.Auth.OIDCAdminGroup,
+		SettingOIDCAutoLogin:         strconv.FormatBool(a.Cfg.Auth.OIDCAutoLogin),
 		SettingSyncAutoMinutes:       strconv.Itoa(a.Cfg.Sync.AutoSyncMinutes),
 		SettingSyncInitialWindowDays: strconv.Itoa(a.Cfg.Sync.InitialWindowDays),
 		SettingSyncMaxMessageBytes:   strconv.FormatInt(a.Cfg.Sync.MaxMessageBytes, 10),
