@@ -265,7 +265,12 @@ func (s *Server) serveStatic(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	contentType := mime.TypeByExtension(path[strings.LastIndex(path, "."):])
+	// 점이 없으면 LastIndex 가 -1 을 돌려주고 path[-1:] 은 패닉합니다.
+	// /ui/static/noext 한 번이면 그 요청의 연결이 끊깁니다.
+	contentType := ""
+	if dot := strings.LastIndex(path, "."); dot >= 0 {
+		contentType = mime.TypeByExtension(path[dot:])
+	}
 	if contentType == "" {
 		if strings.HasSuffix(path, ".png") || strings.HasSuffix(path, ".ico") {
 			contentType = "image/png"
@@ -275,7 +280,10 @@ func (s *Server) serveStatic(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Cache-Control", "public, max-age=86400")
-	_, _ = w.Write(data)
+	// gosec G705(XSS): 내보내는 것은 embed.FS 에 든 정적 자산뿐입니다. 경로가
+	// URL 에서 오지만 embed.FS 는 ".." 를 받지 않아 밖으로 나갈 수 없고,
+	// Content-Type 은 위에서 정해 붙입니다.
+	_, _ = w.Write(data) // #nosec G705 -- embed.FS 의 정적 자산, Content-Type 지정됨
 }
 
 func (s *Server) serveFavicon(w http.ResponseWriter, r *http.Request) {
