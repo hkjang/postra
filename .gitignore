@@ -13,3 +13,18 @@ config.json
 # release artifacts (attached to GitHub Releases instead)
 /dist/*.tar.gz
 /dist/postra-*-linux-amd64
+
+# 빌드 산출물
+/bin/
+
+# 릴리즈 산출물 — SBOM 도 tar.gz·바이너리와 같이 GitHub Releases 에 붙는다
+/dist/*-sbom.cdx.json
+
+# GitFrame(데모 녹화 도구)의 설정과 산출물
+/.gitframe/
+/output/
+
+# kanpic 저장소가 통째로 복제되어 들어와 있다(144MB, 자체 .git 과 go.mod).
+# 참조하려고 둔 것으로 보이는데 이 저장소가 가질 것은 아니다 — 지워도
+# 된다면 지우고 이 줄도 함께 빼면 된다.
+/docs/kanpic/
