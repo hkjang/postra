@@ -330,13 +330,13 @@ func (s *Server) gate(h http.HandlerFunc) http.HandlerFunc {
 			}
 			c, err := r.Cookie(cookieName)
 			if err != nil {
-				http.Redirect(w, r, "/ui/login", http.StatusFound)
+				http.Redirect(w, r, loginURL(r), http.StatusFound)
 				return
 			}
 			_, principal, err := s.app.AuthenticateSession(r.Context(), c.Value)
 			if err != nil {
 				s.clearAuthCookies(w, r)
-				http.Redirect(w, r, "/ui/login", http.StatusFound)
+				http.Redirect(w, r, loginURL(r), http.StatusFound)
 				return
 			}
 			if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -355,6 +355,20 @@ func (s *Server) gate(h http.HandlerFunc) http.HandlerFunc {
 		}
 		h(w, r.WithContext(application.WithActor(r.Context(), "webui")))
 	}
+}
+
+// loginURL is where an anonymous browser is sent. A GET deep link is carried
+// along as return_to so that a login (silent or not) lands back on it; the
+// default landing page and non-GET requests have nothing worth carrying.
+func loginURL(r *http.Request) string {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return "/ui/login"
+	}
+	target := r.URL.RequestURI()
+	if !application.SafeReturnTo(target) || target == application.OIDCDefaultReturnTo {
+		return "/ui/login"
+	}
+	return "/ui/login?" + url.Values{"return_to": {target}}.Encode()
 }
 
 func validRequestOrigin(r *http.Request) bool {
@@ -402,11 +416,15 @@ func (s *Server) loginForm(w http.ResponseWriter, r *http.Request) {
 		}
 		if c, err := r.Cookie(cookieName); err == nil {
 			if _, _, err := s.app.AuthenticateSession(r.Context(), c.Value); err == nil {
+				if returnTo := r.URL.Query().Get("return_to"); application.SafeReturnTo(returnTo) {
+					http.Redirect(w, r, returnTo, http.StatusFound)
+					return
+				}
 				redirectRelative(w, "./")
 				return
 			}
 		}
-		s.render(w, "login", http.StatusOK, map[string]any{"LocalAuth": true, "OIDCEnabled": s.app.OIDCConfigured(r.Context())})
+		s.render(w, "login", http.StatusOK, s.loginPageData(r, nil))
 		return
 	}
 	if s.apiToken == "" {
@@ -420,14 +438,32 @@ func (s *Server) loginForm(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "login", http.StatusOK, map[string]any{})
 }
 
+// loginPageData builds the login page model. SilentSSO tells the page it may
+// try a prompt=none sign-in. It is never set alongside an error, nor when the
+// address already carries an sso= marker (a refusal or a deliberate logout),
+// so the callback's and logout's landings can never bounce the browser back
+// out. The page script repeats these checks against its own storage.
+func (s *Server) loginPageData(r *http.Request, err error) map[string]any {
+	data := map[string]any{"LocalAuth": true, "OIDCEnabled": s.app.OIDCConfigured(r.Context())}
+	if returnTo := r.FormValue("return_to"); application.SafeReturnTo(returnTo) {
+		data["ReturnTo"] = returnTo
+	}
+	if err != nil {
+		data["Error"] = err.Error()
+		return data
+	}
+	marker := r.URL.Query().Get("sso")
+	data["SSOSignedOut"] = marker == "signed_out"
+	data["SilentSSO"] = marker == "" && s.app.OIDCAutoLoginEnabled(r.Context())
+	return data
+}
+
 func (s *Server) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	if s.app.Cfg.Auth.Enabled {
 		u, err := s.app.AuthenticateLocal(application.WithActor(r.Context(), "webui"), r.FormValue("login_id"), r.FormValue("password"))
 		if err != nil {
-			s.render(w, "login", http.StatusUnauthorized, map[string]any{
-				"Error": err.Error(), "LocalAuth": true, "OIDCEnabled": s.app.OIDCConfigured(r.Context()),
-			})
+			s.render(w, "login", http.StatusUnauthorized, s.loginPageData(r, err))
 			return
 		}
 		raw, csrf, _, err := s.app.CreateSession(r.Context(), u, r.UserAgent(), application.ClientIP(r.RemoteAddr))
@@ -436,6 +472,10 @@ func (s *Server) loginSubmit(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.setAuthCookies(w, r, raw, csrf)
+		if returnTo := r.FormValue("return_to"); application.SafeReturnTo(returnTo) {
+			http.Redirect(w, r, returnTo, http.StatusFound)
+			return
+		}
 		// Some offline reverse proxies do not rewrite 303 Location headers.
 		// A relative 302 works for both public /login and internal /ui/login.
 		redirectRelative(w, "./")
@@ -470,11 +510,14 @@ func (s *Server) oidcStart(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	authURL, flow, err := s.app.BeginOIDC(r.Context())
+	// prompt=none is only honoured when auto_login is on; BeginOIDC downgrades
+	// it otherwise. return_to is validated there as well.
+	authURL, flow, err := s.app.BeginOIDC(r.Context(), application.OIDCStartOptions{
+		Silent:   r.URL.Query().Get("prompt") == "none",
+		ReturnTo: r.URL.Query().Get("return_to"),
+	})
 	if err != nil {
-		s.render(w, "login", http.StatusBadGateway, map[string]any{
-			"Error": err.Error(), "LocalAuth": true, "OIDCEnabled": true,
-		})
+		s.render(w, "login", http.StatusBadGateway, s.loginPageData(r, err))
 		return
 	}
 	signed, err := s.app.SignOIDCFlow(flow)
@@ -490,6 +533,19 @@ func (s *Server) oidcStart(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) oidcCallback(w http.ResponseWriter, r *http.Request) {
 	if oidcErr := r.URL.Query().Get("error"); oidcErr != "" {
+		// A silent (prompt=none) attempt with no provider session comes back as
+		// login_required. That is the provider's ordinary answer, not a failure:
+		// land on the login page with the sso=none marker so the browser does
+		// not try again and bounce in a loop, even if its storage was cleared.
+		if flow, ok := s.silentFlow(r); ok && application.OIDCLoginRequired(oidcErr) {
+			s.clearOIDCFlowCookie(w, r)
+			target := "/ui/login?sso=none"
+			if flow.ReturnTo != "" && flow.ReturnTo != application.OIDCDefaultReturnTo {
+				target += "&" + url.Values{"return_to": {flow.ReturnTo}}.Encode()
+			}
+			http.Redirect(w, r, target, http.StatusFound)
+			return
+		}
 		// Keycloak puts the actionable reason in error_description (e.g.
 		// "Invalid scopes: groups", "Invalid parameter: redirect_uri"). Show and
 		// log it — "invalid_request" alone is undiagnosable.
@@ -525,11 +581,34 @@ func (s *Server) oidcCallback(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
+	s.clearOIDCFlowCookie(w, r)
+	s.setAuthCookies(w, r, raw, csrf)
+	// Deep links: a signed flow carries the path the visitor wanted, already
+	// validated by BeginOIDC; validate again so a tampered cookie cannot
+	// (it is HMAC-signed, but belt and braces) send anyone off-site.
+	http.Redirect(w, r, application.OIDCReturnToOrDefault(flow.ReturnTo), http.StatusSeeOther)
+}
+
+// silentFlow returns the verified flow cookie when the request belongs to a
+// prompt=none attempt whose state matches. An unverifiable or non-silent
+// cookie means the provider error is shown like any other.
+func (s *Server) silentFlow(r *http.Request) (application.OIDCFlow, bool) {
+	c, err := r.Cookie("postra_oidc_flow")
+	if err != nil {
+		return application.OIDCFlow{}, false
+	}
+	flow, err := s.app.VerifyOIDCFlow(c.Value)
+	if err != nil || !flow.Silent ||
+		subtle.ConstantTimeCompare([]byte(flow.State), []byte(r.URL.Query().Get("state"))) != 1 {
+		return application.OIDCFlow{}, false
+	}
+	return flow, true
+}
+
+func (s *Server) clearOIDCFlowCookie(w http.ResponseWriter, r *http.Request) {
 	// #nosec G124 -- Secure follows the transport so loopback HTTP remains usable.
 	http.SetCookie(w, &http.Cookie{Name: "postra_oidc_flow", Value: "", Path: "/", MaxAge: -1,
 		HttpOnly: true, Secure: secureRequest(r), SameSite: http.SameSiteLaxMode})
-	s.setAuthCookies(w, r, raw, csrf)
-	http.Redirect(w, r, "/ui/", http.StatusSeeOther)
 }
 
 func secureRequest(r *http.Request) bool {
@@ -627,7 +706,9 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.clearAuthCookies(w, r)
-	http.Redirect(w, r, "/ui/login", http.StatusFound)
+	// sso=signed_out tells the login page this was a deliberate sign-out, so a
+	// silent SSO attempt must not immediately sign the person back in.
+	http.Redirect(w, r, "/ui/login?sso=signed_out", http.StatusFound)
 }
 
 func csrfFromRequest(r *http.Request) string {
@@ -792,8 +873,9 @@ func (s *Server) adminSettingsSave(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// Unchecked checkboxes are absent from form encoding.
-	for _, key := range []string{application.SettingOIDCAutoProvision, application.SettingAllowInsecureMail,
-		application.SettingAllowPrivateHosts, application.SettingEncryptAtRest,
+	for _, key := range []string{application.SettingOIDCAutoProvision, application.SettingOIDCAutoLogin,
+		application.SettingAllowInsecureMail, application.SettingAllowPrivateHosts,
+		application.SettingEncryptAtRest,
 		tracking.SettingEnabled, tracking.SettingIncludeAdmin, tracking.SettingMomentoProxy} {
 		if _, ok := values[key]; !ok {
 			values[key] = "false"

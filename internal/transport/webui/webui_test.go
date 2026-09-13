@@ -170,8 +170,8 @@ func TestLocalLoginSessionAndLogout(t *testing.T) {
 	req.Header.Set("Origin", "http://example.com")
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/ui/login" {
-		t.Fatalf("logout: code=%d body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/ui/login?sso=signed_out" {
+		t.Fatalf("logout: code=%d location=%q", rec.Code, rec.Header().Get("Location"))
 	}
 	rec = do(t, h, http.MethodGet, "/ui/", nil, sessionCookie)
 	if rec.Code != http.StatusFound {

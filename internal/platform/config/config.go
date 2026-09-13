@@ -99,6 +99,10 @@ type AuthConfig struct {
 	OIDCRedirectURL   string `json:"oidc_redirect_url"`
 	OIDCAutoProvision bool   `json:"oidc_auto_provision"`
 	OIDCAdminGroup    string `json:"oidc_admin_group"`
+	// OIDCAutoLogin signs a visitor in silently (prompt=none) when the identity
+	// provider still has a session. Off by default so a plain install does not
+	// redirect anyone anywhere.
+	OIDCAutoLogin bool `json:"oidc_auto_login"`
 }
 
 // AttachmentConfig drives the heuristic attachment scanner (MIME-011/012).
@@ -350,6 +354,7 @@ func applyEnv(cfg *Config) {
 	set("POSTRA_OIDC_REDIRECT_URL", &cfg.Auth.OIDCRedirectURL)
 	setBool("POSTRA_OIDC_AUTO_PROVISION", &cfg.Auth.OIDCAutoProvision)
 	set("POSTRA_OIDC_ADMIN_GROUP", &cfg.Auth.OIDCAdminGroup)
+	setBool("POSTRA_OIDC_AUTO_LOGIN", &cfg.Auth.OIDCAutoLogin)
 }
 
 // Save writes the config to path with restrictive permissions.

@@ -182,7 +182,7 @@ button.ghost,.btn.ghost{background:var(--card);color:var(--accent);border:1px so
     <span>🔄</span>
     <span id="live-sync-text">동기화 진행 중...</span>
   </div>
-  <form method="post" action="/ui/logout" class="header-logout">
+  <form method="post" action="/ui/logout" class="header-logout" id="logout-form">
     <button type="submit" class="ghost">로그아웃</button>
   </form>
 </header>{{end}}
@@ -210,6 +210,18 @@ button.ghost,.btn.ghost{background:var(--card);color:var(--accent);border:1px so
       e.preventDefault();
       e.stopImmediatePropagation();
     }
+  });
+
+  // Silent SSO bookkeeping: a page behind the gate means a session exists, so
+  // the one-attempt and signed-out markers are cleared; a deliberate logout
+  // sets the signed-out marker so the login page does not sign us back in.
+  try {
+    window.sessionStorage.removeItem('postra.sso.silentAttempted');
+    window.sessionStorage.removeItem('postra.sso.signedOut');
+  } catch (e) { /* storage unavailable; the login page fails closed */ }
+  var logoutForm = document.getElementById('logout-form');
+  if (logoutForm) logoutForm.addEventListener('submit', function () {
+    try { window.sessionStorage.setItem('postra.sso.signedOut', 'true'); } catch (e) { /* see above */ }
   });
 
   function checkSyncStatus() {

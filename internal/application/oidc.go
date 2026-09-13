@@ -25,11 +25,59 @@ type OIDCFlow struct {
 	Nonce        string `json:"nonce"`
 	CodeVerifier string `json:"code_verifier"`
 	ExpiresAt    int64  `json:"expires_at"`
+	// Silent records that this flow was started with prompt=none, so the
+	// callback can tell a routine login_required answer from a real failure.
+	Silent bool `json:"silent,omitempty"`
+	// ReturnTo is the in-app path to land on after login (deep links).
+	ReturnTo string `json:"return_to,omitempty"`
+}
+
+// OIDCStartOptions shapes one authorization request.
+type OIDCStartOptions struct {
+	// Silent asks for prompt=none: the provider answers from an existing
+	// session only and never renders UI. Honoured only when the administrator
+	// has enabled auto_login; otherwise it is downgraded to a normal login.
+	Silent   bool
+	ReturnTo string
 }
 
 type oidcRuntime struct {
 	Issuer, ClientID, ClientSecret, SecretRef, RedirectURL, AdminGroup string
-	AutoProvision                                                      bool
+	AutoProvision, AutoLogin                                           bool
+}
+
+// OIDCDefaultReturnTo is where a login lands when no safe return_to was given.
+const OIDCDefaultReturnTo = "/ui/"
+
+// SafeReturnTo accepts only in-app paths: it must start with "/" and must not
+// start with "//" (a scheme-relative URL), so the login flow can never be used
+// as a springboard to another site.
+func SafeReturnTo(value string) bool {
+	if value == "" || !strings.HasPrefix(value, "/") || strings.HasPrefix(value, "//") ||
+		strings.HasPrefix(value, "/\\") || strings.ContainsAny(value, "\r\n") {
+		return false
+	}
+	parsed, err := url.Parse(value)
+	return err == nil && !parsed.IsAbs() && parsed.Host == ""
+}
+
+// OIDCReturnToOrDefault returns value when it is a safe in-app path, else the
+// default landing page.
+func OIDCReturnToOrDefault(value string) string {
+	if SafeReturnTo(value) {
+		return value
+	}
+	return OIDCDefaultReturnTo
+}
+
+// OIDCLoginRequired reports whether an authorization error is the provider's
+// ordinary "no session" answer to prompt=none rather than a misconfiguration.
+func OIDCLoginRequired(code string) bool {
+	switch code {
+	case "login_required", "interaction_required", "consent_required":
+		return true
+	}
+	return false
 }
 
 func (a *App) oidcRuntime(ctx context.Context) (oidcRuntime, error) {
@@ -45,6 +93,7 @@ func (a *App) oidcRuntime(ctx context.Context) (oidcRuntime, error) {
 		SecretRef: strings.TrimSpace(values[SettingOIDCSecretRef]), RedirectURL: strings.TrimSpace(values[SettingOIDCRedirectURL]),
 		AdminGroup:    strings.TrimSpace(values[SettingOIDCAdminGroup]),
 		AutoProvision: boolSetting(values, SettingOIDCAutoProvision, a.Cfg.Auth.OIDCAutoProvision),
+		AutoLogin:     boolSetting(values, SettingOIDCAutoLogin, a.Cfg.Auth.OIDCAutoLogin),
 		ClientSecret:  a.Cfg.Auth.OIDCClientSecret,
 	}
 	if rt.ClientSecret == "" && rt.SecretRef != "" {
@@ -60,7 +109,19 @@ func (a *App) oidcRuntime(ctx context.Context) (oidcRuntime, error) {
 
 func (a *App) OIDCConfigured(ctx context.Context) bool {
 	rt, err := a.oidcRuntime(ctx)
-	return err == nil && rt.Issuer != "" && rt.ClientID != "" && rt.RedirectURL != ""
+	return err == nil && rt.configured()
+}
+
+func (rt oidcRuntime) configured() bool {
+	return rt.Issuer != "" && rt.ClientID != "" && rt.RedirectURL != ""
+}
+
+// OIDCAutoLoginEnabled reports whether the browser may try a silent
+// (prompt=none) sign-in: OIDC must be fully configured and the administrator
+// must have switched auto_login on.
+func (a *App) OIDCAutoLoginEnabled(ctx context.Context) bool {
+	rt, err := a.oidcRuntime(ctx)
+	return err == nil && rt.configured() && rt.AutoLogin
 }
 
 func (a *App) SignOIDCFlow(flow OIDCFlow) (string, error) {
@@ -96,34 +157,44 @@ func (a *App) VerifyOIDCFlow(value string) (OIDCFlow, error) {
 	return flow, nil
 }
 
-func (a *App) BeginOIDC(ctx context.Context) (string, OIDCFlow, error) {
+func (a *App) BeginOIDC(ctx context.Context, opts OIDCStartOptions) (string, OIDCFlow, error) {
 	rt, err := a.oidcRuntime(ctx)
 	if err != nil {
 		return "", OIDCFlow{}, err
 	}
-	if rt.Issuer == "" || rt.ClientID == "" || rt.RedirectURL == "" {
+	if !rt.configured() {
 		return "", OIDCFlow{}, userErrf("OIDC is not fully configured")
 	}
 	provider, err := oidc.NewProvider(ctx, rt.Issuer)
 	if err != nil {
 		return "", OIDCFlow{}, fmt.Errorf("OIDC discovery failed: %w", err)
 	}
+	// A silent attempt is only ever what the administrator allowed. Anyone can
+	// append ?prompt=none to the start URL; without auto_login it is quietly
+	// treated as an ordinary login so the redirect surface stays tied to the
+	// setting.
+	silent := opts.Silent && rt.AutoLogin
 	state, _ := token(24)
 	nonce, _ := token(24)
 	verifier := oauth2.GenerateVerifier()
-	flow := OIDCFlow{State: state, Nonce: nonce, CodeVerifier: verifier, ExpiresAt: time.Now().Add(10 * time.Minute).Unix()}
+	flow := OIDCFlow{State: state, Nonce: nonce, CodeVerifier: verifier, ExpiresAt: time.Now().Add(10 * time.Minute).Unix(),
+		Silent: silent, ReturnTo: OIDCReturnToOrDefault(opts.ReturnTo)}
 	cfg := oauth2.Config{
 		ClientID: rt.ClientID, ClientSecret: rt.ClientSecret, Endpoint: provider.Endpoint(),
 		RedirectURL: rt.RedirectURL, Scopes: []string{oidc.ScopeOpenID, "profile", "email", "groups"},
 	}
-	authURL := cfg.AuthCodeURL(state, oidc.Nonce(nonce), oauth2.S256ChallengeOption(verifier))
+	authOpts := []oauth2.AuthCodeOption{oidc.Nonce(nonce), oauth2.S256ChallengeOption(verifier)}
+	if silent {
+		authOpts = append(authOpts, oauth2.SetAuthURLParam("prompt", "none"))
+	}
+	authURL := cfg.AuthCodeURL(state, authOpts...)
 	// Log exactly what we send so a Keycloak "Invalid Request" (which is almost
 	// always a redirect_uri that doesn't match a registered Valid Redirect URI,
 	// or a scope the client isn't allowed) can be compared against the client
 	// config without guesswork.
 	slog.Info("OIDC authorization request built",
 		"issuer", rt.Issuer, "client_id", rt.ClientID, "redirect_uri", rt.RedirectURL,
-		"scopes", cfg.Scopes)
+		"scopes", cfg.Scopes, "silent", silent)
 	return authURL, flow, nil
 }
 

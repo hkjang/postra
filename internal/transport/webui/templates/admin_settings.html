@@ -21,6 +21,7 @@
   <div class="field"><label>Redirect URL</label><input type="text" name="auth.oidc.redirect_url" value="{{index $s "auth.oidc.redirect_url"}}" placeholder="https://postra.example/ui/auth/oidc/callback"></div>
   <div class="field"><label>관리자 그룹</label><input type="text" name="auth.oidc.admin_group" value="{{index $s "auth.oidc.admin_group"}}"></div>
   <label><input type="checkbox" name="auth.oidc.auto_provision" value="true" {{if eq (index $s "auth.oidc.auto_provision") "true"}}checked{{end}}> 최초 SSO 로그인 시 사용자 자동 생성</label>
+  <label><input type="checkbox" name="auth.oidc.auto_login" value="true" {{if eq (index $s "auth.oidc.auto_login") "true"}}checked{{end}}> Keycloak에 이미 로그인한 사용자는 로그인 화면 없이 자동 로그인 (silent SSO, prompt=none)</label>
   {{if index $s "auth.oidc.secret_ref"}}<label><input type="checkbox" name="remove_oidc_client_secret" value="true"> 저장된 OIDC client secret 삭제</label>{{end}}
 </div></div>
 <div class="card"><h2>로그인·세션</h2><div class="field"><label>세션 유효 시간</label><input type="number" min="1" max="720" name="auth.session_hours" value="{{index $s "auth.session_hours"}}"></div></div>
