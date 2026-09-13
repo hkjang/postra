@@ -33,7 +33,7 @@
         <td>{{if eq .Status "active"}}<span class="ok">active</span>{{else}}<span class="err">revoked</span>{{end}}</td>
         <td>
           {{if eq .Status "active"}}
-          <form method="post" action="/ui/mcp-keys/{{.ID}}/revoke" onsubmit="return confirm('이 MCP Key를 폐기하시겠습니까?')">
+          <form method="post" action="/ui/mcp-keys/{{.ID}}/revoke" data-confirm="이 MCP Key를 폐기하시겠습니까?">
             <button type="submit" class="danger small">폐기</button>
           </form>
           {{end}}
@@ -61,7 +61,7 @@
         <td>{{if eq .Status "active"}}<span class="ok">active</span>{{else}}<span class="err">revoked</span>{{end}}</td>
         <td>
           {{if eq .Status "active"}}
-          <form method="post" action="/ui/admin/mcp-keys/{{.ID}}/revoke" onsubmit="return confirm('관리자 권한으로 이 MCP Key를 폐기하시겠습니까?')">
+          <form method="post" action="/ui/admin/mcp-keys/{{.ID}}/revoke" data-confirm="관리자 권한으로 이 MCP Key를 폐기하시겠습니까?">
             <button type="submit" class="danger small">관리자 폐기</button>
           </form>
           {{end}}

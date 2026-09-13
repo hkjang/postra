@@ -19,7 +19,7 @@
   </form>{{if eq .AuthProvider "local"}}<form method="post" action="/ui/admin/users/{{.ID}}/password" class="actions">
     <input type="password" name="password" minlength="12" placeholder="새 비밀번호" required autocomplete="new-password">
     <button class="ghost" type="submit">재설정</button>
-  </form>{{end}}{{if ne .Status "deleted"}}<form method="post" action="/ui/admin/users/{{.ID}}/delete" class="actions" onsubmit="return confirm('이 사용자를 삭제하시겠습니까? 로그인과 모든 세션이 차단됩니다.')"><button class="danger" type="submit">삭제</button></form>{{end}}</td>
+  </form>{{end}}{{if ne .Status "deleted"}}<form method="post" action="/ui/admin/users/{{.ID}}/delete" class="actions" data-confirm="이 사용자를 삭제하시겠습니까? 로그인과 모든 세션이 차단됩니다."><button class="danger" type="submit">삭제</button></form>{{end}}</td>
 </tr>{{end}}</tbody></table></div>
 <h2>로컬 사용자 추가</h2>
 <form method="post" action="/ui/admin/users"><div class="card grid">
@@ -52,7 +52,7 @@
   <div class="actions"><button type="submit">정책 저장 및 프로비저닝</button></div>
 </div></form>
 <h2>삭제된 사용자 메일 데이터 정리</h2>
-<form method="post" action="/ui/admin/deleted-mail/purge" onsubmit="return confirm('해당 삭제 사용자의 이전 메일 데이터를 영구 삭제하시겠습니까? 복구할 수 없습니다.')"><div class="card">
+<form method="post" action="/ui/admin/deleted-mail/purge" data-confirm="해당 삭제 사용자의 이전 메일 데이터를 영구 삭제하시겠습니까? 복구할 수 없습니다."><div class="card">
   <p class="small muted">삭제 상태인 과거 사용자만 대상으로 합니다. 현재 활성 사용자의 메일은 삭제되지 않습니다. 확인을 위해 같은 이메일을 두 번 입력하세요.</p>
   <div class="grid">
     <div class="field"><label>과거 사용자 이메일</label><input type="email" name="email" required placeholder="hong@corp.local"></div>

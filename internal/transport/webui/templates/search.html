@@ -95,7 +95,7 @@
     <button class="ghost" type="submit" name="action" value="mark_important">중요 표시</button>
     <button class="ghost" type="submit" name="action" value="unmark_important">중요 해제</button>
     <button class="danger" type="submit" name="action" value="delete"
-      onclick="return confirm('선택한 메일을 로컬에서 삭제합니다. 메일 서버의 원본은 그대로입니다. 계속할까요?')">삭제</button>
+      data-confirm="선택한 메일을 로컬에서 삭제합니다. 메일 서버의 원본은 그대로입니다. 계속할까요?">삭제</button>
   </div>
   <div class="card maillist">
     {{range .Messages}}
@@ -120,7 +120,7 @@
     {{end}}
   </div>
   </form>
-  <script>
+  <script nonce="{{.Nonce}}">
   // Progressive enhancement only: without JS every checkbox and button still
   // works, this just saves ticking each row.
   document.getElementById("selectAll")?.addEventListener("change", function (e) {

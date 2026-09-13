@@ -29,6 +29,7 @@ import (
 	"postra/internal/domain"
 	"postra/internal/platform/build"
 	"postra/internal/platform/metrics"
+	"postra/internal/platform/tracking"
 )
 
 //go:embed templates/*.html static/*
@@ -40,13 +41,14 @@ const (
 )
 
 type Server struct {
-	app      *application.App
-	apiToken string
-	tpl      map[string]*template.Template
+	app        *application.App
+	apiToken   string
+	tpl        map[string]*template.Template
+	violations *tracking.Recorder // policy reports while visitor tracking is on
 }
 
 func New(app *application.App, apiToken string) *Server {
-	s := &Server{app: app, apiToken: apiToken}
+	s := &Server{app: app, apiToken: apiToken, violations: tracking.NewRecorder()}
 	s.tpl = parseTemplates()
 	return s
 }
@@ -188,6 +190,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /favicon.ico", s.serveFavicon)
 	mux.HandleFunc("GET /favicon.png", s.serveFavicon)
 	mux.HandleFunc("GET /logo.png", s.serveLogo)
+	mux.HandleFunc("POST "+cspReportPath, s.receiveCSPReport)
+	mux.HandleFunc(tracking.ProxyPath+"/", s.momentoProxy)
 	mux.HandleFunc("GET /ui/setup", s.setupForm)
 	mux.HandleFunc("POST /ui/setup", s.setupSubmit)
 	mux.HandleFunc("GET /ui/login", s.loginForm)
@@ -209,6 +213,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /ui/admin/deleted-mail/purge", s.gate(s.adminDeletedMailPurge))
 	mux.HandleFunc("GET /ui/admin/settings", s.gate(s.adminSettings))
 	mux.HandleFunc("POST /ui/admin/settings", s.gate(s.adminSettingsSave))
+	mux.HandleFunc("POST /ui/admin/tracking/allow", s.gate(s.adminTrackingAllow))
+	mux.HandleFunc("POST /ui/admin/tracking/forget", s.gate(s.adminTrackingForget))
 	mux.HandleFunc("GET /ui/admin/incidents", s.gate(s.adminIncidents))
 	mux.HandleFunc("POST /ui/admin/incidents/{id}/resolve", s.gate(s.adminIncidentResolve))
 	mux.HandleFunc("GET /ui/jobs/status", s.gate(s.jobsStatus))
@@ -255,7 +261,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /ui/drafts/{id}/rewrite", s.gate(s.draftRewrite))
 	mux.HandleFunc("GET /ui/drafts/{id}/send", s.gate(s.sendForm))
 	mux.HandleFunc("POST /ui/drafts/{id}/send", s.gate(s.sendSubmit))
-	return mux
+	return s.secure(mux)
 }
 
 func (s *Server) serveStatic(w http.ResponseWriter, r *http.Request) {
@@ -769,6 +775,8 @@ func (s *Server) adminSettings(w http.ResponseWriter, r *http.Request) {
 		"Settings":              settings,
 		"StorageDriver":         driver,
 		"PostgresDSNConfigured": pgConfigured,
+		"TrackingProviders":     tracking.Providers,
+		"TrackingViolations":    s.violations.List(tracking.ReadConfig(settings)),
 	})
 }
 
@@ -778,13 +786,15 @@ func (s *Server) adminSettingsSave(w http.ResponseWriter, r *http.Request) {
 	for key := range r.Form {
 		if strings.HasPrefix(key, "auth.") || strings.HasPrefix(key, "sync.") ||
 			strings.HasPrefix(key, "ai.") || strings.HasPrefix(key, "send.") ||
-			strings.HasPrefix(key, "security.") || strings.HasPrefix(key, "attachments.") {
+			strings.HasPrefix(key, "security.") || strings.HasPrefix(key, "attachments.") ||
+			strings.HasPrefix(key, "tracking.") {
 			values[key] = r.FormValue(key)
 		}
 	}
 	// Unchecked checkboxes are absent from form encoding.
 	for _, key := range []string{application.SettingOIDCAutoProvision, application.SettingAllowInsecureMail,
-		application.SettingAllowPrivateHosts, application.SettingEncryptAtRest} {
+		application.SettingAllowPrivateHosts, application.SettingEncryptAtRest,
+		tracking.SettingEnabled, tracking.SettingIncludeAdmin, tracking.SettingMomentoProxy} {
 		if _, ok := values[key]; !ok {
 			values[key] = "false"
 		}
@@ -794,7 +804,8 @@ func (s *Server) adminSettingsSave(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.app.AdminSaveSettings(r.Context(), values, r.FormValue("oidc_client_secret")); err != nil {
 		settings, _ := s.app.SystemSettings(r.Context())
-		s.render(w, "admin_settings", http.StatusBadRequest, map[string]any{"Settings": settings, "Error": err.Error()})
+		s.render(w, "admin_settings", http.StatusBadRequest, map[string]any{"Settings": settings, "Error": err.Error(),
+			"TrackingProviders": tracking.Providers, "TrackingViolations": s.violations.List(tracking.ReadConfig(settings))})
 		return
 	}
 	http.Redirect(w, r, "/ui/admin/settings?saved=1", http.StatusSeeOther)
@@ -1842,6 +1853,17 @@ func (s *Server) render(w http.ResponseWriter, page string, code int, data map[s
 	data["Nav"] = navSection(page)
 	if page == "login" || page == "setup" {
 		data["AuthPage"] = true
+	}
+	// The policy middleware chose the nonce and the tracking snippet for this
+	// request; the layout puts the nonce on its own scripts and the snippet
+	// where the administrator asked for it.
+	if pw, ok := w.(*pageWriter); ok {
+		data["Nonce"] = pw.nonce
+		if pw.head {
+			data["TrackingHead"] = pw.snippet
+		} else {
+			data["TrackingBody"] = pw.snippet
+		}
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(code)
