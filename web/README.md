@@ -33,7 +33,7 @@ git status --short -- internal/transport/spa/assets
 프런트엔드 산출물을 커밋하므로 Node 없이 다음 명령으로 빌드할 수 있습니다.
 
 ```bash
-make build-offline VERSION=v0.19.0
+make build-offline VERSION=v0.19.1
 ```
 
 필요한 Go 버전과 Go 모듈 캐시는 미리 준비되어 있어야 합니다. 이 대상은 `GOPROXY=off`, `GOTOOLCHAIN=local`을 사용하여 네트워크 다운로드를 하지 않습니다. React 소스를 오프라인에서 수정하려면 Node와 해당 잠금 파일의 npm 캐시도 별도로 준비해야 합니다.
