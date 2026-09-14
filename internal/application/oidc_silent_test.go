@@ -2,11 +2,15 @@ package application
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
+	"time"
+	"unicode/utf8"
 )
 
 // fakeIssuer serves just enough OIDC discovery for BeginOIDC to build an
@@ -139,4 +143,56 @@ func mustQuery(t *testing.T, raw string) url.Values {
 		t.Fatal(err)
 	}
 	return u.Query()
+}
+
+func TestOIDCErrorNoteIsSignedOneShotAndSeparateFromFlows(t *testing.T) {
+	app, _, _, _ := newTestApp(t)
+
+	note, err := app.SignOIDCError("Keycloak 로그인이 실패했습니다: invalid_client")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg, ok := app.VerifyOIDCError(note); !ok || msg != "Keycloak 로그인이 실패했습니다: invalid_client" {
+		t.Fatalf("round trip: ok=%v msg=%q", ok, msg)
+	}
+	// A note is not a login flow and a login flow is not a note, even though
+	// both are signed with the same key: neither can be replayed as the other.
+	if _, err := app.VerifyOIDCFlow(note); err == nil {
+		t.Fatal("error note verified as a flow cookie")
+	}
+	flow, err := app.SignOIDCFlow(OIDCFlow{State: "st", ExpiresAt: time.Now().Add(time.Minute).Unix()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := app.VerifyOIDCError(flow); ok {
+		t.Fatal("flow cookie verified as an error note")
+	}
+	// Tampering with the message or the signature is rejected.
+	payload, sig, _ := strings.Cut(note, ".")
+	if _, ok := app.VerifyOIDCError(payload + ".AAAA"); ok {
+		t.Fatal("bad signature accepted")
+	}
+	forged := base64.RawURLEncoding.EncodeToString([]byte(`{"message":"phish","expires_at":9999999999}`))
+	if _, ok := app.VerifyOIDCError(forged + "." + sig); ok {
+		t.Fatal("forged message accepted")
+	}
+	// A stale note is refused; an empty message is never shown.
+	stale := base64.RawURLEncoding.EncodeToString([]byte(`{"message":"old","expires_at":1}`))
+	staleSigned := stale + "." + base64.RawURLEncoding.EncodeToString(app.oidcMAC(oidcErrorDomain, []byte(`{"message":"old","expires_at":1}`)))
+	if _, ok := app.VerifyOIDCError(staleSigned); ok {
+		t.Fatal("stale note accepted")
+	}
+	if _, ok := app.VerifyOIDCError(""); ok {
+		t.Fatal("empty note accepted")
+	}
+	// A provider that pastes its whole body into the reason cannot overflow
+	// the cookie: the note is cut on a rune boundary, never mid-character.
+	long, err := app.SignOIDCError(strings.Repeat("가", 2000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg, ok := app.VerifyOIDCError(long)
+	if !ok || len(msg) > oidcErrorNoteMaxBytes+len("…") || !utf8.ValidString(msg) || !strings.HasSuffix(msg, "…") {
+		t.Fatalf("long note: ok=%v len=%d valid=%v", ok, len(msg), utf8.ValidString(msg))
+	}
 }

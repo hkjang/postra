@@ -38,6 +38,9 @@ var files embed.FS
 const (
 	cookieName = "postra_session"
 	csrfCookie = "postra_csrf"
+	// oidcErrorCookie carries a failed SSO sign-in's reason from the callback
+	// to /ui/login?sso=error, signed and read exactly once.
+	oidcErrorCookie = "postra_oidc_error"
 )
 
 type Server struct {
@@ -430,7 +433,13 @@ func (s *Server) loginForm(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		s.render(w, "login", http.StatusOK, s.loginPageData(r, nil))
+		// sso=error: a failed SSO sign-in was redirected here; show its reason
+		// once. An error render never carries the silent trigger.
+		var loginErr error
+		if r.URL.Query().Get("sso") == "error" {
+			loginErr = s.takeOIDCError(w, r)
+		}
+		s.render(w, "login", http.StatusOK, s.loginPageData(r, loginErr))
 		return
 	}
 	if s.apiToken == "" {
@@ -542,18 +551,18 @@ func (s *Server) oidcStart(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) oidcCallback(w http.ResponseWriter, r *http.Request) {
+	// The flow cookie is only trusted when its state matches the query; a
+	// mismatch is treated exactly like a missing cookie so a stranger's error
+	// or code can never ride on someone else's flow.
+	flow, verified := s.verifiedFlow(r)
 	if oidcErr := r.URL.Query().Get("error"); oidcErr != "" {
 		// A silent (prompt=none) attempt with no provider session comes back as
 		// login_required. That is the provider's ordinary answer, not a failure:
 		// land on the login page with the sso=none marker so the browser does
 		// not try again and bounce in a loop, even if its storage was cleared.
-		if flow, ok := s.silentFlow(r); ok && application.OIDCLoginRequired(oidcErr) {
+		if verified && flow.Silent && application.OIDCLoginRequired(oidcErr) {
 			s.clearOIDCFlowCookie(w, r)
-			target := "/ui/login?sso=none"
-			if flow.ReturnTo != "" && flow.ReturnTo != application.OIDCDefaultReturnTo {
-				target += "&" + url.Values{"return_to": {flow.ReturnTo}}.Encode()
-			}
-			http.Redirect(w, r, target, http.StatusFound)
+			http.Redirect(w, r, loginMarkerURL("none", flow.ReturnTo), http.StatusFound)
 			return
 		}
 		// Keycloak puts the actionable reason in error_description (e.g.
@@ -565,25 +574,17 @@ func (s *Server) oidcCallback(w http.ResponseWriter, r *http.Request) {
 		if desc != "" {
 			msg += " — " + desc
 		}
-		s.render(w, "login", http.StatusUnauthorized, map[string]any{
-			"Error": msg, "LocalAuth": true, "OIDCEnabled": true,
-		})
+		s.failOIDC(w, r, flow.ReturnTo, msg)
 		return
 	}
-	c, err := r.Cookie("postra_oidc_flow")
-	if err != nil {
-		s.render(w, "login", http.StatusBadRequest, map[string]any{"Error": "OIDC 로그인 상태가 없습니다.", "LocalAuth": true, "OIDCEnabled": true})
-		return
-	}
-	flow, err := s.app.VerifyOIDCFlow(c.Value)
-	if err != nil || subtle.ConstantTimeCompare([]byte(flow.State), []byte(r.URL.Query().Get("state"))) != 1 {
-		s.render(w, "login", http.StatusBadRequest, map[string]any{"Error": "OIDC state 검증에 실패했습니다.", "LocalAuth": true, "OIDCEnabled": true})
+	if !verified {
+		s.failOIDC(w, r, "", "OIDC 로그인 상태가 없거나 state 검증에 실패했습니다. 다시 로그인하세요.")
 		return
 	}
 	u, err := s.app.CompleteOIDC(application.WithActor(r.Context(), "oidc"), r.URL.Query().Get("code"), flow)
 	if err != nil {
-		slog.Warn("OIDC callback failed", "err", err) // surface the exact reason behind the 401
-		s.render(w, "login", http.StatusUnauthorized, map[string]any{"Error": err.Error(), "LocalAuth": true, "OIDCEnabled": true})
+		slog.Warn("OIDC callback failed", "err", err) // surface the exact reason behind the failure
+		s.failOIDC(w, r, flow.ReturnTo, err.Error())
 		return
 	}
 	raw, csrf, _, err := s.app.CreateSession(r.Context(), u, r.UserAgent(), application.ClientIP(r.RemoteAddr))
@@ -599,20 +600,60 @@ func (s *Server) oidcCallback(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, application.OIDCReturnToOrDefault(flow.ReturnTo), http.StatusSeeOther)
 }
 
-// silentFlow returns the verified flow cookie when the request belongs to a
-// prompt=none attempt whose state matches. An unverifiable or non-silent
-// cookie means the provider error is shown like any other.
-func (s *Server) silentFlow(r *http.Request) (application.OIDCFlow, bool) {
+// verifiedFlow returns the flow cookie when it verifies and its state matches
+// the callback query. Anything else counts as no flow at all.
+func (s *Server) verifiedFlow(r *http.Request) (application.OIDCFlow, bool) {
 	c, err := r.Cookie("postra_oidc_flow")
 	if err != nil {
 		return application.OIDCFlow{}, false
 	}
 	flow, err := s.app.VerifyOIDCFlow(c.Value)
-	if err != nil || !flow.Silent ||
-		subtle.ConstantTimeCompare([]byte(flow.State), []byte(r.URL.Query().Get("state"))) != 1 {
+	if err != nil || subtle.ConstantTimeCompare([]byte(flow.State), []byte(r.URL.Query().Get("state"))) != 1 {
 		return application.OIDCFlow{}, false
 	}
 	return flow, true
+}
+
+// loginMarkerURL is the login page with an sso= marker (none / error) and,
+// when it is worth carrying, the deep link the visitor was heading for.
+func loginMarkerURL(marker, returnTo string) string {
+	target := "/ui/login?sso=" + marker
+	if application.SafeReturnTo(returnTo) && returnTo != application.OIDCDefaultReturnTo {
+		target += "&" + url.Values{"return_to": {returnTo}}.Encode()
+	}
+	return target
+}
+
+// failOIDC ends a failed sign-in: the reason goes into a signed one-shot
+// cookie and the browser is sent to /ui/login?sso=error. Rendering the reason
+// on the callback address would leave code=…&state=… in the bar, where a
+// refresh resubmits the spent code (one more incident each time) and the page
+// sits on the very path the silent-SSO rules say never to retry from. The
+// marker also keeps the login page from trying a silent sign-in again.
+func (s *Server) failOIDC(w http.ResponseWriter, r *http.Request, returnTo, msg string) {
+	s.clearOIDCFlowCookie(w, r)
+	if note, err := s.app.SignOIDCError(msg); err == nil {
+		// #nosec G124 -- Secure follows the transport so loopback HTTP remains usable.
+		http.SetCookie(w, &http.Cookie{Name: oidcErrorCookie, Value: note, Path: "/ui/login",
+			MaxAge: int(application.OIDCErrorNoteTTL.Seconds()), HttpOnly: true, Secure: secureRequest(r), SameSite: http.SameSiteLaxMode})
+	}
+	http.Redirect(w, r, loginMarkerURL("error", returnTo), http.StatusFound)
+}
+
+// takeOIDCError consumes the note left by failOIDC. The cookie is cleared
+// whether or not it verifies, so the reason is shown exactly once; a landing
+// without a valid note (an old link, a forged cookie) gets a generic message.
+func (s *Server) takeOIDCError(w http.ResponseWriter, r *http.Request) error {
+	msg := "SSO 로그인이 실패했습니다. 다시 시도하세요."
+	if c, err := r.Cookie(oidcErrorCookie); err == nil {
+		if note, ok := s.app.VerifyOIDCError(c.Value); ok {
+			msg = note
+		}
+		// #nosec G124 -- deletion cookie mirrors the dynamically secure original cookie.
+		http.SetCookie(w, &http.Cookie{Name: oidcErrorCookie, Value: "", Path: "/ui/login", MaxAge: -1,
+			HttpOnly: true, Secure: secureRequest(r), SameSite: http.SameSiteLaxMode})
+	}
+	return errors.New(msg)
 }
 
 func (s *Server) clearOIDCFlowCookie(w http.ResponseWriter, r *http.Request) {
