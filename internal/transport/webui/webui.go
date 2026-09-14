@@ -503,6 +503,10 @@ func (s *Server) loginSubmit(w http.ResponseWriter, r *http.Request) {
 		Name: cookieName, Value: s.apiToken, Path: "/",
 		HttpOnly: true, SameSite: http.SameSiteStrictMode,
 	})
+	if returnTo := r.FormValue("return_to"); application.SafeReturnTo(returnTo) {
+		http.Redirect(w, r, returnTo, http.StatusFound)
+		return
+	}
 	redirectRelative(w, "./")
 }
 

@@ -7,6 +7,8 @@
 
 Go로 작성한 개인/사내 구축형 메일 서비스입니다. 사용자의 **POP3/IMAP/SMTP** 계정을 연결해 메일을 안전하게 **수집·검색·분석·작성·발송**하며, 모든 업무 기능을 **REST API / CLI / MCP / Web UI** 로 제공합니다.
 
+새 **React AI 업무 메일 워크스페이스**는 `/app/`에서 사용할 수 있습니다. 메일 목록·본문·AI Insight를 함께 보는 화면, 통합 검색, TipTap HTML 작성, 업무·액션·관리 화면을 제공하며 기존 `/ui/`도 유지합니다. React와 글꼴은 Go 실행 파일에 포함되어 운영 시 Node 서버나 외부 CDN이 필요 없습니다. [전환 및 사용 안내](docs/REACT_WORKSPACE.md) · [프런트엔드 개발](web/README.md)
+
 ## 설계 핵심
 
 - **단일 비즈니스 코어** — REST·MCP·CLI 세 전송 계층이 모두 같은 `internal/application` 유스케이스를 호출합니다. 전송 계층에는 비즈니스 로직이 없습니다.
@@ -39,7 +41,7 @@ go build -o postra ./cmd/postra
 ./postra mcp                           # 로컬 MCP 클라이언트용 stdio 서버
 ```
 
-처음 `/ui`에 접속하면 로컬 관리자 계정을 생성합니다. 서버를 원격에서 최초 기동할 때는
+`/app/`에서 로그인하거나 초기 관리자 설정으로 이동할 수 있습니다. 기존 `/ui/`도 같은 로그인 세션을 사용합니다. 서버를 원격에서 최초 기동할 때는
 `POSTRA_BOOTSTRAP_ADMIN`과 `POSTRA_BOOTSTRAP_ADMIN_PASSWORD`로 관리자를 미리 생성하세요.
 
 ## 로그인·사용자 관리·Keycloak SSO

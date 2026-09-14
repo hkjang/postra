@@ -167,6 +167,7 @@ button.ghost,.btn.ghost{background:var(--card);color:var(--accent);border:1px so
   <a href="/ui/" class="brand"><img src="/ui/static/logo.png" alt="Postra Logo" class="brand-mark-img"><span>Postra</span><span class="tag">v{{.Version}}</span></a>
   <nav aria-label="주요 메뉴">
     {{$nav := .Nav}}
+    <a href="/app/" title="새 React 업무 메일 워크스페이스">새 워크스페이스 ↗</a>
     <a href="/ui/"{{if eq $nav "inbox"}} class="on" aria-current="page"{{end}}>받은편지함</a>
     <a href="/ui/compose"{{if eq $nav "compose"}} class="on" aria-current="page"{{end}}>새 메일</a>
     <a href="/ui/outbound"{{if eq $nav "outbound"}} class="on" aria-current="page"{{end}}>발송 상태</a>

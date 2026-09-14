@@ -2,13 +2,14 @@
 
 Docker 데몬 없이 빌드한, 오프라인망에서 바로 사용 가능한 산출물입니다.
 
-> **v0.19.0**: HTML 서식 메일 작성·발송 — 오프라인 서식 편집기, 편지·공지·업무 공유 디자인, HTML 직접 입력, 승인 화면의 안전한 미리보기와 HTML·텍스트 동시 발송을 지원합니다. [릴리즈 내용](../docs/releases/v0.19.0.md)을 참고하세요.
+> **v0.19.0**: React AI 업무 메일 워크스페이스(`/app/`)와 HTML 서식 메일 발송 — 메일·AI·업무·관리 화면을 현대화하고, 기존 `/ui/`와 오프라인 단일 실행 파일 배포를 유지합니다. [릴리즈 내용](../docs/releases/v0.19.0.md)을 참고하세요.
 
 | 파일 | 설명 |
 | --- | --- |
 | `postra-0.19.0-linux-amd64-image.tar.gz` | `docker load` 로 불러오는 컨테이너 이미지 (`postra:0.19.0`, linux/amd64) |
 | `postra-0.19.0-linux-amd64` | 정적 링크 단일 실행 파일 (CGO 없음, 의존성 없음) |
 | `postra-0.19.0-sbom.cdx.json` | CycloneDX 소프트웨어 자재명세서 |
+| `postra-0.19.0-frontend-sbom.cdx.json` | 프런트엔드 의존성 CycloneDX 명세서 |
 | `SHA256SUMS.txt` | 모든 릴리즈 파일의 SHA-256 체크섬 |
 
 이미지는 순수 Go 정적 바이너리 + CA 인증서 + 최소 rootfs 로만 구성됩니다(scratch 기반).
@@ -34,7 +35,7 @@ docker exec -it postra postra account list
 docker exec -it postra postra secret set --type mail_password --label "내 메일"
 ```
 
-REST API는 `/api`, Web UI는 `/ui`, MCP Streamable HTTP는 `/mcp`이며 모두 8480 포트를 공유합니다. 비로컬 인터페이스(`0.0.0.0`)로 바인딩하므로 `POSTRA_API_TOKEN` 설정을 권장합니다. 완전 격리망이라면 생략 가능하나 기동 시 경고가 출력됩니다.
+REST API는 `/api`, 새 Web UI는 `/app/`(기존 `/ui/` 유지), MCP Streamable HTTP는 `/mcp`이며 모두 8480 포트를 공유합니다. React·글꼴은 실행 파일 안에 포함되어 Node 서버나 외부 CDN이 필요 없습니다. 비로컬 인터페이스(`0.0.0.0`)로 바인딩하므로 `POSTRA_API_TOKEN` 설정을 권장합니다. 완전 격리망이라면 생략 가능하나 기동 시 경고가 출력됩니다.
 
 ## 2) 바이너리 단독 실행 (Docker 불필요)
 

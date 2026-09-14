@@ -34,6 +34,8 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /api/me", s.me)
+	mux.HandleFunc("GET /api/auth/session", s.browserSession)
+	mux.HandleFunc("POST /api/auth/logout", s.browserLogout)
 	mux.HandleFunc("GET /api/admin/users", s.adminListUsers)
 	mux.HandleFunc("POST /api/admin/users", s.adminCreateUser)
 	mux.HandleFunc("PATCH /api/admin/users/{id}", s.adminUpdateUser)
@@ -386,7 +388,7 @@ func (s *Server) readyz(w http.ResponseWriter, r *http.Request) {
 // that reveal no sensitive data.
 func publicPath(p string) bool {
 	switch p {
-	case "/api/livez", "/api/readyz", "/api/healthz":
+	case "/api/livez", "/api/readyz", "/api/healthz", "/api/auth/session":
 		return true
 	}
 	return false
@@ -399,6 +401,7 @@ func (s *Server) middleware(mux *http.ServeMux) http.Handler {
 		// reaches it.
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Cache-Control", "no-store")
 		// /metrics bypasses auth and is not self-instrumented.
 		if r.URL.Path == "/metrics" {
 			mux.ServeHTTP(w, r)
@@ -421,6 +424,18 @@ func (s *Server) middleware(mux *http.ServeMux) http.Handler {
 					return
 				}
 				ctx = application.WithPrincipal(ctx, principal)
+				if r.Header.Get("Authorization") == "" && !s.browserMutationAllowed(r) {
+					writeJSON(rec, http.StatusForbidden, map[string]string{"error": "same-origin request and valid CSRF token required"})
+					return
+				}
+			} else if !publicPath(r.URL.Path) {
+				if p, ok := s.localPrincipal(r); ok {
+					ctx = application.WithPrincipal(ctx, p)
+				}
+				if !safeMethod(r.Method) && !sameOrigin(r, false) {
+					writeJSON(rec, http.StatusForbidden, map[string]string{"error": "cross-origin request rejected"})
+					return
+				}
 			}
 			mux.ServeHTTP(rec, r.WithContext(ctx))
 		}()
@@ -430,7 +445,11 @@ func (s *Server) middleware(mux *http.ServeMux) http.Handler {
 }
 
 func (s *Server) authenticate(r *http.Request) (domain.Principal, bool) {
-	raw := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	header := r.Header.Get("Authorization")
+	raw := strings.TrimPrefix(header, "Bearer ")
+	if header != "" && (!strings.HasPrefix(header, "Bearer ") || raw == "") {
+		return domain.Principal{}, false
+	}
 	if s.apiToken != "" && subtle.ConstantTimeCompare([]byte(raw), []byte(s.apiToken)) == 1 {
 		u, err := s.app.Store.GetUser(r.Context(), application.DefaultUserID)
 		if err == nil {
@@ -447,10 +466,16 @@ func (s *Server) authenticate(r *http.Request) (domain.Principal, bool) {
 		if p, err := s.app.AuthenticateOIDCAccessToken(r.Context(), raw); err == nil {
 			return p, true
 		}
+		// An invalid explicit credential must not silently fall back to a
+		// cookie and bypass the cookie request's CSRF checks.
+		return domain.Principal{}, false
 	}
 	if c, err := r.Cookie("postra_session"); err == nil {
 		if _, p, err := s.app.AuthenticateSession(r.Context(), c.Value); err == nil {
 			return p, true
+		}
+		if !s.app.Cfg.Auth.Enabled && s.apiToken != "" && subtle.ConstantTimeCompare([]byte(c.Value), []byte(s.apiToken)) == 1 {
+			return s.localPrincipal(r)
 		}
 	}
 	return domain.Principal{}, false
@@ -680,14 +705,23 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 	sq := domain.SearchQuery{
 		AccountID: q.Get("account_id"), Text: q.Get("q"),
 		From: q.Get("from"), To: q.Get("to"), Subject: q.Get("subject"),
-		Cursor: q.Get("cursor"),
+		Cursor: q.Get("cursor"), Folder: q.Get("folder"), Label: q.Get("label"),
 	}
 	sq.Since, _ = strconv.ParseInt(q.Get("since"), 10, 64)
 	sq.Until, _ = strconv.ParseInt(q.Get("until"), 10, 64)
+	sq.ReceivedSince, _ = strconv.ParseInt(q.Get("received_since"), 10, 64)
 	sq.Limit, _ = strconv.Atoi(q.Get("limit"))
 	if v := q.Get("has_attachment"); v != "" {
 		b := v == "true" || v == "1"
 		sq.HasAttachment = &b
+	}
+	if v := q.Get("is_important"); v != "" {
+		b := v == "true" || v == "1"
+		sq.IsImportant = &b
+	}
+	if v := q.Get("is_archived"); v != "" {
+		b := v == "true" || v == "1"
+		sq.IsArchived = &b
 	}
 	res, err := s.app.Search(r.Context(), sq)
 	if err != nil {
