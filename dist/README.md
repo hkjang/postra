@@ -2,13 +2,16 @@
 
 Docker 데몬 없이 빌드한, 오프라인망에서 바로 사용 가능한 산출물입니다.
 
-> **v0.18.7**: 조용한 SSO(silent SSO) + 빌드 정보 — 관리자가 `auth.oidc.auto_login`(기본 꺼짐)을 켜면 로그인 화면이 OIDC `prompt=none` 으로 한 번 조용히 로그인을 시도해, 이미 IdP 에 로그인한 사용자는 로그인 화면을 거치지 않고 받은편지함으로 갑니다(탭당 1회·로그아웃 표시로 되돌이표 방지, `return_to` 는 앱 내부 경로만 허용). `postra version` 이 버전·커밋·빌드 시각을 함께 알리고, 이미지에 OCI 라벨(`org.opencontainers.image.*`)이 붙습니다.
+> **v0.19.0**: React AI 업무 메일 워크스페이스(`/app/`)와 HTML 서식 메일 발송 — 메일·AI·업무·관리 화면을 현대화하고, 기존 `/ui/`와 오프라인 단일 실행 파일 배포를 유지합니다. [릴리즈 내용](../docs/releases/v0.19.0.md)을 참고하세요.
+
+v0.18.7의 `auth.oidc.auto_login`(기본 꺼짐), 탭당 한 번의 `prompt=none` 시도·로그아웃 반복 방지·안전한 `return_to`를 유지합니다. `postra version`의 버전·커밋·빌드 시각과 릴리즈 이미지의 OCI 라벨도 유지합니다.
 
 | 파일 | 설명 |
 | --- | --- |
-| `postra-0.18.7-linux-amd64-image.tar.gz` | `docker load` 로 불러오는 컨테이너 이미지 (`postra:0.18.7`, linux/amd64) |
-| `postra-0.18.7-linux-amd64` | 정적 링크 단일 실행 파일 (CGO 없음, 의존성 없음) |
-| `postra-0.18.7-sbom.cdx.json` | CycloneDX 소프트웨어 자재명세서 |
+| `postra-0.19.0-linux-amd64-image.tar.gz` | `docker load` 로 불러오는 컨테이너 이미지 (`postra:0.19.0`, linux/amd64) |
+| `postra-0.19.0-linux-amd64` | 정적 링크 단일 실행 파일 (CGO 없음, 의존성 없음) |
+| `postra-0.19.0-sbom.cdx.json` | CycloneDX 소프트웨어 자재명세서 |
+| `postra-0.19.0-frontend-sbom.cdx.json` | 프런트엔드 의존성 CycloneDX 명세서 |
 | `SHA256SUMS.txt` | 모든 릴리즈 파일의 SHA-256 체크섬 |
 
 이미지는 순수 Go 정적 바이너리 + CA 인증서 + 최소 rootfs 로만 구성됩니다(scratch 기반).
@@ -17,7 +20,7 @@ Docker 데몬 없이 빌드한, 오프라인망에서 바로 사용 가능한 �
 
 ```bash
 # 폐쇄망 호스트로 tar.gz 를 옮긴 뒤:
-docker load -i postra-0.18.7-linux-amd64-image.tar.gz     # gzip 자동 인식
+docker load -i postra-0.19.0-linux-amd64-image.tar.gz     # gzip 자동 인식
 docker image ls | grep postra
 
 # 오프라인망(평문 POP3/SMTP 허용) 실행 예시
@@ -27,21 +30,21 @@ docker run -d --name postra \
   -e POSTRA_HTTP_ADDR=0.0.0.0:8480 \
   -e POSTRA_ALLOW_INSECURE_MAIL=true \
   -e POSTRA_API_TOKEN=change-me \
-  postra:0.18.7
+  postra:0.19.0
 
 # CLI 사용 (같은 컨테이너)
 docker exec -it postra postra account list
 docker exec -it postra postra secret set --type mail_password --label "내 메일"
 ```
 
-REST API는 `/api`, Web UI는 `/ui`, MCP Streamable HTTP는 `/mcp`이며 모두 8480 포트를 공유합니다. 비로컬 인터페이스(`0.0.0.0`)로 바인딩하므로 `POSTRA_API_TOKEN` 설정을 권장합니다. 완전 격리망이라면 생략 가능하나 기동 시 경고가 출력됩니다.
+REST API는 `/api`, 새 Web UI는 `/app/`(기존 `/ui/` 유지), MCP Streamable HTTP는 `/mcp`이며 모두 8480 포트를 공유합니다. React·글꼴은 실행 파일 안에 포함되어 Node 서버나 외부 CDN이 필요 없습니다. 비로컬 인터페이스(`0.0.0.0`)로 바인딩하므로 `POSTRA_API_TOKEN` 설정을 권장합니다. 완전 격리망이라면 생략 가능하나 기동 시 경고가 출력됩니다.
 
 ## 2) 바이너리 단독 실행 (Docker 불필요)
 
 ```bash
-chmod +x postra-0.18.7-linux-amd64
-./postra-0.18.7-linux-amd64 init
-POSTRA_BOOTSTRAP_ADMIN_PASSWORD='replace-me' ./postra-0.18.7-linux-amd64 serve
+chmod +x postra-0.19.0-linux-amd64
+./postra-0.19.0-linux-amd64 init
+POSTRA_BOOTSTRAP_ADMIN_PASSWORD='replace-me' ./postra-0.19.0-linux-amd64 serve
 ```
 
 ## 데이터 / 비밀값
@@ -55,6 +58,6 @@ Docker 없이 이미지를 다시 만들려면:
 
 ```bash
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o postra ./cmd/postra
-go run scripts/mkimage.go postra postra-image.tar postra:0.18.7
+go run scripts/mkimage.go postra postra-image.tar postra:0.19.0
 gzip -9 postra-image.tar
 ```

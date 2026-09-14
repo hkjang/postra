@@ -13,14 +13,100 @@ permissions:
 # requires (see go.mod `toolchain`). Bump both together.
 env:
   GO_VERSION: "1.26.6"   # 1.26.6 에서 GO-2026-6218(net/url)·GO-2026-6091(html/template) 이 고쳐졌다
+  NODE_VERSION: "22"
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  frontend:
+    name: browser · typecheck · test · assets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          check-latest: true
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install locked browser dependencies
+        working-directory: web
+        run: npm ci --no-audit --no-fund
+      - name: Browser typecheck and tests
+        working-directory: web
+        run: |
+          npm run typecheck
+          npm test
+      - name: Audit production browser dependencies
+        working-directory: web
+        run: npm audit --omit=dev --audit-level=high
+      - name: Rebuild embedded browser assets
+        working-directory: web
+        run: npm run build
+      - name: Verify committed browser assets are current
+        run: |
+          if [ -n "$(git status --porcelain --untracked-files=all -- internal/transport/spa/assets)" ]; then
+            git status --short -- internal/transport/spa/assets
+            echo "Run make frontend and commit the rebuilt /app assets with the source." >&2
+            exit 1
+          fi
+      - name: Generate browser SBOM
+        working-directory: web
+        run: npm sbom --sbom-format=cyclonedx --omit=dev --package-lock-only > frontend-sbom.cdx.json
+      - name: Upload browser SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-sbom
+          path: web/frontend-sbom.cdx.json
+
+  browser-e2e:
+    name: real browser · auth · mail workflows
+    needs: frontend
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          check-latest: true
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+      - name: Install locked browser dependencies
+        working-directory: web
+        run: npm ci --no-audit --no-fund
+      - name: Install Chromium and system dependencies
+        working-directory: web
+        run: npx playwright install --with-deps chromium
+      - name: Rebuild embedded browser assets
+        working-directory: web
+        run: npm run build
+      - name: Exercise real routes with fake mail and AI adapters
+        working-directory: web
+        env:
+          POSTRA_SPA_SCREENSHOT_DIR: ${{ runner.temp }}/postra-spa-screenshots
+        run: |
+          mkdir -p "$POSTRA_SPA_SCREENSHOT_DIR"
+          npm run test:e2e
+      - name: Upload failure screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: spa-browser-failure-screenshots
+          path: ${{ runner.temp }}/postra-spa-screenshots
+          if-no-files-found: warn
+          retention-days: 7
+
   build-test:
     name: build · vet · test (race)
+    # The checked-in bundle is verified before Go embeds it.
+    needs: frontend
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

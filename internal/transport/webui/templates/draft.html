@@ -17,10 +17,11 @@
     <div class="field"><label>참조</label><input type="text" name="cc" value="{{addrs $v.Cc}}"></div>
     <div class="field"><label>숨은참조</label><input type="text" name="bcc" value="{{addrs $v.Bcc}}"></div>
     <div class="field"><label>제목</label><input type="text" name="subject" value="{{$v.Subject}}" required></div>
-    <div class="field"><label>본문</label><textarea name="body" required>{{$v.BodyText}}</textarea></div>
+    {{template "mail_editor" .Editor}}
     <button type="submit">변경 저장</button>
+    <p class="small muted">서식과 본문을 수정한 뒤 변경 저장을 누르고 발송 미리보기를 확인하세요.</p>
   </form>
-  {{else}}<h2>본문</h2><div class="pre">{{$v.BodyText}}</div>{{end}}
+  {{else}}<h2>본문</h2>{{if $v.BodyHTML}}<iframe class="outgoing-preview" title="서식 메일 미리보기" sandbox="" referrerpolicy="no-referrer" srcdoc="{{outgoingHTML $v.BodyHTML}}"></iframe><details class="outgoing-text"><summary>일반 텍스트 본문</summary><div class="pre">{{$v.BodyText}}</div></details>{{else}}<div class="pre">{{$v.BodyText}}</div>{{end}}{{end}}
 </div>
 {{if eq $d.Status "open"}}
 <div class="card">
@@ -28,6 +29,7 @@
     <select name="style"><option value="formal">격식 있게</option><option value="concise">간결하게</option><option value="friendly">친근하게</option></select>
     <button class="ghost" type="submit">AI로 다시 쓰기</button>
   </form>
+  <p class="small muted">AI로 다시 쓰면 기존 서식 대신 새로운 일반 텍스트 초안이 만들어집니다. 이후 서식을 다시 적용할 수 있습니다.</p>
 </div>
 <div class="actions">
   <a class="btn" href="/ui/drafts/{{$d.ID}}/send">발송 미리보기·승인 →</a>

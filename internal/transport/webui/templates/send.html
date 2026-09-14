@@ -29,7 +29,10 @@
     <dt>제목</dt><dd>{{$p.Subject}}</dd>
   </dl>
   <h2>본문</h2>
-  <div class="pre">{{$p.Body}}</div>
+  {{if $p.BodyHTML}}
+  <iframe class="outgoing-preview" title="서식 메일 미리보기" sandbox="" referrerpolicy="no-referrer" srcdoc="{{outgoingHTML $p.BodyHTML}}"></iframe>
+  <details class="outgoing-text"><summary>일반 텍스트 본문도 함께 발송됩니다</summary><div class="pre">{{$p.Body}}</div></details>
+  {{else}}<div class="pre">{{$p.Body}}</div>{{end}}
 </div>
 
 {{if .Token}}

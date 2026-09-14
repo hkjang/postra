@@ -9,6 +9,7 @@ import (
 
 	"postra/internal/adapters/persistence"
 	"postra/internal/domain"
+	"postra/internal/platform/mailhtml"
 )
 
 type CreateDraftInput struct {
@@ -19,6 +20,7 @@ type CreateDraftInput struct {
 	Cc               []string `json:"cc,omitempty"`
 	Subject          string   `json:"subject,omitempty"`
 	Body             string   `json:"body,omitempty"`
+	BodyHTML         string   `json:"body_html,omitempty"`
 	// Instructions, when set, asks the AI to write the draft body
 	// (the result is stored as an AI-authored version; sending still
 	// requires explicit user approval — §1 발송 원칙).
@@ -70,9 +72,13 @@ func (a *App) CreateDraft(ctx context.Context, in CreateDraftInput) (*DraftView,
 	}
 
 	v := domain.DraftVersion{Subject: in.Subject, BodyText: in.Body, Author: "user"}
+	if strings.TrimSpace(in.BodyHTML) != "" {
+		v.BodyHTML = mailhtml.Sanitize(in.BodyHTML)
+		v.BodyText = mailhtml.PlainText(v.BodyHTML)
+	}
 	// Machine-written text must not be recorded as the person's own. Only "ai"
 	// is honoured, so a caller cannot invent arbitrary authorship.
-	if in.Body != "" && in.BodyAuthor == "ai" {
+	if (in.Body != "" || in.BodyHTML != "") && in.BodyAuthor == "ai" {
 		v.Author = "ai"
 	}
 	if v.To, err = parseAddressStrings(in.To); err != nil {
@@ -122,6 +128,7 @@ func (a *App) CreateDraft(ctx context.Context, in CreateDraftInput) (*DraftView,
 			v.Subject = gen.Subject
 		}
 		v.BodyText = gen.Body
+		v.BodyHTML = ""
 		v.Author = "ai"
 	} else if kind == domain.DraftReply || kind == domain.DraftReplyAll {
 		if v.BodyText == "" {
@@ -170,12 +177,13 @@ func (a *App) generateDraftBody(ctx context.Context, instructions string, origin
 }
 
 type UpdateDraftInput struct {
-	DraftID string   `json:"draft_id"`
-	Subject *string  `json:"subject,omitempty"`
-	Body    *string  `json:"body,omitempty"`
-	To      []string `json:"to,omitempty"`
-	Cc      []string `json:"cc,omitempty"`
-	Bcc     []string `json:"bcc,omitempty"`
+	DraftID  string   `json:"draft_id"`
+	Subject  *string  `json:"subject,omitempty"`
+	Body     *string  `json:"body,omitempty"`
+	BodyHTML *string  `json:"body_html,omitempty"`
+	To       []string `json:"to,omitempty"`
+	Cc       []string `json:"cc,omitempty"`
+	Bcc      []string `json:"bcc,omitempty"`
 }
 
 // UpdateDraft records a user-authored version on top of the current one
@@ -196,6 +204,15 @@ func (a *App) UpdateDraft(ctx context.Context, in UpdateDraftInput) (*DraftView,
 	}
 	if in.Body != nil {
 		v.BodyText = *in.Body
+		// A plain-text edit replaces the displayed body, including any older
+		// rich alternative. Otherwise clients could accidentally send stale HTML.
+		v.BodyHTML = ""
+	}
+	if in.BodyHTML != nil {
+		v.BodyHTML = mailhtml.Sanitize(*in.BodyHTML)
+		if in.Body == nil || v.BodyHTML != "" || strings.TrimSpace(*in.BodyHTML) != "" {
+			v.BodyText = mailhtml.PlainText(v.BodyHTML)
+		}
 	}
 	if in.To != nil {
 		if v.To, err = parseAddressStrings(in.To); err != nil {
@@ -247,6 +264,7 @@ func (a *App) RewriteDraft(ctx context.Context, draftID, style string) (*DraftVi
 	}
 	if strings.TrimSpace(g.Body) != "" {
 		v.BodyText = g.Body
+		v.BodyHTML = ""
 	}
 	newVer, err := a.Store.AddDraftVersion(ctx, userID, d.ID, &v)
 	if err != nil {

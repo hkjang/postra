@@ -24,3 +24,9 @@ config.json
 /.gitframe/
 /output/
 
+# Frontend dependencies and local test output. The embedded production bundle
+# is versioned so Go-only and disconnected builds remain possible.
+/web/node_modules/
+/web/test-results/
+/web/playwright-report/
+/web/coverage/

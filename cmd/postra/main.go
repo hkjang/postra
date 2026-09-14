@@ -43,6 +43,7 @@ import (
 	"postra/internal/platform/tracking"
 	"postra/internal/transport/httpapi"
 	"postra/internal/transport/mcpserver"
+	"postra/internal/transport/spa"
 	"postra/internal/transport/webui"
 )
 
@@ -575,13 +576,16 @@ func serve(configPath string) error {
 	root.Handle("/", httpapi.New(app, cfg.APIToken).Handler())
 	root.Handle("/mcp", mcpserver.HTTPHandler(app, cfg.APIToken))
 	if cfg.WebUIEnabled {
+		appHandler := spa.Handler()
+		root.Handle("/app", appHandler)
+		root.Handle("/app/", appHandler)
 		uiHandler := webui.New(app, cfg.APIToken).Handler()
 		root.Handle("/ui/", uiHandler)
 		root.Handle("/favicon.ico", uiHandler)
 		root.Handle("/favicon.png", uiHandler)
 		root.Handle("/logo.png", uiHandler)
 		root.Handle(tracking.ProxyPath+"/", uiHandler) // same-origin Momento proxy; 404 unless enabled
-		slog.Info("web UI enabled", "path", "/ui/")
+		slog.Info("web UI enabled", "path", "/app/", "legacy", "/ui/")
 	}
 	restSrv := &http.Server{
 		Addr:              cfg.HTTPAddr,

@@ -1,0 +1,47 @@
+{{define "mail_editor"}}
+<div class="mail-editor" data-mail-editor data-format="{{.Format}}">
+  <div class="editor-heading">
+    <span class="editor-label">본문</span>
+    <label>작성 방식 <select data-editor-mode aria-label="본문 작성 방식">
+      <option value="html" {{if eq .Format "html"}}selected{{end}}>서식 편집</option>
+      <option value="source">HTML 직접 입력</option>
+      <option value="plain" {{if eq .Format "plain"}}selected{{end}}>일반 텍스트</option>
+    </select></label>
+  </div>
+  <input type="hidden" name="body_format" value="{{.Format}}" data-body-format>
+  <div class="editor-tools" data-editor-tools hidden role="toolbar" aria-label="메일 서식 도구">
+    <button type="button" class="ghost" data-command="bold" aria-label="굵게" title="굵게 (Ctrl+B)"><b>굵게</b></button>
+    <button type="button" class="ghost" data-command="italic" aria-label="기울임"><i>기울임</i></button>
+    <button type="button" class="ghost" data-command="underline" aria-label="밑줄"><u>밑줄</u></button>
+    <label>문단 <select data-block aria-label="문단 서식"><option value="p">본문</option><option value="h2">큰 제목</option><option value="h3">작은 제목</option><option value="blockquote">인용</option></select></label>
+    <label>글자색 <input type="color" value="#3157d5" data-color aria-label="글자색"></label>
+    <button type="button" class="ghost" data-command="insertUnorderedList">글머리 목록</button>
+    <button type="button" class="ghost" data-command="insertOrderedList">번호 목록</button>
+    <button type="button" class="ghost" data-command="justifyLeft">왼쪽 정렬</button>
+    <button type="button" class="ghost" data-command="justifyCenter">가운데 정렬</button>
+    <button type="button" class="ghost" data-show-link>링크</button>
+    <button type="button" class="ghost" data-command="removeFormat">서식 지우기</button>
+  </div>
+  <div class="editor-link" data-link-panel hidden>
+    <label>링크 주소 <input type="text" inputmode="url" data-link-url placeholder="https://example.com 또는 mailto:name@example.com"></label>
+    <button type="button" class="ghost" data-insert-link>선택한 글자에 적용</button>
+    <button type="button" class="ghost" data-close-link>닫기</button>
+  </div>
+  <div class="editor-themes" data-editor-themes hidden>
+    <span class="small muted">메일 디자인</span>
+    <button type="button" class="ghost" data-theme="letter">편지</button>
+    <button type="button" class="ghost" data-theme="notice">공지</button>
+    <button type="button" class="ghost" data-theme="report">업무 공유</button>
+    <span class="small muted">작성한 내용을 유지하며 디자인을 적용합니다.</span>
+  </div>
+  <iframe class="editor-canvas" data-editor-frame title="메일 본문 서식 편집기" sandbox="allow-same-origin" hidden></iframe>
+  <textarea name="body" data-plain-source aria-label="일반 텍스트 본문" placeholder="메일 내용을 입력하세요.">{{.Text}}</textarea>
+  <div data-source-panel {{if ne .Format "html"}}hidden{{end}}>
+    <label class="small muted">HTML 본문</label>
+    <textarea name="body_html" data-html-source aria-label="HTML 본문" spellcheck="false" placeholder="&lt;h2&gt;안녕하세요&lt;/h2&gt;&lt;p&gt;메일 내용을 입력하세요.&lt;/p&gt;">{{.HTML}}</textarea>
+  </div>
+  <p class="small muted editor-hint">서식 메일은 일반 텍스트 본문도 함께 발송합니다. 외부 이미지·스크립트는 제외되며, 최종 모습은 발송 미리보기에서 확인하세요.</p>
+  <p class="small err" data-editor-status role="status" aria-live="polite"></p>
+  <noscript><p class="small muted">서식 도구를 사용하려면 JavaScript가 필요합니다. HTML 본문에 직접 입력하거나 일반 텍스트 본문을 작성할 수 있습니다.</p></noscript>
+</div>
+{{end}}
