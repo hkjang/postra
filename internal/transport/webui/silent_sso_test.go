@@ -183,20 +183,126 @@ func TestSilentSSOCallbackRefusalLandsOnLoginWithMarker(t *testing.T) {
 	}
 
 	// A real provider error on a silent flow, or login_required on an
-	// interactive flow, is shown like before.
+	// interactive flow, is a failure: it lands on sso=error, never sso=none.
 	rec = do(t, h, http.MethodGet, "/ui/auth/oidc/callback?error=invalid_request&error_description=bad+scope&state=st", nil, silent)
-	if rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), "bad scope") {
-		t.Fatalf("real error on silent flow: code=%d", rec.Code)
+	want = "/ui/login?sso=error&return_to=" + url.QueryEscape("/ui/messages/m1")
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != want {
+		t.Fatalf("real error on silent flow: code=%d location=%q want %q", rec.Code, rec.Header().Get("Location"), want)
+	}
+	if msg := errorNote(t, app, rec); !strings.Contains(msg, "bad scope") {
+		t.Fatalf("error_description lost on the way to the login page: %q", msg)
 	}
 	interactive := flowCookie(t, app, application.OIDCFlow{State: "st", Nonce: "n", CodeVerifier: "v", ExpiresAt: expires})
 	rec = do(t, h, http.MethodGet, "/ui/auth/oidc/callback?error=login_required&state=st", nil, interactive)
-	if rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), "login_required") {
-		t.Fatalf("login_required on interactive flow: code=%d", rec.Code)
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/ui/login?sso=error" {
+		t.Fatalf("login_required on interactive flow: code=%d location=%q", rec.Code, rec.Header().Get("Location"))
+	}
+	if msg := errorNote(t, app, rec); !strings.Contains(msg, "login_required") {
+		t.Fatalf("provider error code lost: %q", msg)
 	}
 	// A state mismatch cannot turn a stranger's error into a silent redirect.
 	rec = do(t, h, http.MethodGet, "/ui/auth/oidc/callback?error=login_required&state=other", nil, silent)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("state mismatch treated as silent refusal: code=%d", rec.Code)
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/ui/login?sso=error" {
+		t.Fatalf("state mismatch treated as silent refusal: code=%d location=%q", rec.Code, rec.Header().Get("Location"))
+	}
+}
+
+// errorNote returns the verified reason carried by the signed error cookie set
+// on a callback failure response.
+func errorNote(t *testing.T, app *application.App, rec *httptest.ResponseRecorder) string {
+	t.Helper()
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == oidcErrorCookie && c.MaxAge > 0 {
+			if !c.HttpOnly || c.Path != "/ui/login" {
+				t.Fatalf("error note cookie must be HttpOnly and scoped to the login page: %+v", c)
+			}
+			msg, ok := app.VerifyOIDCError(c.Value)
+			if !ok {
+				t.Fatal("error note does not verify")
+			}
+			return msg
+		}
+	}
+	t.Fatal("callback failure left no error note")
+	return ""
+}
+
+func TestOIDCFailureLandsOnLoginWithErrorMarker(t *testing.T) {
+	app := oidcTestApp(t)
+	h := New(app, "").Handler()
+	ctx := application.WithActor(context.Background(), "test")
+	admin, _, err := app.Store.GetUserByLogin(ctx, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminCtx := application.WithPrincipal(ctx, domain.Principal{UserID: admin.ID, Role: admin.Role, AuthMethod: "local"})
+	if err := app.AdminSaveSettings(adminCtx, map[string]string{application.SettingOIDCAutoLogin: "true"}, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// A callback without a usable flow (no cookie, or a code for someone
+	// else's state) never renders on the callback address: the browser is
+	// sent to the login page and the flow cookie is dropped so a refresh
+	// cannot resubmit the code.
+	rec := do(t, h, http.MethodGet, "/ui/auth/oidc/callback?code=abc&state=st", nil, nil)
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/ui/login?sso=error" {
+		t.Fatalf("no flow: code=%d location=%q", rec.Code, rec.Header().Get("Location"))
+	}
+	errorNote(t, app, rec)
+	flowCleared := false
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "postra_oidc_flow" && c.MaxAge < 0 {
+			flowCleared = true
+		}
+	}
+	if !flowCleared {
+		t.Fatal("flow cookie survived the failure")
+	}
+
+	// The login page shows the reason once (200, not the callback's status),
+	// clears the note and — auto_login being on — still never retries silently.
+	signed, err := app.SignOIDCError("Keycloak 로그인이 실패했습니다: invalid_client — bad secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec = do(t, h, http.MethodGet, "/ui/login?sso=error&return_to=%2Fui%2Fmessages%2Fm1", nil, &http.Cookie{Name: oidcErrorCookie, Value: signed})
+	body := rec.Body.String()
+	if rec.Code != http.StatusOK || !strings.Contains(body, "bad secret") {
+		t.Fatalf("error landing: code=%d reason shown=%v", rec.Code, strings.Contains(body, "bad secret"))
+	}
+	if strings.Contains(body, silentTrigger) {
+		t.Fatal("error landing must not retry silently")
+	}
+	if !strings.Contains(body, `name="return_to" value="/ui/messages/m1"`) {
+		t.Fatal("deep link not carried into the login form after a failure")
+	}
+	noteCleared := false
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == oidcErrorCookie && c.MaxAge < 0 {
+			noteCleared = true
+		}
+	}
+	if !noteCleared {
+		t.Fatal("error note survived being shown")
+	}
+
+	// A forged or stale note is not reflected; a bare sso=error link gets the
+	// generic message and still no silent attempt.
+	forged := signed[:strings.LastIndex(signed, ".")+1] + "AAAA"
+	rec = do(t, h, http.MethodGet, "/ui/login?sso=error", nil, &http.Cookie{Name: oidcErrorCookie, Value: forged})
+	if strings.Contains(rec.Body.String(), "bad secret") {
+		t.Fatal("forged error note was reflected")
+	}
+	rec = do(t, h, http.MethodGet, "/ui/login?sso=error", nil, nil)
+	body = rec.Body.String()
+	if rec.Code != http.StatusOK || !strings.Contains(body, "SSO 로그인이 실패했습니다") || strings.Contains(body, silentTrigger) {
+		t.Fatalf("bare sso=error: code=%d generic shown=%v trigger=%v", rec.Code,
+			strings.Contains(body, "SSO 로그인이 실패했습니다"), strings.Contains(body, silentTrigger))
+	}
+	// The ordinary login page is unaffected: no error, silent attempt allowed.
+	rec = do(t, h, http.MethodGet, "/ui/login", nil, nil)
+	if !strings.Contains(rec.Body.String(), silentTrigger) || strings.Contains(rec.Body.String(), "SSO 로그인이 실패했습니다") {
+		t.Fatal("plain login page changed")
 	}
 }
 

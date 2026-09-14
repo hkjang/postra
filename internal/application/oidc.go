@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
@@ -129,32 +130,97 @@ func (a *App) SignOIDCFlow(flow OIDCFlow) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	mac := hmac.New(sha256.New, a.oidcStateKey[:])
-	mac.Write(payload)
 	return base64.RawURLEncoding.EncodeToString(payload) + "." +
-		base64.RawURLEncoding.EncodeToString(mac.Sum(nil)), nil
+		base64.RawURLEncoding.EncodeToString(a.oidcMAC("", payload)), nil
 }
 
 func (a *App) VerifyOIDCFlow(value string) (OIDCFlow, error) {
 	var flow OIDCFlow
-	parts := strings.Split(value, ".")
-	if len(parts) != 2 {
+	payload, ok := a.verifyOIDCSigned("", value)
+	if !ok {
 		return flow, userErrf("invalid OIDC login state")
 	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[0])
-	if err != nil {
-		return flow, userErrf("invalid OIDC login state")
-	}
-	sig, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return flow, userErrf("invalid OIDC login state")
-	}
-	mac := hmac.New(sha256.New, a.oidcStateKey[:])
-	mac.Write(payload)
-	if !hmac.Equal(sig, mac.Sum(nil)) || json.Unmarshal(payload, &flow) != nil || time.Now().Unix() > flow.ExpiresAt {
+	if json.Unmarshal(payload, &flow) != nil || time.Now().Unix() > flow.ExpiresAt {
 		return OIDCFlow{}, userErrf("expired or invalid OIDC login state")
 	}
 	return flow, nil
+}
+
+// OIDCErrorNoteTTL bounds how long a failed sign-in's reason waits to be shown.
+const OIDCErrorNoteTTL = time.Minute
+
+// oidcErrorNote is the one-shot note the callback leaves for the login page
+// when a sign-in fails: the reason is shown at /ui/login?sso=error instead of
+// on the callback address, where a refresh would resubmit the spent code.
+type oidcErrorNote struct {
+	Message   string `json:"message"`
+	ExpiresAt int64  `json:"expires_at"`
+}
+
+// oidcErrorDomain keeps error notes and flow cookies from verifying as each
+// other even though they share the state key.
+const oidcErrorDomain = "oidc-error:"
+
+// oidcErrorNoteMaxBytes keeps the note well inside a browser's cookie limit
+// even when a provider pastes its whole response body into the reason.
+const oidcErrorNoteMaxBytes = 1024
+
+// SignOIDCError signs a failure reason so the login page can trust that it was
+// written by this server and not pasted in by whoever set a cookie.
+func (a *App) SignOIDCError(message string) (string, error) {
+	if len(message) > oidcErrorNoteMaxBytes {
+		cut := oidcErrorNoteMaxBytes
+		for cut > 0 && !utf8.RuneStart(message[cut]) {
+			cut--
+		}
+		message = message[:cut] + "…"
+	}
+	payload, err := json.Marshal(oidcErrorNote{Message: message, ExpiresAt: time.Now().Add(OIDCErrorNoteTTL).Unix()})
+	if err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(payload) + "." +
+		base64.RawURLEncoding.EncodeToString(a.oidcMAC(oidcErrorDomain, payload)), nil
+}
+
+// VerifyOIDCError returns the failure reason carried by a note from
+// SignOIDCError, or false when the note is missing, forged or stale.
+func (a *App) VerifyOIDCError(value string) (string, bool) {
+	payload, ok := a.verifyOIDCSigned(oidcErrorDomain, value)
+	if !ok {
+		return "", false
+	}
+	var note oidcErrorNote
+	if json.Unmarshal(payload, &note) != nil || note.Message == "" || time.Now().Unix() > note.ExpiresAt {
+		return "", false
+	}
+	return note.Message, true
+}
+
+func (a *App) oidcMAC(scope string, payload []byte) []byte {
+	mac := hmac.New(sha256.New, a.oidcStateKey[:])
+	mac.Write([]byte(scope))
+	mac.Write(payload)
+	return mac.Sum(nil)
+}
+
+func (a *App) verifyOIDCSigned(scope, value string) ([]byte, bool) {
+	parts := strings.Split(value, ".")
+	if len(parts) != 2 {
+		return nil, false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return nil, false
+	}
+	sig, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, false
+	}
+	if !hmac.Equal(sig, a.oidcMAC(scope, payload)) {
+		return nil, false
+	}
+	return payload, true
 }
 
 func (a *App) BeginOIDC(ctx context.Context, opts OIDCStartOptions) (string, OIDCFlow, error) {
