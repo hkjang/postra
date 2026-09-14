@@ -157,6 +157,8 @@ button.ghost,.btn.ghost{background:var(--card);color:var(--accent);border:1px so
 .auth-features{display:flex;gap:1rem;flex-wrap:wrap;margin-top:2rem}.auth-feature{border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.08);padding:.6rem .8rem;border-radius:9px;font-size:.85rem;backdrop-filter:blur(8px)}
 @media(max-width:820px){.auth-shell{grid-template-columns:1fr}.auth-visual{display:none}.auth-panel{min-height:100vh;padding:5.5rem 1.5rem 2rem}.auth-brand{left:1.5rem}.app-header{padding:0 1rem;gap:.75rem}.app-header nav{overflow:auto}.app-header nav a{white-space:nowrap;padding:.45rem}.header-logout{display:none}main{padding:0 1rem}}
 </style>
+<link rel="stylesheet" href="/ui/static/mail-editor.css?v={{.Version}}">
+<script defer src="/ui/static/mail-editor.js?v={{.Version}}"></script>
 {{if .TrackingHead}}{{.TrackingHead}}
 {{end}}</head>
 <body>
@@ -243,7 +245,7 @@ button.ghost,.btn.ghost{background:var(--card);color:var(--accent);border:1px so
 
   // Global Keyboard Shortcuts (§P2 키보드 단축키)
   document.addEventListener('keydown', function(e) {
-    if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return;
+    if (e.target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return;
     if (e.ctrlKey || e.metaKey || e.altKey) return;
 
     if (e.key === '/') {
@@ -274,4 +276,3 @@ button.ghost,.btn.ghost{background:var(--card);color:var(--accent);border:1px so
 {{if .TrackingBody}}{{.TrackingBody}}
 {{end}}</body>
 </html>{{end}}
-

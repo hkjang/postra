@@ -8,13 +8,16 @@ import (
 	"errors"
 	"fmt"
 	"mime"
+	"mime/multipart"
 	"mime/quotedprintable"
 	"net/mail"
+	"net/textproto"
 	"strings"
 	"time"
 
 	"postra/internal/adapters/persistence"
 	"postra/internal/domain"
+	"postra/internal/platform/mailhtml"
 	"postra/internal/platform/metrics"
 )
 
@@ -84,7 +87,8 @@ func validateDraftForSend(acc *domain.MailAccount, v *domain.DraftVersion) error
 	if strings.TrimSpace(v.Subject) == "" {
 		return userErrf("draft has an empty subject")
 	}
-	if strings.TrimSpace(v.BodyText) == "" && strings.TrimSpace(v.BodyHTML) == "" {
+	bodyText, _ := draftSendBodies(v)
+	if strings.TrimSpace(bodyText) == "" {
 		return userErrf("draft has an empty body")
 	}
 	all := append(append(append([]domain.Address{}, v.To...), v.Cc...), v.Bcc...)
@@ -108,6 +112,7 @@ type SendPreview struct {
 	Bcc          []string `json:"bcc,omitempty"`
 	Subject      string   `json:"subject"`
 	Body         string   `json:"body"`
+	BodyHTML     string   `json:"body_html,omitempty"`
 	// ExternalDomains flags recipients outside the sender's domain (§13
 	// 잘못된 수신자 발송 통제).
 	ExternalDomains []string `json:"external_domains,omitempty"`
@@ -138,7 +143,7 @@ func (a *App) PreviewSend(ctx context.Context, draftID string) (*SendPreview, er
 	}
 	senderDomain := domainOf(acc.Email)
 	extSet := map[string]bool{}
-	for _, addr := range append(append([]domain.Address{}, v.To...), v.Cc...) {
+	for _, addr := range append(append(append([]domain.Address{}, v.To...), v.Cc...), v.Bcc...) {
 		if dom := domainOf(addr.Email); dom != "" && dom != senderDomain {
 			extSet[dom] = true
 		}
@@ -156,7 +161,7 @@ func (a *App) PreviewSend(ctx context.Context, draftID string) (*SendPreview, er
 		warnings = append(warnings, "recipients on external domains: "+strings.Join(ext, ", "))
 	}
 	// Organization writing policy: flag banned phrases regardless of recipient.
-	if banned := a.checkWritingPolicy(v.Subject, v.BodyText); len(banned) > 0 {
+	if banned := a.checkWritingPolicy(v.Subject, draftPolicyText(v)); len(banned) > 0 {
 		warnings = append(warnings, "writing policy: banned phrase(s) present: "+strings.Join(banned, ", "))
 	}
 	// DLP applies only when the message leaves the organization (external
@@ -164,7 +169,7 @@ func (a *App) PreviewSend(ctx context.Context, draftID string) (*SendPreview, er
 	var dlpFindings []DLPFinding
 	dlpBlocked := false
 	if len(ext) > 0 && a.dlpPolicy() != "off" {
-		dlpFindings = a.scanDLP(v.Subject, v.BodyText)
+		dlpFindings = a.scanDLP(v.Subject, draftPolicyText(v))
 		if len(dlpFindings) > 0 {
 			warnings = append(warnings, "DLP: sensitive content detected in a message to external domains "+dlpSummary(dlpFindings))
 			if a.dlpPolicy() == "block" {
@@ -173,10 +178,11 @@ func (a *App) PreviewSend(ctx context.Context, draftID string) (*SendPreview, er
 			}
 		}
 	}
+	bodyText, bodyHTML := draftSendBodies(v)
 	return &SendPreview{
 		DraftID: d.ID, DraftVersion: v.Version,
 		From: acc.Email, To: emails(v.To), Cc: emails(v.Cc), Bcc: emails(v.Bcc),
-		Subject: v.Subject, Body: v.BodyText,
+		Subject: v.Subject, Body: bodyText, BodyHTML: bodyHTML,
 		ExternalDomains: ext, RecipientCount: recipientCount,
 		Warnings: warnings, PayloadHash: sendPayloadHash(acc, v),
 		DLPFindings: dlpFindings, DLPBlocked: dlpBlocked,
@@ -205,7 +211,7 @@ func (a *App) enforceDLP(acc *domain.MailAccount, v *domain.DraftVersion) error 
 	}
 	senderDomain := domainOf(acc.Email)
 	external := false
-	for _, addr := range append(append([]domain.Address{}, v.To...), v.Cc...) {
+	for _, addr := range append(append(append([]domain.Address{}, v.To...), v.Cc...), v.Bcc...) {
 		if dom := domainOf(addr.Email); dom != "" && dom != senderDomain {
 			external = true
 			break
@@ -214,10 +220,29 @@ func (a *App) enforceDLP(acc *domain.MailAccount, v *domain.DraftVersion) error 
 	if !external {
 		return nil
 	}
-	if findings := a.scanDLP(v.Subject, v.BodyText); len(findings) > 0 {
+	if findings := a.scanDLP(v.Subject, draftPolicyText(v)); len(findings) > 0 {
 		return userErrf("send blocked by DLP policy: sensitive content in a message to external recipients %s", dlpSummary(findings))
 	}
 	return nil
+}
+
+// draftSendBodies applies the same HTML-authoritative normalization at every
+// send boundary, including for legacy/imported versions that bypassed compose.
+// It does not modify stored fields: approval hashes still bind the saved revision.
+func draftSendBodies(v *domain.DraftVersion) (bodyText, bodyHTML string) {
+	if v.BodyHTML == "" {
+		return v.BodyText, ""
+	}
+	bodyHTML = mailhtml.Sanitize(v.BodyHTML)
+	return mailhtml.PlainText(bodyHTML), bodyHTML
+}
+
+// Scan the canonical transmitted content, including retained HTML metadata.
+func draftPolicyText(v *domain.DraftVersion) string {
+	if v.BodyHTML == "" {
+		return v.BodyText
+	}
+	return mailhtml.PolicyText(v.BodyHTML)
 }
 
 // RequestSendApproval issues a one-time approval token for the draft's
@@ -498,6 +523,7 @@ func formatAddrList(list []domain.Address) string {
 // buildMIME renders the outgoing RFC822 message. Envelope recipients are
 // handled separately in Send (SMTP-004); Bcc never appears in headers.
 func buildMIME(acc *domain.MailAccount, v *domain.DraftVersion, msgID, inReplyTo, references string) ([]byte, error) {
+	bodyText, bodyHTML := draftSendBodies(v)
 	var b bytes.Buffer
 	write := func(k, val string) {
 		if val != "" {
@@ -514,14 +540,43 @@ func buildMIME(acc *domain.MailAccount, v *domain.DraftVersion, msgID, inReplyTo
 	write("In-Reply-To", inReplyTo)
 	write("References", references)
 	write("MIME-Version", "1.0")
+	if bodyHTML != "" {
+		parts := multipart.NewWriter(&b)
+		write("Content-Type", mime.FormatMediaType("multipart/alternative", map[string]string{"boundary": parts.Boundary()}))
+		b.WriteString("\r\n")
+		for _, body := range []struct{ mediaType, value string }{
+			{"text/plain", bodyText}, {"text/html", bodyHTML},
+		} {
+			header := textproto.MIMEHeader{}
+			header.Set("Content-Type", mime.FormatMediaType(body.mediaType, map[string]string{"charset": "utf-8"}))
+			header.Set("Content-Transfer-Encoding", "quoted-printable")
+			part, err := parts.CreatePart(header)
+			if err != nil {
+				return nil, err
+			}
+			qp := quotedprintable.NewWriter(part)
+			if _, err := qp.Write([]byte(body.value)); err != nil {
+				return nil, err
+			}
+			if err := qp.Close(); err != nil {
+				return nil, err
+			}
+		}
+		if err := parts.Close(); err != nil {
+			return nil, err
+		}
+		return b.Bytes(), nil
+	}
 	write("Content-Type", `text/plain; charset="utf-8"`)
 	write("Content-Transfer-Encoding", "quoted-printable")
 	b.WriteString("\r\n")
 	qp := quotedprintable.NewWriter(&b)
-	if _, err := qp.Write([]byte(v.BodyText)); err != nil {
+	if _, err := qp.Write([]byte(bodyText)); err != nil {
 		return nil, err
 	}
-	qp.Close()
+	if err := qp.Close(); err != nil {
+		return nil, err
+	}
 	b.WriteString("\r\n")
 	return b.Bytes(), nil
 }

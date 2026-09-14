@@ -63,9 +63,10 @@ var funcs = template.FuncMap{
 		}
 		return time.Unix(unix, 0).Format("2006-01-02 15:04")
 	},
-	"size":     humanSize,
-	"mailHTML": renderMailHTML,
-	"mailText": renderMailText,
+	"size":         humanSize,
+	"mailHTML":     renderMailHTML,
+	"outgoingHTML": outgoingMailDocument,
+	"mailText":     renderMailText,
 	// aiPriority/aiReplyNeeded read the labels written by auto-triage so the
 	// list can show urgency at a glance instead of only through search.
 	"aiPriority":    aiPriorityOf,
@@ -178,7 +179,7 @@ func parseTemplates() map[string]*template.Template {
 	out := make(map[string]*template.Template, len(pages))
 	for _, p := range pages {
 		t := template.Must(template.New("layout").Funcs(funcs).
-			ParseFS(files, "templates/layout.html", "templates/"+p+".html"))
+			ParseFS(files, "templates/layout.html", "templates/mail_editor.html", "templates/"+p+".html"))
 		out[p] = t
 	}
 	return out
@@ -1804,20 +1805,25 @@ func (s *Server) composeForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	metrics.UIActions.WithLabelValues("draft_update", "ok").Inc()
-	s.render(w, "compose", http.StatusOK, map[string]any{"Accounts": accounts})
+	s.render(w, "compose", http.StatusOK, map[string]any{"Accounts": accounts, "Editor": mailEditorData{Format: "html"}})
 }
 
 func (s *Server) composeSubmit(w http.ResponseWriter, r *http.Request) {
+	editor := editorFromForm(r)
+	bodyHTML := ""
+	if editor.Format == "html" {
+		bodyHTML = editor.HTML
+	}
 	dv, err := s.app.CreateDraft(r.Context(), application.CreateDraftInput{
 		AccountID: r.FormValue("account_id"), Kind: "new",
 		To: splitAddresses(r.FormValue("to")), Cc: splitAddresses(r.FormValue("cc")),
-		Subject: r.FormValue("subject"), Body: r.FormValue("body"),
+		Subject: r.FormValue("subject"), Body: editor.Text, BodyHTML: bodyHTML,
 		Instructions: strings.TrimSpace(r.FormValue("instructions")),
 	})
 	if err != nil {
 		accounts, _ := s.app.ListAccounts(r.Context())
 		s.render(w, "compose", http.StatusBadRequest, map[string]any{
-			"Accounts": accounts, "Error": err.Error(), "Form": r.Form,
+			"Accounts": accounts, "Error": err.Error(), "Form": r.Form, "Editor": editor,
 		})
 		return
 	}
@@ -1830,13 +1836,23 @@ func (s *Server) draft(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	s.render(w, "draft", http.StatusOK, map[string]any{"View": view})
+	format := "plain"
+	if view.Version.BodyHTML != "" {
+		format = "html"
+	}
+	s.render(w, "draft", http.StatusOK, map[string]any{"View": view,
+		"Editor": mailEditorData{Format: format, Text: view.Version.BodyText, HTML: view.Version.BodyHTML}})
 }
 
 func (s *Server) draftUpdate(w http.ResponseWriter, r *http.Request) {
 	subject, body := r.FormValue("subject"), r.FormValue("body")
+	editor := editorFromForm(r)
+	var bodyHTML *string
+	if editor.Format == "html" {
+		bodyHTML = &editor.HTML
+	}
 	_, err := s.app.UpdateDraft(r.Context(), application.UpdateDraftInput{
-		DraftID: r.PathValue("id"), Subject: &subject, Body: &body,
+		DraftID: r.PathValue("id"), Subject: &subject, Body: &body, BodyHTML: bodyHTML,
 		To: splitAddresses(r.FormValue("to")), Cc: splitAddresses(r.FormValue("cc")),
 		Bcc: splitAddresses(r.FormValue("bcc")),
 	})
