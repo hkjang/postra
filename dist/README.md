@@ -4,6 +4,8 @@ Docker 데몬 없이 빌드한, 오프라인망에서 바로 사용 가능한 �
 
 > **v0.19.0**: React AI 업무 메일 워크스페이스(`/app/`)와 HTML 서식 메일 발송 — 메일·AI·업무·관리 화면을 현대화하고, 기존 `/ui/`와 오프라인 단일 실행 파일 배포를 유지합니다. [릴리즈 내용](../docs/releases/v0.19.0.md)을 참고하세요.
 
+v0.18.7의 `auth.oidc.auto_login`(기본 꺼짐), 탭당 한 번의 `prompt=none` 시도·로그아웃 반복 방지·안전한 `return_to`를 유지합니다. `postra version`의 버전·커밋·빌드 시각과 릴리즈 이미지의 OCI 라벨도 유지합니다.
+
 | 파일 | 설명 |
 | --- | --- |
 | `postra-0.19.0-linux-amd64-image.tar.gz` | `docker load` 로 불러오는 컨테이너 이미지 (`postra:0.19.0`, linux/amd64) |
