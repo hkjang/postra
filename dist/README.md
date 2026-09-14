@@ -2,13 +2,13 @@
 
 Docker 데몬 없이 빌드한, 오프라인망에서 바로 사용 가능한 산출물입니다.
 
-> **v0.18.6**: 방문 추적 스크립트 + nonce 기반 CSP — 관리자가 시스템 설정 화면에서 방문 추적 스니펫(`tracking.*`, 기본 꺼짐)을 붙일 수 있고, Web UI 는 요청마다 nonce 를 만들어 `script-src 'self' 'nonce-…'` 로 잠급니다. CSP 에 막힌 출처는 설정 화면 "차단된 출처" 표에서 한 번에 허용/지우기 할 수 있으며, `/momento/*` 는 같은 오리진 리버스 프록시로 넘깁니다.
+> **v0.18.7**: 조용한 SSO(silent SSO) + 빌드 정보 — 관리자가 `auth.oidc.auto_login`(기본 꺼짐)을 켜면 로그인 화면이 OIDC `prompt=none` 으로 한 번 조용히 로그인을 시도해, 이미 IdP 에 로그인한 사용자는 로그인 화면을 거치지 않고 받은편지함으로 갑니다(탭당 1회·로그아웃 표시로 되돌이표 방지, `return_to` 는 앱 내부 경로만 허용). `postra version` 이 버전·커밋·빌드 시각을 함께 알리고, 이미지에 OCI 라벨(`org.opencontainers.image.*`)이 붙습니다.
 
 | 파일 | 설명 |
 | --- | --- |
-| `postra-0.18.6-linux-amd64-image.tar.gz` | `docker load` 로 불러오는 컨테이너 이미지 (`postra:0.18.6`, linux/amd64) |
-| `postra-0.18.6-linux-amd64` | 정적 링크 단일 실행 파일 (CGO 없음, 의존성 없음) |
-| `postra-0.18.6-sbom.cdx.json` | CycloneDX 소프트웨어 자재명세서 |
+| `postra-0.18.7-linux-amd64-image.tar.gz` | `docker load` 로 불러오는 컨테이너 이미지 (`postra:0.18.7`, linux/amd64) |
+| `postra-0.18.7-linux-amd64` | 정적 링크 단일 실행 파일 (CGO 없음, 의존성 없음) |
+| `postra-0.18.7-sbom.cdx.json` | CycloneDX 소프트웨어 자재명세서 |
 | `SHA256SUMS.txt` | 모든 릴리즈 파일의 SHA-256 체크섬 |
 
 이미지는 순수 Go 정적 바이너리 + CA 인증서 + 최소 rootfs 로만 구성됩니다(scratch 기반).
@@ -17,7 +17,7 @@ Docker 데몬 없이 빌드한, 오프라인망에서 바로 사용 가능한 �
 
 ```bash
 # 폐쇄망 호스트로 tar.gz 를 옮긴 뒤:
-docker load -i postra-0.18.6-linux-amd64-image.tar.gz     # gzip 자동 인식
+docker load -i postra-0.18.7-linux-amd64-image.tar.gz     # gzip 자동 인식
 docker image ls | grep postra
 
 # 오프라인망(평문 POP3/SMTP 허용) 실행 예시
@@ -27,7 +27,7 @@ docker run -d --name postra \
   -e POSTRA_HTTP_ADDR=0.0.0.0:8480 \
   -e POSTRA_ALLOW_INSECURE_MAIL=true \
   -e POSTRA_API_TOKEN=change-me \
-  postra:0.18.6
+  postra:0.18.7
 
 # CLI 사용 (같은 컨테이너)
 docker exec -it postra postra account list
@@ -39,9 +39,9 @@ REST API는 `/api`, Web UI는 `/ui`, MCP Streamable HTTP는 `/mcp`이며 모두 
 ## 2) 바이너리 단독 실행 (Docker 불필요)
 
 ```bash
-chmod +x postra-0.18.6-linux-amd64
-./postra-0.18.6-linux-amd64 init
-POSTRA_BOOTSTRAP_ADMIN_PASSWORD='replace-me' ./postra-0.18.6-linux-amd64 serve
+chmod +x postra-0.18.7-linux-amd64
+./postra-0.18.7-linux-amd64 init
+POSTRA_BOOTSTRAP_ADMIN_PASSWORD='replace-me' ./postra-0.18.7-linux-amd64 serve
 ```
 
 ## 데이터 / 비밀값
@@ -55,6 +55,6 @@ Docker 없이 이미지를 다시 만들려면:
 
 ```bash
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o postra ./cmd/postra
-go run scripts/mkimage.go postra postra-image.tar postra:0.18.6
+go run scripts/mkimage.go postra postra-image.tar postra:0.18.7
 gzip -9 postra-image.tar
 ```
