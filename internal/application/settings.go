@@ -11,6 +11,7 @@ import (
 
 	"postra/internal/domain"
 	"postra/internal/platform/config"
+	"postra/internal/platform/handoff"
 	"postra/internal/platform/tracking"
 )
 
@@ -161,6 +162,9 @@ func (a *App) SystemSettings(ctx context.Context) (map[string]string, error) {
 		SettingMCPPolicy:              "",
 	}
 	for key, value := range tracking.Defaults {
+		defaults[key] = value
+	}
+	for key, value := range handoff.Defaults {
 		defaults[key] = value
 	}
 	for key, value := range defaults {

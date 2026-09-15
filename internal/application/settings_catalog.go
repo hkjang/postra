@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"postra/internal/platform/config"
+	"postra/internal/platform/handoff"
 	"postra/internal/platform/tracking"
 )
 
@@ -247,6 +248,15 @@ func buildSettingsDefinitions() []SettingDefinition {
 		}
 		result = append(result, d)
 	}
+	// Handing mail to another in-house service (HANDOFF-STANDARD.md): the
+	// allow list and the announced public origin. Both default to empty, so a
+	// fresh installation shows no "send to" button.
+	result = append(result,
+		SettingDefinition{Key: handoff.SettingTargets, Label: "다른 서비스로 보내기 허용 목록", Category: "security", Type: "json", Default: handoff.Defaults[handoff.SettingTargets], Scope: "admin", Apply: "live",
+			Help: `JSON 배열. 항목마다 name(표시 이름)·origin(스킴+호스트[:포트])·formats(받는 형식 목록)를 적습니다. 비어 있으면 메일 화면에 보내기 단추가 없습니다. 예: [{"name":"Ptium","origin":"https://ptium.intra","formats":["markdown"]}]`},
+		SettingDefinition{Key: handoff.SettingSourceOrigin, Label: "다른 서비스로 보내기 공개 주소", Category: "security", Type: "url", Default: handoff.Defaults[handoff.SettingSourceOrigin], Scope: "admin", Apply: "live",
+			Help: "받는 서비스가 문서를 받아 갈 이 서비스의 공개 오리진(스킴+호스트[:포트]). 비우면 요청이 들어온 주소를 씁니다."},
+	)
 	return result
 }
 
@@ -364,6 +374,18 @@ func validateSetting(d SettingDefinition, value string) error {
 	if d.Key == "mcp.policy" {
 		if err := ValidateMCPPolicySettings(value); err != nil {
 			return err
+		}
+	}
+	// A handoff allow list that cannot be read would silently empty the menu,
+	// so a save that breaks it is refused here rather than ignored later.
+	if d.Key == handoff.SettingTargets {
+		if _, err := handoff.ParseTargets(value); err != nil {
+			return userErrf("다른 서비스로 보내기: %v", err)
+		}
+	}
+	if d.Key == handoff.SettingSourceOrigin && value != "" {
+		if _, err := handoff.NormalizeOrigin(value); err != nil {
+			return userErrf("다른 서비스로 보내기 공개 주소: %v", err)
 		}
 	}
 	if d.Key == "ai.extra_headers" && value != "" {
