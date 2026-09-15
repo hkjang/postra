@@ -2,12 +2,14 @@
   <img src="assets/logo.png" width="120" alt="Postra Logo"/>
 </p>
 
-# Postra — 개인 메일 AI · MCP 플랫폼
+# Postra — Self-hosted AI Mail & Work Agent Platform
 
 
 Go로 작성한 개인/사내 구축형 메일 서비스입니다. 사용자의 **POP3/IMAP/SMTP** 계정을 연결해 메일을 안전하게 **수집·검색·분석·작성·발송**하며, 모든 업무 기능을 **REST API / CLI / MCP / Web UI** 로 제공합니다.
 
-새 **React AI 업무 메일 워크스페이스**는 `/app/`에서 사용할 수 있습니다. 메일 목록·본문·AI Insight를 함께 보는 화면, 통합 검색, TipTap HTML 작성, 업무·액션·관리 화면을 제공하며 기존 `/ui/`도 유지합니다. React와 글꼴은 Go 실행 파일에 포함되어 운영 시 Node 서버나 외부 CDN이 필요 없습니다. [전환 및 사용 안내](docs/REACT_WORKSPACE.md) · [프런트엔드 개발](web/README.md)
+공식 **React AI 업무 메일 워크스페이스**는 `/app/`에서 사용할 수 있습니다. 메일 목록·본문·AI Insight를 함께 보는 화면, 통합 검색, TipTap HTML 작성, 업무·액션·관리 화면을 제공합니다. 이전 `/ui/` 템플릿은 제거했으며 루트·메일 북마크와 기존 OIDC 콜백만 v0.20의 한시적 이전용 리다이렉트로 유지합니다. React와 글꼴은 Go 실행 파일에 포함되어 운영 시 Node 서버나 외부 CDN이 필요 없습니다. [전환 및 사용 안내](docs/REACT_WORKSPACE.md) · [프런트엔드 개발](web/README.md)
+
+v0.20.0의 검색 가능한 운영 콘솔은 환경변수 초기값 위에 관리자 설정과 강제 정책을 적용합니다. 개인·계정 설정과 복수 서명도 웹에서 관리합니다. [설정 관리](docs/SETTINGS.md) · [HTML 메일](docs/MAIL_RENDERING.md) · [Ask Postra](docs/ASK_POSTRA.md) · [MCP 계약](docs/MCP_CONVERGENCE.md) · [API 스키마](docs/API_CONTRACTS.md) · [릴리즈 및 이전 주의사항](docs/releases/v0.20.0.md)
 
 ## 설계 핵심
 
@@ -41,25 +43,25 @@ go build -o postra ./cmd/postra
 ./postra mcp                           # 로컬 MCP 클라이언트용 stdio 서버
 ```
 
-`/app/`에서 로그인하거나 초기 관리자 설정으로 이동할 수 있습니다. 기존 `/ui/`도 같은 로그인 세션을 사용합니다. 서버를 원격에서 최초 기동할 때는
+`/app/login` 또는 `/app/setup`에서 로그인·최초 관리자 설정을 할 수 있습니다. 인증 API는 `/auth/*`이며 기존 사용자·메일·세션 데이터를 유지합니다. 서버를 원격에서 최초 기동할 때는
 `POSTRA_BOOTSTRAP_ADMIN`과 `POSTRA_BOOTSTRAP_ADMIN_PASSWORD`로 관리자를 미리 생성하세요.
 
 ## 로그인·사용자 관리·Keycloak SSO
 
 인증은 기본 활성화됩니다. 로컬 계정은 Argon2id로 해시하며, 세션 원문은 저장하지 않고
 `HttpOnly`·`SameSite=Lax` 쿠키와 요청 Origin 검증을 사용합니다. 관리자는
-`/ui/admin/users`에서 로컬 사용자를 생성하고 역할(`admin`/`user`), 활성 상태, 비밀번호를
+`/app/admin?category=users`에서 로컬 사용자를 생성하고 역할(`admin`/`user`), 활성 상태, 비밀번호를
 관리할 수 있습니다. 마지막 활성 관리자는 비활성화하거나 강등할 수 없습니다. 사용자별
 메일 계정·메시지·초안·검색·잡·감사 데이터는 애플리케이션과 저장소 양쪽에서 격리됩니다.
 
-`/ui/admin/settings`에서는 세션, Keycloak OIDC, 메일 동기화, AI, 발송, 첨부 및 저장 보안
+`/app/admin`에서는 세션, Keycloak OIDC, 메일 동기화, AI, 발송, 첨부 및 저장 보안
 정책을 관리합니다. OIDC client secret은 설정 DB가 아니라 암호화 SecretStore에 저장됩니다.
 환경변수는 최초 부트스트랩과 비밀 주입에 계속 사용할 수 있습니다.
 
 Keycloak 클라이언트 설정:
 
 1. Keycloak realm에 confidential OIDC client를 만들고 Standard Flow를 활성화합니다.
-2. Valid Redirect URI를 `https://postra.example/ui/auth/oidc/callback`처럼 정확히 등록합니다.
+2. Valid Redirect URI를 `https://postra.example/auth/oidc/callback`처럼 정확히 등록합니다.
 3. `groups` claim에 그룹 경로를 포함하는 Group Membership mapper를 추가합니다.
 4. Postra 관리 화면에서 issuer(`https://keycloak.example/realms/<realm>`), client ID,
    client secret, redirect URL, 관리자 그룹(기본 `postra-admins`)을 저장합니다.
@@ -75,12 +77,14 @@ POSTRA_BOOTSTRAP_ADMIN_PASSWORD='replace-with-a-long-secret' \
 POSTRA_OIDC_ISSUER='https://keycloak.example/realms/postra' \
 POSTRA_OIDC_CLIENT_ID='postra' \
 POSTRA_OIDC_CLIENT_SECRET='replace-me' \
-POSTRA_OIDC_REDIRECT_URL='https://postra.example/ui/auth/oidc/callback' \
+POSTRA_OIDC_REDIRECT_URL='https://postra.example/auth/oidc/callback' \
 ./postra serve
 ```
 
 공식 참고: [Keycloak OIDC endpoints](https://www.keycloak.org/securing-apps/oidc-layers),
 [Keycloak application security guide](https://www.keycloak.org/securing-apps/overview).
+
+기존 Keycloak 등록의 `/ui/auth/oidc/callback`은 v0.20에서 새 콜백으로 307 이동하며 토큰 교환의 `redirect_uri`는 기존 저장값을 그대로 사용합니다. 먼저 IdP에 새 `/auth/oidc/callback` URI를 추가하고 Postra 설정을 바꾼 뒤 대화형·자동 로그인을 검증하세요. 기존 값을 자동 덮어쓰지 않으며, 이전용 URL shim은 v1에서 제거할 예정입니다. 자세한 [이전 안내](docs/REACT_WORKSPACE.md)를 참고하세요.
 
 ### Kubernetes·멀티 노드
 
@@ -102,7 +106,7 @@ election이 없으므로 백그라운드 worker를 실행하는 Postra Replica�
 
 ### AI 운영 관리
 
-관리자는 `/ui/admin/ai`에서 OpenAI 호환 Base URL, chat/embedding 모델, timeout, token
+관리자는 `/app/admin?category=ai`에서 OpenAI 호환 Base URL, chat/embedding 모델, timeout, token
 한도, 외부 전송 및 PII 마스킹 정책을 관리합니다. API Key는 암호화 SecretStore에 저장되고
 설정은 실행 중인 provider에 즉시 적용됩니다. 연결 테스트는 실제 chat completion을 호출하되
 메일 본문이나 사용자 데이터는 보내지 않습니다. 메일 상세의 **업무 트리아지**는 발신 의도,
@@ -110,7 +114,7 @@ election이 없으므로 백그라운드 worker를 실행하는 Postra Replica�
 
 ## 주기 동기화
 
-`config.json` 의 `sync.auto_sync_minutes` 를 0보다 크게 두면 `serve` 실행 시 백그라운드 스케줄러가 활성 POP3 계정을 해당 주기로 자동 동기화합니다(계정별 최소 간격 겸용). 또한 기동 시 재기동으로 중단된 `running`/`queued` job을 `failed` 로 정리해 유령 작업을 남기지 않습니다. 0이면 수동 동기화만 사용합니다.
+관리자 동기화 설정에서 기본 주기·최소 주기·동시성을, 계정 설정에서 자동 동기화 여부·개별 주기를 관리합니다. POP3와 IMAP이 같은 스케줄러를 사용하며 시작할 때 꺼져 있던 작업도 운영 중 활성화할 수 있습니다. 워커는 최대 5초마다 새 설정을 확인합니다. 기동 시 재시작으로 중단된 `running`/`queued` job은 `failed`로 정리합니다. [워커 동작과 비활성화 조건](docs/LIVE_WORKERS.md)을 참고하세요.
 
 ## 첨부 보안
 
@@ -123,7 +127,7 @@ election이 없으므로 백그라운드 worker를 실행하는 Postra Replica�
 
 ## 발송 한도·경고
 
-`config.json` 의 `send.max_per_minute` / `send.max_per_hour` 로 계정별 발송 속도를 제한합니다(0=무제한, 기본 20/분·200/시간). 멱등 재실행은 한도에 계산되지 않습니다. `send.warn_recipients` 이상 수신자를 대상으로 하면 발송 미리보기에 경고가 표시됩니다.
+관리자 발송 정책의 `send.max_per_minute` / `send.max_per_hour`로 계정별 발송 속도를 제한합니다(0=무제한, 기본 20/분·200/시간). 멱등 재실행은 한도에 계산되지 않습니다. `send.warn_recipients` 이상 수신자를 대상으로 하면 발송 미리보기에 경고가 표시됩니다. 외부 발송을 포함한 모든 발송의 명시적 승인은 해제할 수 없는 안전 정책입니다.
 
 ## 저장 백엔드 · 의미 검색
 
@@ -204,15 +208,15 @@ CLI에도 동일 기능이 있습니다: `postra cards`, `postra team`, `postra 
 
 ## Web UI (§ mail-web)
 
-`serve` 는 REST 바인드 주소의 `/ui` 에 서버 렌더링 웹 UI를 제공합니다(`config.json` 의 `web_ui_enabled=false` 로 비활성). 외부 의존·빌드 단계·CDN 없이 Go `html/template` + 임베드 자산으로 단일 바이너리에 포함되어 **오프라인망에서 그대로 동작**합니다.
+`serve`는 REST 바인드 주소의 `/app/`에 유일한 공식 React Web UI를 제공합니다(`web_ui_enabled=false`로 비활성, 재시작 필요). 릴리즈에는 미리 빌드한 React·서체·정적 자산이 Go embed로 포함되어 **오프라인 운영 시 Node 서버·CDN이 필요 없습니다**. 프런트 소스 변경 시에만 Node 빌드가 필요하며 기존 `/ui` 템플릿은 제거했습니다.
 
-- **온보딩·계정** (`/ui/accounts`) — 비밀번호 암호화 등록, POP3/IMAP·SMTP 설정, 단계별 연결 진단, 수동 동기화와 진행 상태
-- **받은편지함·검색** (`/ui/`) — 최신 메일 목록, 계정 필터, 제목·본문·보낸이 검색, 커서 페이지 이동
-- **메일 상세** (`/ui/messages/{id}`) — 헤더·본문, 안전한 첨부 다운로드, 요약·할 일·피싱 AI 분석, 답장·전체 답장·전달 초안
-- **새 메일·초안** (`/ui/compose`, `/ui/drafts/{id}`) — 직접 또는 AI로 초안 작성, 수신자·제목·본문 편집, AI 문체 재작성
-- **발송 승인** (`/ui/drafts/{id}/send`) — 미리보기·경고(외부 도메인/다수 수신자) → **승인 요청** → **발송 확정** 2단계. 초안이 바뀌면 토큰 무효화, 동일 버전 재전송은 멱등(이중 발송 없음)
+- **온보딩·계정** (`/app/accounts`) — 비밀번호 암호화 등록, POP3/IMAP·SMTP 설정, 단계별 연결 진단, 수동 동기화와 진행 상태
+- **받은편지함·검색** (`/app/mail`) — 최신 메일 목록, 읽음·계정·상세 필터, 제목·본문·보낸이 검색, 커서 페이지 이동
+- **메일 상세** (`/app/messages/{id}`) — 격리된 HTML·텍스트, 이미지 개인정보 정책, 안전한 첨부 다운로드, 요약·할 일·피싱 분석, 답장·전달
+- **새 메일·초안** (`/app/compose`, `/app/drafts/{id}`) — 영구 초안 목록, Text/Markdown/HTML 자동 서식·템플릿·서명·첨부, AI 문체 재작성
+- **발송 승인** (초안 화면의 **미리보기 · 발송**) — 미리보기·경고 → **내용 확인 · 승인** → **승인한 메일 발송**. 초안이 바뀌면 승인이 무효화되고 동일 버전 재전송은 멱등 처리합니다.
 
-UI는 로컬 계정 또는 Keycloak SSO 로그인(`/ui/login`)을 요구합니다. 기존 `APIToken`은 자동화·
+UI는 로컬 계정 또는 Keycloak SSO 로그인(`/app/login`)을 요구합니다. 기존 `APIToken`은 자동화·
 복구용 REST/MCP bearer credential과 인증 비활성화 호환 모드에서만 사용합니다. 서버는 평문
 HTTP로 서빙하므로 인터넷 노출 시 신뢰하는 리버스 프록시에서 TLS를 종단하고 정확한 OIDC
 redirect URI를 사용하세요.

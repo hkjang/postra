@@ -22,3 +22,15 @@ it('rejects non-API URLs before making a request', async () => {
   await expect(api('https://third-party.invalid/upload')).rejects.toThrow('API 경로')
   expect(fetch).not.toHaveBeenCalled()
 })
+it('supports same-origin JSON auth without broadcasting expected login failures', async () => {
+  const expired = vi.fn()
+  window.addEventListener('postra:unauthorized', expired)
+  const fetch = vi.fn().mockResolvedValue(new Response('{"code":"unauthorized","message":"로그인 정보를 확인하세요."}', {status: 401}))
+  vi.stubGlobal('fetch', fetch)
+  try {
+    await expect(api('/auth/login', {body: {login_id: 'test', password: 'private-test-password'}})).rejects.toThrow('로그인 정보를 확인하세요.')
+    expect(expired).not.toHaveBeenCalled()
+    expect(fetch.mock.calls[0][1].credentials).toBe('same-origin')
+    expect(fetch.mock.calls[0][1].headers.Authorization).toBeUndefined()
+  } finally { window.removeEventListener('postra:unauthorized', expired) }
+})

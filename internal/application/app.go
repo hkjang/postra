@@ -38,39 +38,96 @@ type App struct {
 	AI      domain.AIProvider
 	Scanner domain.AttachmentScanner
 
-	syncLocks    sync.Map // accountID -> struct{} (best-effort single-session lock, POP-003)
-	jobCancels   sync.Map // jobID -> context.CancelFunc
-	background   context.Context
-	cancelAll    context.CancelFunc
-	workerGroup  sync.WaitGroup
-	oidcStateKey [32]byte
-	aiConfigMu   sync.RWMutex
-	aiRaw        domain.AIProvider
-	vectorStore  VectorStore
-	vectorMu     sync.RWMutex
-	nodeID       string
-	leaderMu     sync.RWMutex
-	isLeader     bool
-	mcpPolicy    mcpPolicyState
-	syncSem      chan struct{} // bounds concurrent account syncs (OOM guard)
+	syncLocks          sync.Map // accountID -> struct{} (best-effort single-session lock, POP-003)
+	jobCancels         sync.Map // jobID -> context.CancelFunc
+	background         context.Context
+	cancelAll          context.CancelFunc
+	workerGroup        sync.WaitGroup
+	oidcStateKey       [32]byte
+	aiConfigMu         sync.RWMutex
+	aiRaw              domain.AIProvider
+	vectorStore        VectorStore
+	vectorMu           sync.RWMutex
+	nodeID             string
+	leaderMu           sync.RWMutex
+	isLeader           bool
+	mcpPolicy          mcpPolicyState
+	syncSlotsMu        sync.Mutex
+	syncSlotsInUse     int // live limit changes never cancel already-running syncs
+	syncSlotsChanged   chan struct{}
+	initialConfig      config.Config
+	runtimeSettings    settingsState
+	settingsWriteMu    sync.Mutex
+	startedMCPEndpoint string
+	startedSettings    map[string]string
 }
 
 func New(cfg config.Config, store Storage, objects objectstore.Store,
 	secrets domain.SecretStore, pop3 domain.POP3Dialer, smtp domain.SMTPClient, ai domain.AIProvider) (*App, error) {
-	if stored, err := store.GetSettings(context.Background()); err == nil {
-		applyStoredSettings(&cfg, stored)
+	initialConfig := cfg
+	storedSettings, settingsErr := store.GetSettings(context.Background())
+	if settingsErr != nil {
+		return nil, fmt.Errorf("load persisted configuration: settings storage unavailable")
 	}
+	applyStoredSettings(&cfg, storedSettings)
 	bg, cancel := context.WithCancel(context.Background())
-	syncConcurrency := cfg.Sync.MaxConcurrentSyncs
-	if syncConcurrency <= 0 {
-		syncConcurrency = 2
-	}
 	a := &App{
 		Cfg: cfg, Store: store, Objects: objects, Secrets: secrets,
 		POP3: pop3, SMTP: smtp, aiRaw: ai,
 		Scanner:    malware.NewHeuristic(cfg.Attachments),
 		background: bg, cancelAll: cancel,
-		syncSem: make(chan struct{}, syncConcurrency),
+		initialConfig: initialConfig,
+	}
+	// Move legacy header credentials into the encrypted secret store before
+	// configuring an adapter. Only the opaque reference survives a restart.
+	if cfg.AI.ExtraHeaders != "" && cfg.AI.ExtraHeadersRef == "" {
+		migrated := map[string]string{SettingAIExtraHeaders: cfg.AI.ExtraHeaders}
+		if err := a.encryptHeaderSetting(WithActor(bg, "migration"), migrated); err != nil {
+			cancel()
+			return nil, fmt.Errorf("migrate AI credential headers: secret storage unavailable")
+		}
+		if err := store.UpsertSettings(bg, migrated); err != nil {
+			cancel()
+			return nil, fmt.Errorf("migrate AI credential headers: settings storage unavailable")
+		}
+		if storedSettings == nil {
+			storedSettings = map[string]string{}
+		}
+		for key, value := range migrated {
+			storedSettings[key] = value
+		}
+		applyStoredSettings(&cfg, migrated)
+		a.Cfg = cfg
+	}
+	// Pre-ref Milvus deployments must not retain a plaintext credential in the
+	// settings table. A failed migration stops startup without exposing it.
+	if token := storedSettings[SettingVectorMilvusToken]; token != "" {
+		migrated := map[string]string{SettingVectorMilvusToken: ""}
+		if storedSettings[SettingVectorMilvusTokenRef] == "" {
+			handle := domain.NewSecretHandle([]byte(token))
+			ref, err := a.RegisterSecret(WithActor(bg, "migration"), domain.SecretAPIKey, "Milvus access token", handle)
+			handle.Zero()
+			if err != nil {
+				cancel()
+				return nil, fmt.Errorf("migrate vector credential: secret storage unavailable")
+			}
+			migrated[SettingVectorMilvusTokenRef] = string(ref)
+		}
+		if err := store.UpsertSettings(bg, migrated); err != nil {
+			cancel()
+			return nil, fmt.Errorf("migrate vector credential: settings storage unavailable")
+		}
+		for key, value := range migrated {
+			storedSettings[key] = value
+		}
+	}
+	a.applyRuntimeSettings(storedSettings)
+	a.startedMCPEndpoint = a.Setting("mcp.endpoint")
+	a.startedSettings = map[string]string{}
+	for _, d := range SettingsDefinitions() {
+		if d.Apply == "restart" {
+			a.startedSettings[d.Key] = a.Setting(d.Key)
+		}
 	}
 	// The provider is constructed by the composition root before New loads
 	// database-backed settings. Reconfigure it with the merged config so a
@@ -120,6 +177,7 @@ func New(cfg config.Config, store Storage, objects objectstore.Store,
 				slog.Info("app: settings change notification received, re-initializing configuration and vector store")
 				if stored, err := a.Store.GetSettings(context.Background()); err == nil {
 					a.applyAISettings(stored)
+					a.applyRuntimeSettings(stored)
 				}
 				a.initVectorStore(context.Background())
 				a.loadMCPPolicy(context.Background())
@@ -226,7 +284,7 @@ func (a *App) validateMailHost(ctx context.Context, host string) error {
 		if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
 			return userErrf("host %q resolves to a forbidden address (%s)", host, ip)
 		}
-		if (ip.IsPrivate() || ip.IsLoopback()) && !a.Cfg.AllowPrivateHosts {
+		if (ip.IsPrivate() || ip.IsLoopback()) && !a.EffectiveConfig().AllowPrivateHosts {
 			return userErrf("host %q resolves to a private address (%s); enable allow_private_hosts for on-prem servers", host, ip)
 		}
 	}
@@ -237,13 +295,19 @@ func (a *App) validateMailHost(ctx context.Context, host string) error {
 // certificate-verification bypass behind the AllowInsecureMail policy and
 // records an audit trail (§4.2 exceptions).
 func (a *App) checkInsecureAllowed(ctx context.Context, acc *domain.MailAccount) error {
+	if a.SettingBool("mail.tls_required") && (acc.POP3Security == domain.SecurityNone || acc.SMTPSecurity == domain.SecurityNone || acc.InsecureSkipVerify) {
+		return userErrf("조직 정책에서 검증된 TLS 메일 연결을 요구합니다")
+	}
+	if a.SettingBool("mail.smtp_auth_required") && acc.SMTPAuth == "none" {
+		return userErrf("조직 정책에서 SMTP 인증을 요구합니다")
+	}
 	insecure := acc.POP3Security == domain.SecurityNone ||
 		acc.SMTPSecurity == domain.SecurityNone ||
 		acc.SMTPAuth == "none" || acc.InsecureSkipVerify
 	if !insecure {
 		return nil
 	}
-	if !a.Cfg.AllowInsecureMail {
+	if !a.EffectiveConfig().AllowInsecureMail {
 		return userErrf("account uses plaintext/unauthenticated mail transport; set allow_insecure_mail=true (offline networks only)")
 	}
 	a.audit(ctx, "insecure_transport_configured", "account:"+acc.ID, "ok",
@@ -257,6 +321,22 @@ func (a *App) checkInsecureAllowed(ctx context.Context, acc *domain.MailAccount)
 // immediately after the handshake. The handle never leaves this call
 // (SEC-KEY-005).
 func (a *App) dialInbound(ctx context.Context, acc *domain.MailAccount, purpose domain.SecretPurpose) (domain.InboundSession, error) {
+	protocol := "pop3"
+	if acc.InboundProtocol == domain.InboundIMAP {
+		protocol = "imap"
+	}
+	if !a.SettingBool("mail." + protocol + "_enabled") {
+		return nil, userErrf("관리자 정책에서 %s 연결을 비활성화했습니다", protocol)
+	}
+	if a.SettingBool("mail.tls_required") && (acc.POP3Security == domain.SecurityNone || acc.InsecureSkipVerify) {
+		return nil, userErrf("조직 정책에서 검증된 TLS 연결을 요구합니다")
+	}
+	if !a.EffectiveConfig().AllowInsecureMail && (acc.POP3Security == domain.SecurityNone || acc.InsecureSkipVerify) {
+		return nil, userErrf("평문 또는 인증서 검증 없는 연결은 허용되지 않습니다")
+	}
+	if err := a.validateMailHost(ctx, acc.POP3Host); err != nil {
+		return nil, err
+	}
 	dialer, err := a.inboundDialer(acc)
 	if err != nil {
 		return nil, err
@@ -273,9 +353,9 @@ func (a *App) dialInbound(ctx context.Context, acc *domain.MailAccount, purpose 
 		Host: acc.POP3Host, Port: acc.POP3Port, Security: acc.POP3Security,
 		Username: acc.POP3Username, Password: secret,
 		InsecureSkipVerify: acc.InsecureSkipVerify,
-		ConnectTimeoutSec:  a.Cfg.Sync.ConnectTimeoutSec,
-		CommandTimeoutSec:  a.Cfg.Sync.CommandTimeoutSec,
-		MaxMessageBytes:    a.Cfg.Sync.MaxMessageBytes,
+		ConnectTimeoutSec:  a.EffectiveConfig().Sync.ConnectTimeoutSec,
+		CommandTimeoutSec:  a.EffectiveConfig().Sync.CommandTimeoutSec,
+		MaxMessageBytes:    a.EffectiveConfig().Sync.MaxMessageBytes,
 	})
 	if secret != nil {
 		secret.Zero()

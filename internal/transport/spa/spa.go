@@ -64,6 +64,11 @@ func handler(assets fs.FS) http.Handler {
 			}
 		}
 		contentType := mime.TypeByExtension(path.Ext(name))
+		// Historical brand files have a .png suffix but contain JPEG bytes.
+		// Detect embedded images without changing or trusting any remote data.
+		if strings.HasPrefix(contentType, "image/") {
+			contentType = http.DetectContentType(data)
+		}
 		if contentType == "" {
 			contentType = "application/octet-stream"
 		}

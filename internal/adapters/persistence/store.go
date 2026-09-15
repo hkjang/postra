@@ -339,6 +339,8 @@ CREATE INDEX IF NOT EXISTS idx_message_notes_msg ON message_notes(message_id);
 	// existed. Fresh DBs already have them from CREATE, so a "duplicate
 	// column" error is expected and ignored.
 	for _, alt := range []string{
+		`ALTER TABLE mcp_keys ADD COLUMN scopes_json TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE draft_versions ADD COLUMN attachments_json TEXT NOT NULL DEFAULT '[]'`,
 		`ALTER TABLE attachments ADD COLUMN scan_status TEXT DEFAULT 'clean'`,
 		`ALTER TABLE attachments ADD COLUMN scan_detail TEXT`,
 		`ALTER TABLE outbound_messages ADD COLUMN next_attempt_at INTEGER NOT NULL DEFAULT 0`,
@@ -354,6 +356,7 @@ CREATE INDEX IF NOT EXISTS idx_message_notes_msg ON message_notes(message_id);
 		`ALTER TABLE users ADD COLUMN last_login_at INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE messages ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE messages ADD COLUMN is_important INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE messages ADD COLUMN is_read INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE messages ADD COLUMN snoozed_until INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE messages ADD COLUMN labels_json TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE messages ADD COLUMN legal_hold INTEGER NOT NULL DEFAULT 0`,
@@ -491,8 +494,8 @@ func (s *Store) UpdateMessage(ctx context.Context, m *domain.Message) error {
 	if err != nil {
 		return err
 	}
-	res, err := s.db.ExecContext(ctx, `UPDATE messages SET is_archived=?, is_important=?, snoozed_until=?, labels_json=?, legal_hold=? WHERE id=? AND user_id=?`,
-		boolInt(m.IsArchived), boolInt(m.IsImportant), m.SnoozedUntil, string(labelsJSON), boolInt(m.LegalHold), m.ID, m.UserID)
+	res, err := s.db.ExecContext(ctx, `UPDATE messages SET is_archived=?, is_important=?, snoozed_until=?, labels_json=?, legal_hold=?, is_read=? WHERE id=? AND user_id=?`,
+		boolInt(m.IsArchived), boolInt(m.IsImportant), m.SnoozedUntil, string(labelsJSON), boolInt(m.LegalHold), boolInt(m.IsRead), m.ID, m.UserID)
 	if err != nil {
 		return err
 	}
@@ -1255,7 +1258,7 @@ const msgCols = `id,user_id,account_id,uidl,message_id_hdr,subject,from_name,fro
 // msgSelectCols extends the insert column set with the mutable UX-state columns
 // (archive/important/snooze/labels). It is used for every SELECT + scanMessage;
 // msgCols stays the immutable ingest set used by InsertMessage.
-const msgSelectCols = msgCols + `,is_archived,is_important,snoozed_until,labels_json,legal_hold`
+const msgSelectCols = msgCols + `,is_archived,is_important,snoozed_until,labels_json,legal_hold,is_read`
 
 func labelsFromJSON(s string) []string {
 	if s == "" {
@@ -1270,14 +1273,14 @@ func scanMessage(row interface{ Scan(...any) error }) (*domain.Message, error) {
 	var m domain.Message
 	var toJ, ccJ, rtJ string
 	var hasAtt int
-	var isArch, isImp, legalHold int
+	var isArch, isImp, legalHold, isRead int
 	var labelsJSON string
 	var threadID, parseErr, authRes sql.NullString
 	err := row.Scan(&m.ID, &m.UserID, &m.AccountID, &m.UIDL, &m.MessageID, &m.Subject,
 		&m.From.Name, &m.From.Email, &toJ, &ccJ, &rtJ,
 		&m.Date, &m.Size, &m.RawHash, &m.RawURI, &threadID, &hasAtt,
 		&m.InReplyTo, &m.References, &authRes, &parseErr, &m.CreatedAt,
-		&isArch, &isImp, &m.SnoozedUntil, &labelsJSON, &legalHold)
+		&isArch, &isImp, &m.SnoozedUntil, &labelsJSON, &legalHold, &isRead)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -1287,6 +1290,7 @@ func scanMessage(row interface{ Scan(...any) error }) (*domain.Message, error) {
 	m.To, m.Cc, m.ReplyTo = addrFromJSON(toJ), addrFromJSON(ccJ), addrFromJSON(rtJ)
 	m.HasAttachments = hasAtt != 0
 	m.IsArchived, m.IsImportant, m.LegalHold = isArch != 0, isImp != 0, legalHold != 0
+	m.IsRead = isRead != 0
 	m.Labels = labelsFromJSON(labelsJSON)
 	m.ThreadID, m.ParseError, m.AuthResults = threadID.String, parseErr.String, authRes.String
 	return &m, nil
@@ -1502,6 +1506,9 @@ func (s *Store) Search(ctx context.Context, q domain.SearchQuery) (*domain.Searc
 	}
 	if q.IsArchived != nil {
 		conds, args = append(conds, "m.is_archived = ?"), append(args, boolInt(*q.IsArchived))
+	}
+	if q.IsRead != nil {
+		conds, args = append(conds, "m.is_read = ?"), append(args, boolInt(*q.IsRead))
 	}
 	if q.Label != "" {
 		conds, args = append(conds, "m.labels_json LIKE ?"), append(args, `%"`+q.Label+`"%`)
@@ -1823,8 +1830,11 @@ func (s *Store) ListMessageCollab(ctx context.Context, userID, status, assignee 
 	 FROM message_collab WHERE user_id=?`
 	args := []any{userID}
 	if status != "" {
-		q += ` AND status=?`
-		args = append(args, status)
+		aliases := domain.CollabStatusAliases(status)
+		q += ` AND status IN (?,?)`
+		// At most two semantic aliases exist. Repeat a singleton rather than
+		// constructing SQL text, keeping every state strictly parameter-bound.
+		args = append(args, aliases[0], aliases[len(aliases)-1])
 	}
 	if assignee != "" {
 		q += ` AND assignee=?`
@@ -1926,11 +1936,15 @@ func (s *Store) CreateDraft(ctx context.Context, d *domain.Draft, v *domain.Draf
 }
 
 func insertDraftVersion(ctx context.Context, tx *sql.Tx, draftID string, v *domain.DraftVersion) error {
-	_, err := tx.ExecContext(ctx, `INSERT INTO draft_versions
-	 (draft_id,version,subject,body_text,body_html,to_json,cc_json,bcc_json,author,created_at)
-	 VALUES (?,?,?,?,?,?,?,?,?,?)`,
+	attachments, err := json.Marshal(v.Attachments)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO draft_versions
+	 (draft_id,version,subject,body_text,body_html,to_json,cc_json,bcc_json,author,created_at,attachments_json)
+	 VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
 		draftID, v.Version, v.Subject, v.BodyText, v.BodyHTML,
-		addrJSON(v.To), addrJSON(v.Cc), addrJSON(v.Bcc), v.Author, v.CreatedAt)
+		addrJSON(v.To), addrJSON(v.Cc), addrJSON(v.Bcc), v.Author, v.CreatedAt, string(attachments))
 	return err
 }
 
@@ -1982,11 +1996,12 @@ func (s *Store) GetDraft(ctx context.Context, userID, id string) (*domain.Draft,
 
 func (s *Store) GetDraftVersion(ctx context.Context, userID, draftID string, version int) (*domain.DraftVersion, error) {
 	var v domain.DraftVersion
+	var attachments string
 	var toJ, ccJ, bccJ, html sql.NullString
-	err := s.db.QueryRowContext(ctx, `SELECT v.draft_id,v.version,v.subject,v.body_text,v.body_html,v.to_json,v.cc_json,v.bcc_json,v.author,v.created_at
+	err := s.db.QueryRowContext(ctx, `SELECT v.draft_id,v.version,v.subject,v.body_text,v.body_html,v.to_json,v.cc_json,v.bcc_json,v.author,v.created_at,v.attachments_json
 	 FROM draft_versions v JOIN drafts d ON d.id=v.draft_id
 	 WHERE v.draft_id=? AND v.version=? AND d.user_id=?`, draftID, version, userID).
-		Scan(&v.DraftID, &v.Version, &v.Subject, &v.BodyText, &html, &toJ, &ccJ, &bccJ, &v.Author, &v.CreatedAt)
+		Scan(&v.DraftID, &v.Version, &v.Subject, &v.BodyText, &html, &toJ, &ccJ, &bccJ, &v.Author, &v.CreatedAt, &attachments)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -1995,6 +2010,9 @@ func (s *Store) GetDraftVersion(ctx context.Context, userID, draftID string, ver
 	}
 	v.BodyHTML = html.String
 	v.To, v.Cc, v.Bcc = addrFromJSON(toJ.String), addrFromJSON(ccJ.String), addrFromJSON(bccJ.String)
+	if err := json.Unmarshal([]byte(attachments), &v.Attachments); err != nil {
+		return nil, fmt.Errorf("invalid persisted draft attachment metadata")
+	}
 	return &v, nil
 }
 
@@ -2368,19 +2386,24 @@ func boolInt(b bool) int {
 
 func (s *Store) CreateMCPKey(ctx context.Context, key *domain.MCPKey) error {
 	key.CreatedAt = time.Now().Unix()
-	_, err := s.db.ExecContext(ctx, `INSERT INTO mcp_keys (id, user_id, name, key_hash, key_prefix, status, created_at, last_used_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		key.ID, key.UserID, key.Name, key.KeyHash, key.KeyPrefix, key.Status, key.CreatedAt, key.LastUsedAt)
+	scopes, err := json.Marshal(key.Scopes)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO mcp_keys (id, user_id, name, key_hash, key_prefix, status, created_at, last_used_at, scopes_json)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		key.ID, key.UserID, key.Name, key.KeyHash, key.KeyPrefix, key.Status, key.CreatedAt, key.LastUsedAt, string(scopes))
 	return err
 }
 
 func (s *Store) GetMCPKeyByHash(ctx context.Context, keyHash string) (*domain.MCPKey, *domain.User, error) {
 	var k domain.MCPKey
 	var u domain.User
-	err := s.db.QueryRowContext(ctx, `SELECT k.id, k.user_id, k.name, k.key_hash, k.key_prefix, k.status, k.created_at, k.last_used_at,
+	var scopes string
+	err := s.db.QueryRowContext(ctx, `SELECT k.id, k.user_id, k.name, k.key_hash, k.key_prefix, k.status, k.created_at, k.last_used_at, k.scopes_json,
 		u.id, u.login_id, u.display_name, u.email, u.role, u.status, u.auth_provider, u.created_at, u.updated_at, u.last_login_at
 		FROM mcp_keys k JOIN users u ON u.id = k.user_id WHERE k.key_hash = ? AND k.status = 'active'`, keyHash).
-		Scan(&k.ID, &k.UserID, &k.Name, &k.KeyHash, &k.KeyPrefix, &k.Status, &k.CreatedAt, &k.LastUsedAt,
+		Scan(&k.ID, &k.UserID, &k.Name, &k.KeyHash, &k.KeyPrefix, &k.Status, &k.CreatedAt, &k.LastUsedAt, &scopes,
 			&u.ID, &u.LoginID, &u.DisplayName, &u.Email, &u.Role, &u.Status, &u.AuthProvider, &u.CreatedAt, &u.UpdatedAt, &u.LastLoginAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil, ErrNotFound
@@ -2388,11 +2411,15 @@ func (s *Store) GetMCPKeyByHash(ctx context.Context, keyHash string) (*domain.MC
 	if err != nil {
 		return nil, nil, err
 	}
+	k.Scopes, k.LegacyScopes, err = domain.DecodeMCPKeyScopes(scopes)
+	if err != nil {
+		return nil, nil, err
+	}
 	return &k, &u, nil
 }
 
 func (s *Store) ListMCPKeys(ctx context.Context, userID string) ([]domain.MCPKey, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, user_id, name, key_hash, key_prefix, status, created_at, last_used_at
+	rows, err := s.db.QueryContext(ctx, `SELECT id, user_id, name, key_hash, key_prefix, status, created_at, last_used_at, scopes_json
 		FROM mcp_keys WHERE user_id = ? ORDER BY created_at DESC`, userID)
 	if err != nil {
 		return nil, err
@@ -2401,7 +2428,12 @@ func (s *Store) ListMCPKeys(ctx context.Context, userID string) ([]domain.MCPKey
 	var out []domain.MCPKey
 	for rows.Next() {
 		var k domain.MCPKey
-		if err := rows.Scan(&k.ID, &k.UserID, &k.Name, &k.KeyHash, &k.KeyPrefix, &k.Status, &k.CreatedAt, &k.LastUsedAt); err != nil {
+		var scopes string
+		if err := rows.Scan(&k.ID, &k.UserID, &k.Name, &k.KeyHash, &k.KeyPrefix, &k.Status, &k.CreatedAt, &k.LastUsedAt, &scopes); err != nil {
+			return nil, err
+		}
+		k.Scopes, k.LegacyScopes, err = domain.DecodeMCPKeyScopes(scopes)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, k)
@@ -2410,7 +2442,7 @@ func (s *Store) ListMCPKeys(ctx context.Context, userID string) ([]domain.MCPKey
 }
 
 func (s *Store) ListAllMCPKeys(ctx context.Context) ([]domain.MCPKey, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, user_id, name, key_hash, key_prefix, status, created_at, last_used_at
+	rows, err := s.db.QueryContext(ctx, `SELECT id, user_id, name, key_hash, key_prefix, status, created_at, last_used_at, scopes_json
 		FROM mcp_keys ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
@@ -2419,7 +2451,12 @@ func (s *Store) ListAllMCPKeys(ctx context.Context) ([]domain.MCPKey, error) {
 	var out []domain.MCPKey
 	for rows.Next() {
 		var k domain.MCPKey
-		if err := rows.Scan(&k.ID, &k.UserID, &k.Name, &k.KeyHash, &k.KeyPrefix, &k.Status, &k.CreatedAt, &k.LastUsedAt); err != nil {
+		var scopes string
+		if err := rows.Scan(&k.ID, &k.UserID, &k.Name, &k.KeyHash, &k.KeyPrefix, &k.Status, &k.CreatedAt, &k.LastUsedAt, &scopes); err != nil {
+			return nil, err
+		}
+		k.Scopes, k.LegacyScopes, err = domain.DecodeMCPKeyScopes(scopes)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, k)
@@ -2447,6 +2484,23 @@ func (s *Store) RevokeMCPKey(ctx context.Context, userID, keyID string) error {
 func (s *Store) TouchMCPKey(ctx context.Context, keyID string, lastUsedAt int64) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE mcp_keys SET last_used_at = ? WHERE id = ?`, lastUsedAt, keyID)
 	return err
+}
+
+func (s *Store) UpdateMCPKeyScopes(ctx context.Context, userID, keyID string, scopes []string) error {
+	raw, err := json.Marshal(scopes)
+	if err != nil {
+		return err
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE mcp_keys SET scopes_json = ? WHERE id = ? AND (? = '' OR user_id = ?) AND status = 'active'`, string(raw), keyID, userID, userID)
+	if err != nil {
+		return err
+	}
+	if count, err := result.RowsAffected(); err != nil {
+		return err
+	} else if count == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (s *Store) TryAcquireLease(ctx context.Context, key, nodeID string, durationSec int) (bool, error) {

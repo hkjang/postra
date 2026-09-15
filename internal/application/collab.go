@@ -72,10 +72,8 @@ func (a *App) AssignMessage(ctx context.Context, messageID, assignee string) (*d
 
 // SetMessageWorkStatus transitions a message's collaboration status.
 func (a *App) SetMessageWorkStatus(ctx context.Context, messageID, status string) (*domain.MessageCollab, error) {
-	switch status {
-	case domain.CollabOpen, domain.CollabPending, domain.CollabResolved:
-	default:
-		return nil, userErrf("invalid work status %q (open|pending|resolved)", status)
+	if _, valid := domain.CanonicalCollabStatus(status); !valid {
+		return nil, userErrf("invalid work status (new|needs_action|in_progress|waiting|done; open|pending|resolved are legacy aliases)")
 	}
 	mc, err := a.mutateCollab(ctx, messageID, func(mc *domain.MessageCollab) { mc.Status = status })
 	if err != nil {
@@ -87,7 +85,14 @@ func (a *App) SetMessageWorkStatus(ctx context.Context, messageID, status string
 
 // SetMessageSLA sets the SLA deadline (unix seconds; 0 clears it).
 func (a *App) SetMessageSLA(ctx context.Context, messageID string, dueUnix int64) (*domain.MessageCollab, error) {
-	return a.mutateCollab(ctx, messageID, func(mc *domain.MessageCollab) { mc.SLADue = dueUnix })
+	if dueUnix < 0 || dueUnix > 253402300799 {
+		return nil, userErrf("처리 기한이 올바르지 않습니다")
+	}
+	result, err := a.mutateCollab(ctx, messageID, func(mc *domain.MessageCollab) { mc.SLADue = dueUnix })
+	if err == nil {
+		a.audit(ctx, "collab_sla", "message:"+messageID, "ok", "")
+	}
+	return result, err
 }
 
 // GetMessageCollab returns the message's collaboration state (defaulted when
@@ -131,6 +136,11 @@ func (a *App) AddMessageNote(ctx context.Context, messageID, body string) (*doma
 // TeamInbox lists messages with collaboration state, optionally filtered by
 // status and assignee (§협업 공유 메일함).
 func (a *App) TeamInbox(ctx context.Context, status, assignee string, limit int) ([]TeamInboxItem, error) {
+	if status != "" {
+		if _, valid := domain.CanonicalCollabStatus(status); !valid {
+			return nil, userErrf("invalid work status filter")
+		}
+	}
 	userID := userIDFrom(ctx)
 	rows, err := a.Store.ListMessageCollab(ctx, userID, status, assignee, limit)
 	if err != nil {

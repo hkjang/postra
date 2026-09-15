@@ -1,0 +1,27 @@
+name: Canonical API contracts
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    name: Go DTO · JSON Schema · OpenAPI · TypeScript drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.6"
+          check-latest: true
+      - name: Verify generated contract goldens without rewriting
+        run: go run ./cmd/postra-contracts -check
+      - name: Validate deterministic schemas and real handler wire responses
+        run: |
+          go test ./internal/transport/httpapi/contracts
+          go test ./internal/transport/httpapi -run 'TestCanonicalCoreContractResponses|TestRenderingRoutes|TestDraftAttachmentRoutes'

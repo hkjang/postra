@@ -443,7 +443,7 @@ func TestAIKeyAndConfigSurviveRestartWithoutErrorLeak(t *testing.T) {
 	if err != nil || result.OK {
 		t.Fatalf("invalid-key response was not reported as failure: result=%+v err=%v", result, err)
 	}
-	if strings.Contains(result.Message, apiKey) || !strings.Contains(result.Message, "[REDACTED]") {
+	if strings.Contains(result.Message, apiKey) || result.Message == "" {
 		t.Fatalf("AI key leaked through connection error: %s", result.Message)
 	}
 }

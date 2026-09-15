@@ -25,6 +25,9 @@ func (a *App) GetRule(ctx context.Context, id string) (*domain.MailRule, error) 
 }
 
 func (a *App) CreateRule(ctx context.Context, r domain.MailRule) (*domain.MailRule, error) {
+	if err := a.checkMCPRuleActions(ctx, r.Actions); err != nil {
+		return nil, err
+	}
 	r.ID = persistence.NewID("rule")
 	r.UserID = userIDFrom(ctx)
 	if err := normalizeAndValidateRule(&r); err != nil {
@@ -38,6 +41,9 @@ func (a *App) CreateRule(ctx context.Context, r domain.MailRule) (*domain.MailRu
 }
 
 func (a *App) UpdateRule(ctx context.Context, r domain.MailRule) (*domain.MailRule, error) {
+	if err := a.checkMCPRuleActions(ctx, r.Actions); err != nil {
+		return nil, err
+	}
 	r.UserID = userIDFrom(ctx)
 	if r.ID == "" {
 		return nil, userErrf("rule id is required")

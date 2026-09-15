@@ -299,7 +299,7 @@ func (a *App) testPOP3(ctx context.Context, acc *domain.MailAccount) domain.Conn
 	step := func(name string, err error) bool {
 		st := domain.ConnStep{Step: name, OK: err == nil}
 		if err != nil {
-			st.Detail = err.Error()
+			st.Detail = providerDiagnostic(err)
 		}
 		diag.Steps = append(diag.Steps, st)
 		return err == nil
@@ -324,8 +324,8 @@ func (a *App) testPOP3(ctx context.Context, acc *domain.MailAccount) domain.Conn
 		Host: acc.POP3Host, Port: acc.POP3Port, Security: acc.POP3Security,
 		Username: acc.POP3Username, Password: secret,
 		InsecureSkipVerify: acc.InsecureSkipVerify,
-		ConnectTimeoutSec:  a.Cfg.Sync.ConnectTimeoutSec,
-		CommandTimeoutSec:  a.Cfg.Sync.CommandTimeoutSec,
+		ConnectTimeoutSec:  a.EffectiveConfig().Sync.ConnectTimeoutSec,
+		CommandTimeoutSec:  a.EffectiveConfig().Sync.CommandTimeoutSec,
 	})
 	if !step("connect_tls_auth", err) {
 		return diag
@@ -344,7 +344,7 @@ func (a *App) testSMTP(ctx context.Context, acc *domain.MailAccount) domain.Conn
 		secret, err = a.Secrets.Acquire(ctx, acc.SMTPSecret, domain.PurposeTest)
 		if err != nil {
 			return domain.ConnDiagnostics{Target: "smtp", Steps: []domain.ConnStep{
-				{Step: "secret_acquire", OK: false, Detail: err.Error()}}}
+				{Step: "secret_acquire", OK: false, Detail: providerDiagnostic(err)}}}
 		}
 		defer secret.Zero()
 	}
@@ -352,13 +352,13 @@ func (a *App) testSMTP(ctx context.Context, acc *domain.MailAccount) domain.Conn
 		Host: acc.SMTPHost, Port: acc.SMTPPort, Security: acc.SMTPSecurity,
 		AuthMethod: acc.SMTPAuth, Username: acc.SMTPUsername, Password: secret,
 		InsecureSkipVerify: acc.InsecureSkipVerify,
-		ConnectTimeoutSec:  a.Cfg.Sync.ConnectTimeoutSec,
+		ConnectTimeoutSec:  a.EffectiveConfig().Sync.ConnectTimeoutSec,
 	})
-	if err != nil {
+	if err != nil || diag == nil {
 		return domain.ConnDiagnostics{Target: "smtp", Steps: []domain.ConnStep{
-			{Step: "connect", OK: false, Detail: err.Error()}}}
+			{Step: "connect", OK: false, Detail: providerFailed}}}
 	}
-	return *diag
+	return safeConnectionDiagnostics(*diag, "smtp")
 }
 
 // ---------- secret registration ----------
@@ -369,6 +369,9 @@ func (a *App) testSMTP(ctx context.Context, acc *domain.MailAccount) domain.Conn
 // secret_registration_begin, which points the client at this flow and never
 // carries the value itself (SEC-KEY-001/002, §11.4).
 func (a *App) RegisterSecret(ctx context.Context, secretType domain.SecretType, label string, value *domain.SecretHandle) (domain.SecretRef, error) {
+	if a.Secrets == nil {
+		return "", &domain.PublicError{Code: "secret_store_unavailable", Message: "비밀값 저장소를 사용할 수 없습니다.", Status: 503}
+	}
 	if len(value.Reveal()) == 0 {
 		return "", userErrf("secret value is empty")
 	}
@@ -376,7 +379,7 @@ func (a *App) RegisterSecret(ctx context.Context, secretType domain.SecretType, 
 		OwnerUserID: userIDFrom(ctx), Type: secretType, Provider: "local", Value: value, Label: label,
 	})
 	if err != nil {
-		a.audit(ctx, "secret_register", "", "error", err.Error())
+		a.audit(ctx, "secret_register", "", "error", providerDiagnostic(err))
 		return "", err
 	}
 	_ = a.Store.PutCredentialRef(ctx, domain.CredentialRef{
@@ -392,7 +395,7 @@ func (a *App) RegisterSecret(ctx context.Context, secretType domain.SecretType, 
 // restart (SEC-KEY-010, acceptance #12).
 func (a *App) RotateSecret(ctx context.Context, ref domain.SecretRef, value *domain.SecretHandle) error {
 	if err := a.Secrets.Rotate(ctx, ref, domain.RotateSecretRequest{Value: value}); err != nil {
-		a.audit(ctx, "secret_rotate", "secret:"+string(ref), "error", err.Error())
+		a.audit(ctx, "secret_rotate", "secret:"+string(ref), "error", providerDiagnostic(err))
 		return err
 	}
 	a.audit(ctx, "secret_rotate", "secret:"+string(ref), "ok", "")

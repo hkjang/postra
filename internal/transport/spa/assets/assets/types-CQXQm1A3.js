@@ -1,0 +1,1 @@
+function e(e){return(e??[]).map(e=>e.name?`${e.name} <${e.email}>`:e.email).join(`, `)}function t(e){return e?new Intl.DateTimeFormat(`ko-KR`,{month:`short`,day:`numeric`,hour:`2-digit`,minute:`2-digit`}).format(new Date(e*1e3)):`날짜 없음`}export{t as n,e as t};

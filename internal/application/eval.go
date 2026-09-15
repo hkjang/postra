@@ -59,7 +59,7 @@ func (a *App) EvaluatePrompt(ctx context.Context, analysisType string, cases []E
 		totalLatency += latency
 		cr := EvalCaseResult{MessageID: c.MessageID, Expected: c.Expected, LatencyMS: latency}
 		if err != nil {
-			cr.Error = err.Error()
+			cr.Error = providerDiagnostic(err)
 			res.Cases = append(res.Cases, cr)
 			continue
 		}

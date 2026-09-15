@@ -157,7 +157,7 @@ export function AccountDetailPage() {
     } catch (err) { setError(err); } finally { setBusy(false); }
   }
   return <div className="page stack">
-    <PageHeader title={account?.name || '메일 계정 설정'} description={account?.email} actions={<Link to="/accounts">계정 목록</Link>} />
+    <PageHeader title={account?.name || '메일 계정 설정'} description={account?.email} actions={<><Link to={`/accounts/${id}/preferences`}>동기화·서명·개인화</Link><Link to="/accounts">계정 목록</Link></>} />
     {!!error && <ErrorState error={error} retry={load} />}
     {!account ? !error && <Loading /> : <>
       <Panel><div className="row"><StateBadge status={account.status} /><Button variant="outline" disabled={busy} onClick={() => run('test')}>연결 테스트</Button><Button disabled={busy || account.status !== 'active' || !!job && ['queued', 'running'].includes(job.status)} onClick={() => run('sync')}>지금 메일 수집</Button></div></Panel>

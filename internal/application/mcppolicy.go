@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 
@@ -60,6 +61,27 @@ func parseLevel(s string) (accessLevel, bool) {
 // tool NOT listed here is treated as AccessAdmin (admin-only) — a fail-safe so
 // a newly-added, unclassified tool is never silently exposed to regular users.
 var toolAccess = map[string]accessLevel{
+	"mail_text_rewrite":            AccessWrite,
+	"mail_drafts_list":             AccessRead,
+	"mail_draft_delete":            AccessWrite,
+	"mail_events":                  AccessRead,
+	"mail_action_card_create":      AccessWrite,
+	"mail_draft_attachment_add":    AccessWrite,
+	"mail_draft_attachment_get":    AccessRead,
+	"mail_draft_attachment_remove": AccessWrite,
+	"mail_outbound_list":           AccessRead,
+	"job_list":                     AccessRead,
+	"mail_set_sla":                 AccessWrite,
+	"mail_templates":               AccessRead,
+	"mail_capabilities":            AccessRead,
+	"mail_identity":                AccessRead,
+	"mail_system_info":             AccessRead,
+	"mail_draft_get":               AccessRead,
+	"mail_render":                  AccessWrite,
+	"mail_signature_list":          AccessRead,
+	"mail_signature_get":           AccessRead,
+	"mail_signature_save":          AccessWrite,
+	"mail_signature_delete":        AccessWrite,
 	// ---- read (safe) ----
 	"mail_account_list":            AccessRead,
 	"mail_account_get":             AccessRead,
@@ -193,6 +215,27 @@ func contains(list []string, v string) bool {
 	return false
 }
 
+func ValidateMCPPolicySettings(raw string) error {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var policy MCPPolicy
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&policy); err != nil {
+		return &domain.PublicError{Code: "invalid_request", Message: "MCP 정책 JSON 구조가 올바르지 않습니다.", Status: 400}
+	}
+	if decoder.Decode(new(any)) != io.EOF {
+		return &domain.PublicError{Code: "invalid_request", Message: "MCP 정책은 하나의 JSON 객체여야 합니다.", Status: 400}
+	}
+	for _, level := range policy.RoleMaxLevel {
+		if _, valid := parseLevel(level); !valid {
+			return &domain.PublicError{Code: "invalid_request", Message: "MCP 역할 수준은 read, write, send, delete, admin 중 하나여야 합니다.", Status: 400}
+		}
+	}
+	return nil
+}
+
 // evaluateAccess is the full RBAC decision for (role, tool), layering the
 // optional policy over the built-in level model. Order: hard deny → role deny
 // → role allowlist → (built-in or overridden) level → escalation allowlist.
@@ -244,8 +287,29 @@ func (a *App) loadMCPPolicy(ctx context.Context) {
 	var pol *MCPPolicy
 	if raw != "" {
 		var p MCPPolicy
-		if json.Unmarshal([]byte(raw), &p) == nil {
+		if ValidateMCPPolicySettings(raw) == nil && json.Unmarshal([]byte(raw), &p) == nil {
+			canonicalize := func(tools []string) {
+				for i, tool := range tools {
+					tools[i] = CanonicalMCPTool(tool)
+				}
+			}
+			canonicalize(p.DenyTools)
+			canonicalize(p.AllowTools)
+			for _, tools := range p.RoleAllow {
+				canonicalize(tools)
+			}
+			for _, tools := range p.RoleDeny {
+				canonicalize(tools)
+			}
 			pol = &p
+		} else {
+			// Invalid stored policies must not silently restore broad access.
+			pol = &MCPPolicy{}
+			for name := range toolAccess {
+				if name != "mail_capabilities" && name != "mail_identity" && name != "mail_system_info" {
+					pol.DenyTools = append(pol.DenyTools, name)
+				}
+			}
 		}
 	}
 	a.mcpPolicy.mu.Lock()
@@ -264,6 +328,11 @@ func (a *App) currentMCPPolicy() *MCPPolicy {
 // is always allowed. Remote callers (personal MCP key, OIDC, or API token) are
 // checked against the role model. Denials are audited.
 func (a *App) CheckMCPToolPolicy(ctx context.Context, tool string) error {
+	tool = CanonicalMCPTool(tool)
+	if err := a.CheckMCPPermissionScopes(ctx, MCPToolScopes(tool)...); err != nil {
+		a.audit(ctx, "mcp_policy_denied", "tool:"+tool, "denied", "insufficient_scope")
+		return err
+	}
 	p, ok := PrincipalFrom(ctx)
 	if !ok || p.UserID == "" {
 		return nil // local/trusted stdio

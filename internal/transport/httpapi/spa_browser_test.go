@@ -22,7 +22,6 @@ import (
 	"postra/internal/platform/config"
 	"postra/internal/platform/crypto"
 	"postra/internal/transport/spa"
-	"postra/internal/transport/webui"
 )
 
 type spaBrowserSMTP struct{ sent atomic.Int32 }
@@ -61,17 +60,17 @@ type spaBrowserAI struct{}
 func (spaBrowserAI) Generate(_ context.Context, req domain.GenerationRequest) (domain.GenerationResult, error) {
 	result := `{"summary":"프로젝트 킥오프를 앞두고 회의 자료 검토와 참석 확인을 요청했습니다.","requests":["회의 자료 검토","참석 확인"],"dates":[],"confidence":0.96}`
 	switch req.Task {
-	case "draft_reply", "rewrite":
+	case "draft_reply", "compose", "rewrite":
 		result = `{"subject":"회의 자료 검토 회신","body":"안녕하세요. 공유해 주신 회의 자료를 확인했습니다. 검토 후 의견을 전달드리겠습니다."}`
 	case "triage":
 		result = `{"sender_intent":"회의 준비 및 자료 검토 요청","priority":"high","reply_required":true,"deadline":null,"business_risks":[],"recommended_next_action":"회의 자료를 검토하고 참석 여부를 회신하세요.","confidence":0.96}`
 	case "classify":
 		result = `{"category":"work","importance":"high","reason":"프로젝트 회의 준비 요청","confidence":0.96}`
-	case "question_answer":
+	case "question_answer", "qa":
 		result = `{"answer":"공유된 회의 자료를 검토하고 참석 여부를 회신하면 됩니다.","evidence_message_ids":["msg_spa_welcome"],"confidence":0.96}`
 	case "action_cards":
 		result = `{"cards":[{"type":"todo","title":"회의 자료 검토","detail":"공유된 회의 자료를 확인합니다.","due":null,"assignee":null,"confidence":0.95}]}`
-	case "daily_digest":
+	case "daily_digest", "digest":
 		result = `{"headline":"프로젝트 회의 준비와 보안 점검을 확인하세요.","needs_reply":[{"message_id":"msg_spa_welcome","who":"김민수","what":"회의 자료 검토와 참석 확인"}],"deadlines":[],"fyi":["지난주 업무 공유 완료"],"volume_note":"내 메일 3건"}`
 	case "smart_reply":
 		result = `{"suggestions":["공유해 주신 자료를 확인했습니다. 검토 후 의견을 전달드리겠습니다.","자료 검토 시 우선 확인할 항목을 알려 주시겠어요?","자료를 확인하고 참석 여부를 회신드리겠습니다."]}`
@@ -206,14 +205,14 @@ func TestSPABrowser(t *testing.T) {
 	}
 
 	mux := http.NewServeMux()
-	mux.Handle("/api/", New(app, "").Handler())
+	apiHandler := New(app, "").Handler()
+	mux.Handle("/api/", apiHandler)
+	mux.Handle("/auth/", apiHandler)
+	mux.Handle("/tracking/", apiHandler)
+	mux.Handle("/momento/", apiHandler)
 	appHandler := spa.Handler()
 	mux.Handle("/app", appHandler)
 	mux.Handle("/app/", appHandler)
-	uiHandler := webui.New(app, "").Handler()
-	mux.Handle("/ui/", uiHandler)
-	mux.Handle("/favicon.ico", uiHandler)
-	mux.Handle("/favicon.png", uiHandler)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	commandCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)

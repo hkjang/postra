@@ -18,9 +18,19 @@ type CreateDraftInput struct {
 	ReplyToMessageID string   `json:"reply_to_message_id,omitempty"`
 	To               []string `json:"to,omitempty"`
 	Cc               []string `json:"cc,omitempty"`
+	Bcc              []string `json:"bcc,omitempty"`
 	Subject          string   `json:"subject,omitempty"`
 	Body             string   `json:"body,omitempty"`
 	BodyHTML         string   `json:"body_html,omitempty"`
+	Format           string   `json:"format,omitempty"` // omitted preserves legacy bodies; auto | text | markdown | html
+	Template         string   `json:"template,omitempty"`
+	UseSignature     *bool    `json:"use_signature,omitempty"`
+	SignatureID      string   `json:"signature_id,omitempty"`
+	SmartFormat      bool     `json:"smart_format,omitempty"`
+	Intent           string   `json:"intent,omitempty"`
+	Tone             string   `json:"tone,omitempty"`
+	Length           string   `json:"length,omitempty"`
+	Language         string   `json:"language,omitempty"`
 	// Instructions, when set, asks the AI to write the draft body
 	// (the result is stored as an AI-authored version; sending still
 	// requires explicit user approval — §1 발송 원칙).
@@ -73,7 +83,7 @@ func (a *App) CreateDraft(ctx context.Context, in CreateDraftInput) (*DraftView,
 
 	v := domain.DraftVersion{Subject: in.Subject, BodyText: in.Body, Author: "user"}
 	if strings.TrimSpace(in.BodyHTML) != "" {
-		v.BodyHTML = mailhtml.Sanitize(in.BodyHTML)
+		v.BodyHTML = a.sanitizeMailHTML(in.BodyHTML)
 		v.BodyText = mailhtml.PlainText(v.BodyHTML)
 	}
 	// Machine-written text must not be recorded as the person's own. Only "ai"
@@ -85,6 +95,9 @@ func (a *App) CreateDraft(ctx context.Context, in CreateDraftInput) (*DraftView,
 		return nil, err
 	}
 	if v.Cc, err = parseAddressStrings(in.Cc); err != nil {
+		return nil, err
+	}
+	if v.Bcc, err = parseAddressStrings(in.Bcc); err != nil {
 		return nil, err
 	}
 
@@ -120,7 +133,11 @@ func (a *App) CreateDraft(ctx context.Context, in CreateDraftInput) (*DraftView,
 	}
 
 	if in.Instructions != "" {
-		gen, err := a.generateDraftBody(ctx, in.Instructions, original, originalBody)
+		instruction, err := a.composeInstruction(ctx, in.AccountID, in.Instructions, in.Intent, in.Tone, in.Length, in.Language)
+		if err != nil {
+			return nil, err
+		}
+		gen, err := a.generateDraftBody(ctx, instruction, original, originalBody)
 		if err != nil {
 			return nil, err
 		}
@@ -137,6 +154,27 @@ func (a *App) CreateDraft(ctx context.Context, in CreateDraftInput) (*DraftView,
 	} else if kind == domain.DraftForward && v.BodyText == "" {
 		v.BodyText = "\n\n---------- Forwarded message ----------\n" + originalBody
 	}
+	if renderRequested(in.Format, in.Template, in.SignatureID, in.Intent, in.Tone, in.Length, in.Language, in.UseSignature, in.SmartFormat) {
+		replyID := ""
+		if kind == domain.DraftReply || kind == domain.DraftReplyAll {
+			replyID = in.ReplyToMessageID
+		}
+		rendered, err := a.RenderMail(ctx, RenderMailInput{
+			ReplyToMessageID: replyID,
+			AccountID:        in.AccountID, Body: v.BodyText, BodyHTML: v.BodyHTML,
+			Format: in.Format, Template: in.Template, UseSignature: in.UseSignature,
+			SignatureID: in.SignatureID, SmartFormat: in.SmartFormat,
+			Intent: in.Intent, Tone: in.Tone, Length: in.Length, Language: in.Language,
+		})
+		if err != nil {
+			return nil, err
+		}
+		v.BodyText, v.BodyHTML = rendered.BodyText, rendered.BodyHTML
+		if in.SmartFormat {
+			v.Author = "ai"
+		}
+	}
+	v.BodyText, v.BodyHTML = a.enforceHTMLPolicy(v.BodyText, v.BodyHTML)
 
 	d := &domain.Draft{
 		ID: persistence.NewID("drf"), UserID: userID, AccountID: in.AccountID,
@@ -155,6 +193,9 @@ type generatedDraft struct {
 }
 
 func (a *App) generateDraftBody(ctx context.Context, instructions string, original *domain.Message, originalBody string) (*generatedDraft, error) {
+	if err := a.checkComposeMCPScopes(ctx, "mail.ai"); err != nil {
+		return nil, err
+	}
 	untrusted := ""
 	targetID := "new"
 	if original != nil {
@@ -177,13 +218,22 @@ func (a *App) generateDraftBody(ctx context.Context, instructions string, origin
 }
 
 type UpdateDraftInput struct {
-	DraftID  string   `json:"draft_id"`
-	Subject  *string  `json:"subject,omitempty"`
-	Body     *string  `json:"body,omitempty"`
-	BodyHTML *string  `json:"body_html,omitempty"`
-	To       []string `json:"to,omitempty"`
-	Cc       []string `json:"cc,omitempty"`
-	Bcc      []string `json:"bcc,omitempty"`
+	DraftID      string   `json:"draft_id"`
+	Subject      *string  `json:"subject,omitempty"`
+	Body         *string  `json:"body,omitempty"`
+	BodyHTML     *string  `json:"body_html,omitempty"`
+	To           []string `json:"to,omitempty"`
+	Cc           []string `json:"cc,omitempty"`
+	Bcc          []string `json:"bcc,omitempty"`
+	Format       string   `json:"format,omitempty"`
+	Template     string   `json:"template,omitempty"`
+	UseSignature *bool    `json:"use_signature,omitempty"`
+	SignatureID  string   `json:"signature_id,omitempty"`
+	SmartFormat  bool     `json:"smart_format,omitempty"`
+	Intent       string   `json:"intent,omitempty"`
+	Tone         string   `json:"tone,omitempty"`
+	Length       string   `json:"length,omitempty"`
+	Language     string   `json:"language,omitempty"`
 }
 
 // UpdateDraft records a user-authored version on top of the current one
@@ -209,7 +259,7 @@ func (a *App) UpdateDraft(ctx context.Context, in UpdateDraftInput) (*DraftView,
 		v.BodyHTML = ""
 	}
 	if in.BodyHTML != nil {
-		v.BodyHTML = mailhtml.Sanitize(*in.BodyHTML)
+		v.BodyHTML = a.sanitizeMailHTML(*in.BodyHTML)
 		if in.Body == nil || v.BodyHTML != "" || strings.TrimSpace(*in.BodyHTML) != "" {
 			v.BodyText = mailhtml.PlainText(v.BodyHTML)
 		}
@@ -229,6 +279,27 @@ func (a *App) UpdateDraft(ctx context.Context, in UpdateDraftInput) (*DraftView,
 			return nil, err
 		}
 	}
+	if renderRequested(in.Format, in.Template, in.SignatureID, in.Intent, in.Tone, in.Length, in.Language, in.UseSignature, in.SmartFormat) {
+		replyID := ""
+		if d.Kind == domain.DraftReply || d.Kind == domain.DraftReplyAll {
+			replyID = d.ReplyToMessageID
+		}
+		rendered, err := a.RenderMail(ctx, RenderMailInput{
+			ReplyToMessageID: replyID,
+			AccountID:        d.AccountID, Body: v.BodyText, BodyHTML: v.BodyHTML,
+			Format: in.Format, Template: in.Template, UseSignature: in.UseSignature,
+			SignatureID: in.SignatureID, SmartFormat: in.SmartFormat,
+			Intent: in.Intent, Tone: in.Tone, Length: in.Length, Language: in.Language,
+		})
+		if err != nil {
+			return nil, err
+		}
+		v.BodyText, v.BodyHTML = rendered.BodyText, rendered.BodyHTML
+		if in.SmartFormat {
+			v.Author = "ai"
+		}
+	}
+	v.BodyText, v.BodyHTML = a.enforceHTMLPolicy(v.BodyText, v.BodyHTML)
 	newVer, err := a.Store.AddDraftVersion(ctx, userID, d.ID, &v)
 	if err != nil {
 		return nil, err
@@ -240,6 +311,9 @@ func (a *App) UpdateDraft(ctx context.Context, in UpdateDraftInput) (*DraftView,
 
 // RewriteDraft produces an AI-restyled version (mail_draft_rewrite).
 func (a *App) RewriteDraft(ctx context.Context, draftID, style string) (*DraftView, error) {
+	if err := a.checkComposeMCPScopes(ctx, "mail.ai"); err != nil {
+		return nil, err
+	}
 	userID := userIDFrom(ctx)
 	d, cur, err := a.Store.GetDraft(ctx, userID, draftID)
 	if err != nil {
@@ -249,7 +323,11 @@ func (a *App) RewriteDraft(ctx context.Context, draftID, style string) (*DraftVi
 		return nil, userErrf("draft %s is %s and cannot be edited", d.ID, d.Status)
 	}
 	untrusted := "Subject: " + cur.Subject + "\n\n" + cur.BodyText
-	an, err := a.runAnalysis(ctx, "rewrite", "draft", draftID, a.withWritingGuide("Rewrite style: "+style), untrusted)
+	instruction, err := a.composeInstruction(ctx, d.AccountID, "Rewrite style: "+style, "", "", "", "")
+	if err != nil {
+		return nil, err
+	}
+	an, err := a.runAnalysis(ctx, "rewrite", "draft", draftID, a.withWritingGuide(instruction), untrusted)
 	if err != nil {
 		return nil, err
 	}
@@ -302,7 +380,7 @@ func (a *App) DiscardDraft(ctx context.Context, draftID string) error {
 // instruction so generated/rewritten mail follows company tone and policy
 // (§AI 조직 작성 가이드).
 func (a *App) withWritingGuide(instruction string) string {
-	guide := strings.TrimSpace(a.Cfg.Compose.WritingGuide)
+	guide := strings.TrimSpace(a.EffectiveConfig().Compose.WritingGuide)
 	if guide == "" {
 		return instruction
 	}
@@ -312,11 +390,52 @@ func (a *App) withWritingGuide(instruction string) string {
 	return instruction + "\n\nAlso follow this organization writing guide:\n" + guide
 }
 
+// All AI compose entry points use the same effective, account-owned preferences.
+// Explicit request options may replace personal defaults, never forced policy.
+func (a *App) composeInstruction(ctx context.Context, accountID, instruction, intent, tone, length, language string) (string, error) {
+	view, err := a.PersonalSettings(ctx, accountID)
+	if err != nil {
+		return "", err
+	}
+	return writingInstruction(view, instruction, intent, tone, length, language)
+}
+
+func writingInstruction(view SettingsView, instruction, intent, tone, length, language string) (string, error) {
+	fields := map[string]EffectiveSetting{}
+	for _, field := range view.Fields {
+		fields[field.Key] = field
+	}
+	resolve := func(explicit, key, fallback string) string {
+		field := fields[key]
+		if explicit != "" && !field.Locked {
+			return explicit
+		}
+		if field.Value != "" {
+			return field.Value
+		}
+		return fallback
+	}
+	for _, option := range []struct{ name, value string }{
+		{"Intent", intent}, {"Tone", resolve(tone, "compose.tone", "professional")},
+		{"Length", resolve(length, "compose.reply_length", "short")},
+		{"Language", resolve(language, "compose.language", "ko")},
+		{"Writing style", fields["compose.writing_style"].Value},
+	} {
+		if len(option.value) > 2000 {
+			return "", userErrf("%s option is too long", option.name)
+		}
+		if option.value != "" {
+			instruction += "\n" + option.name + ": " + option.value
+		}
+	}
+	return instruction, nil
+}
+
 // checkWritingPolicy flags configured banned phrases present in outbound text.
 func (a *App) checkWritingPolicy(subject, body string) []string {
 	text := strings.ToLower(subject + "\n" + body)
 	var hits []string
-	for _, p := range a.Cfg.Compose.BannedPhrases {
+	for _, p := range a.EffectiveConfig().Compose.BannedPhrases {
 		p = strings.TrimSpace(p)
 		if p != "" && strings.Contains(text, strings.ToLower(p)) {
 			hits = append(hits, p)

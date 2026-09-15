@@ -135,7 +135,7 @@ func TestBrowserSessionAnonymousAndAuthDisabled(t *testing.T) {
 		if enabled {
 			want = `"authenticated":false`
 		}
-		if rec.Code != 200 || !strings.Contains(rec.Body.String(), want) || !strings.Contains(rec.Body.String(), "%2Fapp%2F") {
+		if rec.Code != 200 || !strings.Contains(rec.Body.String(), want) || !strings.Contains(rec.Body.String(), "/app/login") {
 			t.Fatalf("anonymous/dev bridge failed: %d %s", rec.Code, rec.Body.String())
 		}
 		if !enabled {

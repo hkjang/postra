@@ -48,7 +48,7 @@ type oidcRuntime struct {
 }
 
 // OIDCDefaultReturnTo is where a login lands when no safe return_to was given.
-const OIDCDefaultReturnTo = "/ui/"
+const OIDCDefaultReturnTo = "/app/"
 
 // SafeReturnTo accepts only in-app paths: it must start with "/" and must not
 // start with "//" (a scheme-relative URL), so the login flow can never be used
@@ -95,15 +95,29 @@ func (a *App) oidcRuntime(ctx context.Context) (oidcRuntime, error) {
 		AdminGroup:    strings.TrimSpace(values[SettingOIDCAdminGroup]),
 		AutoProvision: boolSetting(values, SettingOIDCAutoProvision, a.Cfg.Auth.OIDCAutoProvision),
 		AutoLogin:     boolSetting(values, SettingOIDCAutoLogin, a.Cfg.Auth.OIDCAutoLogin),
-		ClientSecret:  a.Cfg.Auth.OIDCClientSecret,
 	}
-	if rt.ClientSecret == "" && rt.SecretRef != "" {
+	if rt.SecretRef != "" {
+		if a.Secrets == nil {
+			return rt, errors.New("OIDC secret store unavailable")
+		}
 		handle, err := a.Secrets.Acquire(ctx, domain.SecretRef(rt.SecretRef), domain.PurposeOIDC)
 		if err != nil {
 			return rt, err
 		}
 		rt.ClientSecret = string(handle.Reveal())
 		handle.Zero()
+	} else {
+		// A persisted empty reference is an explicit administrator clear,
+		// not permission to resurrect a deployment's old plaintext secret.
+		// Read persisted presence directly so external replica updates apply
+		// consistently even before the background settings cache refreshes.
+		stored, err := a.Store.GetSettings(ctx)
+		if err != nil {
+			return rt, err
+		}
+		if _, explicit := stored[SettingOIDCSecretRef]; !explicit {
+			rt.ClientSecret = a.Cfg.Auth.OIDCClientSecret
+		}
 	}
 	return rt, nil
 }
@@ -150,7 +164,7 @@ func (a *App) VerifyOIDCFlow(value string) (OIDCFlow, error) {
 const OIDCErrorNoteTTL = time.Minute
 
 // oidcErrorNote is the one-shot note the callback leaves for the login page
-// when a sign-in fails: the reason is shown at /ui/login?sso=error instead of
+// when a sign-in fails: the reason is shown at /app/login?sso=error instead of
 // on the callback address, where a refresh would resubmit the spent code.
 type oidcErrorNote struct {
 	Message   string `json:"message"`
@@ -233,7 +247,7 @@ func (a *App) BeginOIDC(ctx context.Context, opts OIDCStartOptions) (string, OID
 	}
 	provider, err := oidc.NewProvider(ctx, rt.Issuer)
 	if err != nil {
-		return "", OIDCFlow{}, fmt.Errorf("OIDC discovery failed: %w", err)
+		return "", OIDCFlow{}, userErrf("OIDC Discovery 실패: Issuer URL, 인증 서버 연결과 TLS 인증서를 확인하세요")
 	}
 	// A silent attempt is only ever what the administrator allowed. Anyone can
 	// append ?prompt=none to the start URL; without auto_login it is quietly
@@ -336,25 +350,16 @@ func (a *App) CompleteOIDC(ctx context.Context, code string, flow OIDCFlow) (*do
 	}
 	provider, err := oidc.NewProvider(ctx, rt.Issuer)
 	if err != nil {
-		return nil, fmt.Errorf("OIDC discovery failed: %w", err)
+		return nil, userErrf("OIDC Discovery 실패: Issuer URL, 인증 서버 연결과 TLS 인증서를 확인하세요")
 	}
 	cfg := oauth2.Config{ClientID: rt.ClientID, ClientSecret: rt.ClientSecret, Endpoint: provider.Endpoint(),
 		RedirectURL: rt.RedirectURL, Scopes: []string{oidc.ScopeOpenID, "profile", "email", "groups"}}
 	tok, err := cfg.Exchange(ctx, code, oauth2.VerifierOption(flow.CodeVerifier))
 	if err != nil {
-		// Surface the token endpoint's real reason. Keycloak returns
-		// {"error":"invalid_request"/"invalid_client"/..., "error_description":"..."}
-		// which oauth2 exposes as *oauth2.RetrieveError — the opaque generic
-		// message hid exactly the detail needed to fix redirect_uri / client
-		// secret / PKCE problems.
-		detail := err.Error()
-		var re *oauth2.RetrieveError
-		if errors.As(err, &re) {
-			detail = fmt.Sprintf("%s: %s", re.ErrorCode, re.ErrorDescription)
-			if re.ErrorCode == "" {
-				detail = strings.TrimSpace(string(re.Body))
-			}
-		}
+		// Provider descriptions, raw bodies and even unknown error codes may
+		// echo a client secret, authorization code or token. Only known codes
+		// and our own actionable guidance can cross the diagnostic boundary.
+		detail := oidcExchangeGuidance(err)
 		slog.Warn("OIDC code exchange failed", "detail", detail, "redirect_url", rt.RedirectURL, "client_id", rt.ClientID)
 		a.recordIncident(domain.SeverityError, "oidc", "OIDC 토큰 교환 실패", detail)
 		return nil, userErrf("OIDC 코드 교환 실패: %s", detail)
@@ -365,9 +370,10 @@ func (a *App) CompleteOIDC(ctx context.Context, code string, flow OIDCFlow) (*do
 	}
 	idToken, err := provider.Verifier(&oidc.Config{ClientID: rt.ClientID}).Verify(ctx, rawIDToken)
 	if err != nil {
-		slog.Warn("OIDC ID token verification failed", "detail", err.Error(), "client_id", rt.ClientID)
-		a.recordIncident(domain.SeverityError, "oidc", "OIDC ID 토큰 검증 실패", err.Error())
-		return nil, userErrf("OIDC ID 토큰 검증 실패: %s", err.Error())
+		const detail = "Issuer, Client ID(audience), 서명/JWKS, 서버 시간과 토큰 만료를 확인한 뒤 다시 로그인하세요"
+		slog.Warn("OIDC ID token verification failed", "detail", detail, "client_id", rt.ClientID)
+		a.recordIncident(domain.SeverityError, "oidc", "OIDC ID 토큰 검증 실패", detail)
+		return nil, userErrf("OIDC ID 토큰 검증 실패: %s", detail)
 	}
 	var claims oidcClaims
 	if err := idToken.Claims(&claims); err != nil || claims.Subject == "" {
@@ -443,6 +449,42 @@ func (a *App) CompleteOIDC(ctx context.Context, code string, flow OIDCFlow) (*do
 		a.tryAutoProvisionOIDCMail(ctx, u)
 	}
 	return u, nil
+}
+
+func oidcExchangeGuidance(err error) string {
+	var endpointError *oauth2.RetrieveError
+	if errors.As(err, &endpointError) {
+		return OIDCProviderErrorGuidance(endpointError.ErrorCode)
+	}
+	return OIDCProviderErrorGuidance("")
+}
+
+// OIDCProviderErrorGuidance is shared with the authorization callback. Never
+// pass through provider descriptions, unknown codes, URLs or token contents.
+func OIDCProviderErrorGuidance(code string) string {
+	guidance := ""
+	switch code {
+	case "invalid_client":
+		guidance = "Client ID, 별도 저장된 Client Secret과 인증 서버의 클라이언트 인증 방식을 확인하세요"
+	case "invalid_grant":
+		guidance = "인증 코드가 만료되었거나 이미 사용되었을 수 있습니다. 다시 로그인하고 Callback URL과 PKCE 설정을 확인하세요"
+	case "invalid_request":
+		guidance = "Callback URL, PKCE와 인증 서버의 클라이언트 요청 설정을 확인하세요"
+	case "invalid_scope":
+		guidance = "openid, profile, email, groups 범위가 해당 클라이언트에 허용되는지 확인하세요"
+	case "unauthorized_client", "unsupported_grant_type", "unsupported_response_type":
+		guidance = "클라이언트의 Authorization Code 흐름과 토큰 발급 권한을 확인하세요"
+	case "access_denied":
+		guidance = "사용자와 클라이언트의 로그인 권한을 확인하세요"
+	case "login_required", "interaction_required", "consent_required", "account_selection_required":
+		guidance = "인증 서버에서 로그인·계정 선택·동의를 완료한 뒤 다시 시도하세요"
+	case "server_error", "temporarily_unavailable":
+		guidance = "인증 서버 상태를 확인한 뒤 잠시 후 다시 로그인하세요"
+	}
+	if guidance != "" {
+		return code + ": " + guidance
+	}
+	return "인증 서버 연결, Client 설정과 Callback URL을 확인한 뒤 다시 로그인하세요"
 }
 
 // linkExistingLocalUser adopts a pre-existing LOCAL account for an OIDC login

@@ -48,7 +48,22 @@ export function claimSilentSSO(returnTo: string, search: string): string | undef
     // loop-prevention marker is actually readable after writing it.
     if (storage.getItem(attemptedKey) !== 'true') return
   } catch { return }
-  return '/ui/auth/oidc/start?prompt=none&return_to=' + encodeURIComponent(returnTo)
+  return '/auth/oidc/start?prompt=none&return_to=' + encodeURIComponent(returnTo)
+}
+
+// Keep deep links within the SPA and avoid returning to an authentication
+// screen after a successful login. Never use a supplied absolute URL.
+export function authReturnTo(pathname: string, search: string): string {
+  const requested = ['/login', '/setup', '/error'].includes(pathname)
+    ? new URLSearchParams(search).get('return_to') || '/app/'
+    : '/app' + pathname + search
+  if (!/^\/app(?:\/|\?|$)/.test(requested) || /[\\\u0000-\u001f\u007f]/.test(requested)) return '/app/'
+  try {
+    const target = new URL(requested, window.location.origin)
+    if (target.origin !== window.location.origin || !/^\/app(?:\/|$)/.test(target.pathname) ||
+      ['/app/login', '/app/setup', '/app/error'].includes(target.pathname)) return '/app/'
+    return target.pathname + target.search + target.hash
+  } catch { return '/app/' }
 }
 
 // The marker contains no identity or credential. Other tabs must remember a

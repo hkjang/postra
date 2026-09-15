@@ -44,7 +44,6 @@ import (
 	"postra/internal/transport/httpapi"
 	"postra/internal/transport/mcpserver"
 	"postra/internal/transport/spa"
-	"postra/internal/transport/webui"
 )
 
 func main() {
@@ -152,6 +151,7 @@ func loadApp(configPath string) (*application.App, config.Config, error) {
 		pop3.Dialer{}, adsmtp.Client{}, ai.New(cfg.AI, secrets))
 	if app != nil {
 		app.IMAP = imap.Dialer{} // inbound adapter selected per-account by protocol
+		cfg = app.EffectiveConfig()
 	}
 	return app, cfg, err
 }
@@ -573,19 +573,20 @@ func serve(configPath string) error {
 	// REST, Web UI, and Streamable HTTP MCP share the primary listener. A
 	// separate MCPHTTPAddr remains optional for existing deployments.
 	root := http.NewServeMux()
-	root.Handle("/", httpapi.New(app, cfg.APIToken).Handler())
-	root.Handle("/mcp", mcpserver.HTTPHandler(app, cfg.APIToken))
+	apiHandler := httpapi.New(app, cfg.APIToken).Handler()
+	registerAPITransports(root, apiHandler)
+	mcpEndpoint := app.Setting("mcp.endpoint")
+	if mcpEndpoint == "" {
+		mcpEndpoint = "/mcp"
+	}
+	root.Handle(mcpEndpoint, mcpserver.HTTPHandler(app, cfg.APIToken))
 	if cfg.WebUIEnabled {
+		registerBrowserRedirects(root)
 		appHandler := spa.Handler()
 		root.Handle("/app", appHandler)
 		root.Handle("/app/", appHandler)
-		uiHandler := webui.New(app, cfg.APIToken).Handler()
-		root.Handle("/ui/", uiHandler)
-		root.Handle("/favicon.ico", uiHandler)
-		root.Handle("/favicon.png", uiHandler)
-		root.Handle("/logo.png", uiHandler)
-		root.Handle(tracking.ProxyPath+"/", uiHandler) // same-origin Momento proxy; 404 unless enabled
-		slog.Info("web UI enabled", "path", "/app/", "legacy", "/ui/")
+		root.Handle(tracking.ProxyPath+"/", apiHandler) // anonymous, isolated tracking proxy; no credentials forwarded
+		slog.Info("web UI enabled", "path", "/app/")
 	}
 	restSrv := &http.Server{
 		Addr:              cfg.HTTPAddr,
@@ -594,7 +595,7 @@ func serve(configPath string) error {
 	}
 	errCh := make(chan error, 2)
 	go func() {
-		slog.Info("HTTP listening", "addr", cfg.HTTPAddr, "rest", "/api", "mcp", "/mcp", "ui", "/ui/")
+		slog.Info("HTTP listening", "addr", cfg.HTTPAddr, "rest", "/api", "mcp", mcpEndpoint, "ui", "/app/")
 		errCh <- restSrv.ListenAndServe()
 	}()
 

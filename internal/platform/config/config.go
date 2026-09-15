@@ -8,10 +8,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 )
 
 type Config struct {
+	// Sources records bootstrap provenance, never configuration values or secrets.
+	Sources map[string]string `json:"-"`
 	// DataDir holds the SQLite DB, object store, and local secret store.
 	DataDir string `json:"data_dir"`
 
@@ -54,8 +55,8 @@ type Config struct {
 	// remove the endpoint entirely. Restrict exposure via HTTPAddr binding.
 	MetricsEnabled bool `json:"metrics_enabled"`
 
-	// WebUIEnabled serves the minimal server-rendered web UI (search, draft
-	// review, send approval) under /ui on the REST bind address. Default true.
+	// WebUIEnabled serves the official embedded React workspace under /app.
+	// Default true; changing it takes effect on the next process start.
 	// When APIToken is set the UI requires a cookie login with that token.
 	WebUIEnabled bool `json:"web_ui_enabled"`
 
@@ -152,6 +153,9 @@ type AIConfig struct {
 	APIKeyRef       string            `json:"api_key_ref"`
 	TimeoutSec      int               `json:"timeout_sec"`
 	MaxTokens       int               `json:"max_tokens"`
+	ContextLength   int               `json:"context_length"`
+	Temperature     float64           `json:"temperature"`
+	DisabledModels  []string          `json:"disabled_models,omitempty"`
 	AllowExternal   bool              `json:"allow_external"`
 	MaskExternalPII bool              `json:"mask_external_pii"`
 	PromptVersions  map[string]string `json:"prompt_versions,omitempty"`
@@ -162,6 +166,7 @@ type AIConfig struct {
 	CostPer1MInputTokens  float64 `json:"cost_per_1m_input_tokens"`
 	CostPer1MOutputTokens float64 `json:"cost_per_1m_output_tokens"`
 	ExtraHeaders          string  `json:"extra_headers"`
+	ExtraHeadersRef       string  `json:"extra_headers_ref,omitempty"`
 	// TaskModels routes specific AI tasks to dedicated models/endpoints. Keys
 	// are task names (summarize, classify, phishing, action_items, entities,
 	// thread_summary, question_answer, draft_reply, rewrite). A task with no
@@ -261,6 +266,8 @@ func Default() Config {
 			Model:           "llama3.1",
 			TimeoutSec:      120,
 			MaxTokens:       2048,
+			ContextLength:   32768,
+			Temperature:     0.2,
 			MaskExternalPII: true,
 		},
 		Sync: SyncConfig{
@@ -307,6 +314,7 @@ func Load(path string) (Config, error) {
 		if err := json.Unmarshal(b, &cfg); err != nil {
 			return cfg, fmt.Errorf("config %s: %w", path, err)
 		}
+		recordFileSources(&cfg, b)
 	} else if !os.IsNotExist(err) {
 		return cfg, err
 	}
@@ -318,43 +326,7 @@ func Load(path string) (Config, error) {
 }
 
 func applyEnv(cfg *Config) {
-	set := func(key string, dst *string) {
-		if v := os.Getenv(key); v != "" {
-			*dst = v
-		}
-	}
-	setBool := func(key string, dst *bool) {
-		if v := os.Getenv(key); v != "" {
-			b, err := strconv.ParseBool(v)
-			if err == nil {
-				*dst = b
-			}
-		}
-	}
-	set("POSTRA_DATA_DIR", &cfg.DataDir)
-	set("POSTRA_STORAGE_DRIVER", &cfg.StorageDriver)
-	set("POSTRA_POSTGRES_DSN", &cfg.PostgresDSN)
-	set("POSTRA_HTTP_ADDR", &cfg.HTTPAddr)
-	set("POSTRA_MCP_HTTP_ADDR", &cfg.MCPHTTPAddr)
-	set("POSTRA_API_TOKEN", &cfg.APIToken)
-	setBool("POSTRA_WORKER_ENABLED", &cfg.WorkerEnabled)
-	setBool("POSTRA_TELEMETRY_ENABLED", &cfg.TelemetryEnabled)
-	setBool("POSTRA_ALLOW_INSECURE_MAIL", &cfg.AllowInsecureMail)
-	setBool("POSTRA_ALLOW_PRIVATE_HOSTS", &cfg.AllowPrivateHosts)
-	set("POSTRA_AI_BASE_URL", &cfg.AI.BaseURL)
-	set("POSTRA_AI_MODEL", &cfg.AI.Model)
-	set("POSTRA_AI_API_KEY_REF", &cfg.AI.APIKeyRef)
-	setBool("POSTRA_AI_ALLOW_EXTERNAL", &cfg.AI.AllowExternal)
-	setBool("POSTRA_AUTH_ENABLED", &cfg.Auth.Enabled)
-	set("POSTRA_BOOTSTRAP_ADMIN", &cfg.Auth.BootstrapAdmin)
-	set("POSTRA_BOOTSTRAP_ADMIN_PASSWORD", &cfg.Auth.BootstrapPassword)
-	set("POSTRA_OIDC_ISSUER", &cfg.Auth.OIDCIssuer)
-	set("POSTRA_OIDC_CLIENT_ID", &cfg.Auth.OIDCClientID)
-	set("POSTRA_OIDC_CLIENT_SECRET", &cfg.Auth.OIDCClientSecret)
-	set("POSTRA_OIDC_REDIRECT_URL", &cfg.Auth.OIDCRedirectURL)
-	setBool("POSTRA_OIDC_AUTO_PROVISION", &cfg.Auth.OIDCAutoProvision)
-	set("POSTRA_OIDC_ADMIN_GROUP", &cfg.Auth.OIDCAdminGroup)
-	setBool("POSTRA_OIDC_AUTO_LOGIN", &cfg.Auth.OIDCAutoLogin)
+	applyBoundEnvironment(cfg)
 }
 
 // Save writes the config to path with restrictive permissions.

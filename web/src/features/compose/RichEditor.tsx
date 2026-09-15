@@ -6,19 +6,23 @@ import { TextStyle } from '@tiptap/extension-text-style'
 import Color from '@tiptap/extension-color'
 import FontFamily from '@tiptap/extension-font-family'
 import { Table, TableCell, TableHeader, TableRow } from '@tiptap/extension-table'
-import { AlignCenter, AlignLeft, Bold, Italic, Link2, List, ListOrdered, Quote, Redo2, RemoveFormatting, Table2, Underline, Undo2 } from 'lucide-react'
+import { AlignCenter, AlignLeft, Bold, Italic, Link2, List, ListOrdered, Quote, Redo2, RemoveFormatting, Sparkles, Table2, Underline, Undo2 } from 'lucide-react'
 import { Button, Input } from '@/components/ui'
 import { safeLink } from './utils'
+import { MailContainer, MailStyles, MailImage } from './MailExtensions'
 
-export function RichEditor({ value, onChange, disabled }: { value: string; onChange: (html: string, text: string) => void; disabled?: boolean }) {
+export function RichEditor({ value, onChange, disabled, onRewriteSelection }: { value: string; onChange: (html: string, text: string) => void; disabled?: boolean; onRewriteSelection?: (text: string) => Promise<string> }) {
   const [linkOpen, setLinkOpen] = useState(false)
   const [link, setLink] = useState('')
   const [linkError, setLinkError] = useState('')
+  const [suggestion, setSuggestion] = useState<{ from: number; to: number; before: string; after: string }>()
+  const [rewriteError, setRewriteError] = useState('')
   const editor = useEditor({
     // TipTap 3 defaults to no transaction-driven React rerenders. Selection
     // changes must still refresh pressed marks and the contextual table tools.
     shouldRerenderOnTransaction: true,
     extensions: [
+      MailContainer, MailStyles, MailImage,
       StarterKit.configure({
         link: { openOnClick: false, protocols: ['http', 'https', 'mailto'], HTMLAttributes: { rel: 'noopener noreferrer nofollow', style: 'color: #3157d5; text-decoration: underline' }, isAllowedUri: url => safeLink(url) },
         paragraph: { HTMLAttributes: { style: 'font-family: Arial, sans-serif; line-height: 1.7; margin: 0 0 12px' } },
@@ -59,6 +63,21 @@ export function RichEditor({ value, onChange, disabled }: { value: string; onCha
     editor?.chain().focus().extendMarkRange('link').setLink({ href: url }).run()
     setLinkOpen(false); setLinkError('')
   }
+  async function rewriteSelection() {
+    if (!editor || !onRewriteSelection || editor.state.selection.empty) return
+    const { from, to } = editor.state.selection
+    const before = editor.state.doc.textBetween(from, to, '\n')
+    setRewriteError(''); setSuggestion(undefined)
+    try { const after = await onRewriteSelection(before); setSuggestion({ from, to, before, after }) }
+    catch (error) { setRewriteError(error instanceof Error ? error.message : '선택 영역을 다듬지 못했습니다.') }
+  }
+  function applySuggestion() {
+    if (!suggestion) return
+    if (editor.state.doc.textBetween(suggestion.from, suggestion.to, '\n') !== suggestion.before) { setRewriteError('선택한 원문이 변경되었습니다. 다시 선택해 주세요.'); setSuggestion(undefined); return }
+    // Insert a text node, never provider-generated markup.
+    editor.chain().focus().insertContentAt({ from: suggestion.from, to: suggestion.to }, { type: 'text', text: suggestion.after }).run()
+    setSuggestion(undefined)
+  }
   return <div className="rich-editor">
     <div className="compose-toolbar" role="toolbar" aria-label="메일 서식 도구">
       <select aria-label="문단 서식" disabled={disabled} value={editor.isActive('heading', { level: 2 }) ? 'h2' : editor.isActive('heading', { level: 3 }) ? 'h3' : 'p'} onChange={event => event.target.value === 'p' ? editor.chain().focus().setParagraph().run() : editor.chain().focus().toggleHeading({ level: event.target.value === 'h2' ? 2 : 3 }).run()}><option value="p">본문</option><option value="h2">큰 제목</option><option value="h3">작은 제목</option></select>
@@ -70,9 +89,12 @@ export function RichEditor({ value, onChange, disabled }: { value: string; onCha
       <Button size="icon" variant="ghost" disabled={disabled} aria-label="서식 지우기" title="서식 지우기" onClick={() => editor.chain().focus().unsetAllMarks().clearNodes().run()}><RemoveFormatting size={16} /></Button>
       <Button size="icon" variant="ghost" disabled={disabled || !editor.can().undo()} aria-label="실행 취소" title="실행 취소" onClick={() => editor.chain().focus().undo().run()}><Undo2 size={16} /></Button>
       <Button size="icon" variant="ghost" disabled={disabled || !editor.can().redo()} aria-label="다시 실행" title="다시 실행" onClick={() => editor.chain().focus().redo().run()}><Redo2 size={16} /></Button>
+      {onRewriteSelection && <Button size="sm" variant="ghost" disabled={disabled || editor.state.selection.empty} onClick={rewriteSelection}><Sparkles size={15} /> 선택 영역 다듬기</Button>}
     </div>
     {linkOpen && <div className="compose-link-form"><Input aria-label="링크 주소" value={link} placeholder="https:// 또는 mailto:" onChange={event => setLink(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); addLink() } }} /><Button size="sm" onClick={addLink}>적용</Button><Button size="sm" variant="ghost" onClick={() => setLinkOpen(false)}>취소</Button>{linkError && <p role="alert">{linkError}</p>}</div>}
     <EditorContent editor={editor} />
+    {rewriteError && <p role="alert" className="preview-warning">{rewriteError}</p>}
+    {suggestion && <section className="compose-selection-result" aria-label="선택 영역 AI 제안"><h3>선택한 문장 다듬기</h3><p className="muted">선택하지 않은 본문은 변경하지 않습니다.</p><pre>{suggestion.after}</pre><div className="row"><Button size="sm" disabled={disabled} onClick={applySuggestion}>선택 영역에 적용</Button><Button size="sm" variant="ghost" onClick={() => setSuggestion(undefined)}>취소</Button></div></section>}
     {editor.isActive('table') && <div className="compose-table-tools"><Button variant="ghost" size="sm" disabled={disabled} onClick={() => editor.chain().focus().addRowAfter().run()}>행 추가</Button><Button variant="ghost" size="sm" disabled={disabled} onClick={() => editor.chain().focus().addColumnAfter().run()}>열 추가</Button><Button variant="ghost" size="sm" disabled={disabled} onClick={() => editor.chain().focus().deleteTable().run()}>표 삭제</Button></div>}
   </div>
 }

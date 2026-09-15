@@ -131,6 +131,35 @@ jobs:
           path: coverage.out
           if-no-files-found: warn
 
+  postgres-integration:
+    name: PostgreSQL · restart · isolation · approval
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        # The same pgvector image used by the local storage-contract checks.
+        image: pgvector/pgvector@sha256:cf134a767f474095eeba57e0117be8e568e011a63f33fbf252f14c9b760f8e6f
+        env:
+          POSTGRES_USER: postra_test
+          POSTGRES_PASSWORD: test-only-ci-password
+          POSTGRES_DB: postra_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postra_test -d postra_test"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      POSTRA_TEST_PG: postgres://postra_test:test-only-ci-password@127.0.0.1:5432/postra_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+      - name: Exercise real PostgreSQL persistence and atomic settings
+        run: go test -race -count=1 ./internal/adapters/pgstore
+      - name: Reopen encrypted application data and verify immutable approval
+        run: go test -race -count=1 ./internal/application -run '^TestStorageConvergenceRestartAndImmutableApproval$'
+
   govulncheck:
     name: govulncheck
     runs-on: ubuntu-latest

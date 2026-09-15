@@ -34,6 +34,7 @@ type Message struct {
 	CreatedAt    int64    `json:"created_at"`
 	IsArchived   bool     `json:"is_archived,omitempty"`
 	IsImportant  bool     `json:"is_important,omitempty"`
+	IsRead       bool     `json:"is_read"` // local per-owner state; never changes server mailbox flags
 	SnoozedUntil int64    `json:"snoozed_until,omitempty"`
 	Labels       []string `json:"labels,omitempty"`
 	// LegalHold, when set, blocks local deletion of the message for compliance
@@ -64,8 +65,13 @@ type MessageBody struct {
 	TextBody  string `json:"text_body"`
 	// HTMLSanitized is stripped of scripts, event handlers, and external
 	// resources (MIME-008/009); the untouched original stays in RawURI.
-	HTMLSanitized string `json:"html_sanitized,omitempty"`
-	Charset       string `json:"charset,omitempty"`
+	HTMLSanitized      string `json:"html_sanitized,omitempty"`
+	ExternalImages     int    `json:"external_images,omitempty"`
+	ImagesAllowed      bool   `json:"images_allowed,omitempty"`
+	ImagePolicy        string `json:"image_policy,omitempty"`
+	ImageSenderTrusted bool   `json:"image_sender_trusted,omitempty"`
+	ImageDomainTrusted bool   `json:"image_domain_trusted,omitempty"`
+	Charset            string `json:"charset,omitempty"`
 	// Unavailable is set when the stored body could not be decoded/decrypted
 	// (e.g. the at-rest key changed on restart). The message is shown with
 	// UnavailableReason instead of a silent blank, and can be recovered by a
@@ -151,9 +157,11 @@ type SearchQuery struct {
 	Label         string `json:"label,omitempty"`
 	IsImportant   *bool  `json:"is_important,omitempty"`
 	IsArchived    *bool  `json:"is_archived,omitempty"`
+	IsRead        *bool  `json:"is_read,omitempty"`
 }
 
 type SearchResult struct {
-	Messages   []Message `json:"messages"`
-	NextCursor string    `json:"next_cursor,omitempty"`
+	Messages   []Message         `json:"messages"`
+	NextCursor string            `json:"next_cursor,omitempty"`
+	Snippets   map[string]string `json:"snippets,omitempty"`
 }

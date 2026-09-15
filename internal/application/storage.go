@@ -46,6 +46,7 @@ type Storage interface {
 	GetMCPKeyByHash(ctx context.Context, keyHash string) (*domain.MCPKey, *domain.User, error)
 	ListMCPKeys(ctx context.Context, userID string) ([]domain.MCPKey, error)
 	ListAllMCPKeys(ctx context.Context) ([]domain.MCPKey, error)
+	UpdateMCPKeyScopes(ctx context.Context, userID, keyID string, scopes []string) error
 	RevokeMCPKey(ctx context.Context, userID, keyID string) error
 	TouchMCPKey(ctx context.Context, keyID string, lastUsedAt int64) error
 
@@ -121,6 +122,7 @@ type Storage interface {
 	CreateDraft(ctx context.Context, d *domain.Draft, v *domain.DraftVersion) error
 	AddDraftVersion(ctx context.Context, userID, draftID string, v *domain.DraftVersion) (int, error)
 	GetDraft(ctx context.Context, userID, id string) (*domain.Draft, *domain.DraftVersion, error)
+	ListDrafts(ctx context.Context, userID, status string, beforeUpdated int64, beforeID string, limit int) ([]domain.DraftSummary, error)
 	GetDraftVersion(ctx context.Context, userID, draftID string, version int) (*domain.DraftVersion, error)
 	SetDraftStatus(ctx context.Context, userID, id string, st domain.DraftStatus) error
 

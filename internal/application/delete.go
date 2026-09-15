@@ -13,6 +13,11 @@ import (
 // LocalDelete removes a message from local storage (DB rows + object blobs).
 // It does not touch the mail server (§5.2 기본 정책: 서버 보존).
 func (a *App) LocalDelete(ctx context.Context, messageID string) error {
+	if p, ok := PrincipalFrom(ctx); ok && p.AuthMethod == "mcp_key" {
+		if err := a.CheckMCPToolPolicy(ctx, "mail_local_delete"); err != nil {
+			return err
+		}
+	}
 	// A message under legal hold must never be deleted locally (§규정 준수).
 	if m, err := a.Store.GetMessage(ctx, userIDFrom(ctx), messageID); err == nil && m.LegalHold {
 		a.audit(ctx, "local_delete", "message:"+messageID, "denied", "legal hold")

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"mime"
@@ -12,6 +13,7 @@ import (
 	"mime/quotedprintable"
 	"net/mail"
 	"net/textproto"
+	"sort"
 	"strings"
 	"time"
 
@@ -32,6 +34,11 @@ func sendPayloadHash(acc *domain.MailAccount, v *domain.DraftVersion) string {
 	fmt.Fprintf(h, "account=%s\nfrom=%s\nto=%s\ncc=%s\nbcc=%s\nsubject=%s\nbody=%x\nversion=%d\n",
 		acc.ID, acc.Email, addrKey(v.To), addrKey(v.Cc), addrKey(v.Bcc),
 		v.Subject, bodySum, v.Version)
+	if len(v.Attachments) > 0 {
+		raw, _ := json.Marshal(v.Attachments)
+		sum := sha256.Sum256(raw)
+		fmt.Fprintf(h, "attachments=%x\n", sum)
+	}
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -124,8 +131,9 @@ type SendPreview struct {
 	// DLPFindings lists sensitive content categories detected when the message
 	// targets an external domain (§보안 DLP). DLPBlocked is true when policy is
 	// "block" and findings exist — the send will be refused.
-	DLPFindings []DLPFinding `json:"dlp_findings,omitempty"`
-	DLPBlocked  bool         `json:"dlp_blocked,omitempty"`
+	DLPFindings []DLPFinding             `json:"dlp_findings,omitempty"`
+	DLPBlocked  bool                     `json:"dlp_blocked,omitempty"`
+	Attachments []domain.DraftAttachment `json:"attachments,omitempty"`
 }
 
 func (a *App) PreviewSend(ctx context.Context, draftID string) (*SendPreview, error) {
@@ -141,6 +149,14 @@ func (a *App) PreviewSend(ctx context.Context, draftID string) (*SendPreview, er
 	if err := validateDraftForSend(acc, v); err != nil {
 		return nil, err
 	}
+	if err := a.enforceSendPolicy(acc, v); err != nil {
+		return nil, err
+	}
+	attachmentText, err := a.draftAttachmentsPolicyText(ctx, v)
+	if err != nil {
+		return nil, err
+	}
+	policyText := draftPolicyText(v) + attachmentText
 	senderDomain := domainOf(acc.Email)
 	extSet := map[string]bool{}
 	for _, addr := range append(append(append([]domain.Address{}, v.To...), v.Cc...), v.Bcc...) {
@@ -152,16 +168,26 @@ func (a *App) PreviewSend(ctx context.Context, draftID string) (*SendPreview, er
 	for d := range extSet {
 		ext = append(ext, d)
 	}
+	sort.Strings(ext)
 	recipientCount := len(v.To) + len(v.Cc) + len(v.Bcc)
 	var warnings []string
-	if w := a.Cfg.Send.WarnRecipients; w > 0 && recipientCount >= w {
+	if len(mailhtml.RemoteImageSources(v.BodyHTML)) > 0 {
+		warnings = append(warnings, "Remote images are included by administrator policy. The local preview blocks remote loading; recipients may load these images.")
+	}
+	for _, attachment := range v.Attachments {
+		if !strings.HasPrefix(attachment.MIMEType, "text/") && attachment.MIMEType != "application/json" && attachment.MIMEType != "application/xml" {
+			warnings = append(warnings, "Binary attachment contents are not inspected for sensitive data; review them before approving")
+			break
+		}
+	}
+	if w := a.EffectiveConfig().Send.WarnRecipients; w > 0 && recipientCount >= w {
 		warnings = append(warnings, fmt.Sprintf("%d recipients — review carefully before approving", recipientCount))
 	}
-	if len(ext) > 0 {
+	if len(ext) > 0 && a.SettingBool("send.warn_external") {
 		warnings = append(warnings, "recipients on external domains: "+strings.Join(ext, ", "))
 	}
 	// Organization writing policy: flag banned phrases regardless of recipient.
-	if banned := a.checkWritingPolicy(v.Subject, draftPolicyText(v)); len(banned) > 0 {
+	if banned := a.checkWritingPolicy(v.Subject, policyText); len(banned) > 0 {
 		warnings = append(warnings, "writing policy: banned phrase(s) present: "+strings.Join(banned, ", "))
 	}
 	// DLP applies only when the message leaves the organization (external
@@ -169,7 +195,7 @@ func (a *App) PreviewSend(ctx context.Context, draftID string) (*SendPreview, er
 	var dlpFindings []DLPFinding
 	dlpBlocked := false
 	if len(ext) > 0 && a.dlpPolicy() != "off" {
-		dlpFindings = a.scanDLP(v.Subject, draftPolicyText(v))
+		dlpFindings = a.scanDLP(v.Subject, policyText)
 		if len(dlpFindings) > 0 {
 			warnings = append(warnings, "DLP: sensitive content detected in a message to external domains "+dlpSummary(dlpFindings))
 			if a.dlpPolicy() == "block" {
@@ -186,6 +212,7 @@ func (a *App) PreviewSend(ctx context.Context, draftID string) (*SendPreview, er
 		ExternalDomains: ext, RecipientCount: recipientCount,
 		Warnings: warnings, PayloadHash: sendPayloadHash(acc, v),
 		DLPFindings: dlpFindings, DLPBlocked: dlpBlocked,
+		Attachments: v.Attachments,
 	}, nil
 }
 
@@ -233,7 +260,7 @@ func draftSendBodies(v *domain.DraftVersion) (bodyText, bodyHTML string) {
 	if v.BodyHTML == "" {
 		return v.BodyText, ""
 	}
-	bodyHTML = mailhtml.Sanitize(v.BodyHTML)
+	bodyHTML = mailhtml.SanitizeApprovedOutbound(v.BodyHTML)
 	return mailhtml.PlainText(bodyHTML), bodyHTML
 }
 
@@ -290,8 +317,11 @@ func (a *App) Send(ctx context.Context, in SendInput) (*domain.OutboundMessage, 
 	if err := validateDraftForSend(acc, v); err != nil {
 		return nil, err
 	}
+	if err := a.enforceSendPolicy(acc, v); err != nil {
+		return nil, err
+	}
 	// DLP block enforced at the actual send boundary (§보안 DLP).
-	if err := a.enforceDLP(acc, v); err != nil {
+	if err := a.enforceDraftDLP(ctx, acc, v); err != nil {
 		a.audit(ctx, "mail_send", "draft:"+d.ID, "denied", err.Error())
 		return nil, err
 	}
@@ -303,7 +333,7 @@ func (a *App) Send(ctx context.Context, in SendInput) (*domain.OutboundMessage, 
 		idemKey = fmt.Sprintf("draft:%s:v%d", d.ID, v.Version)
 	}
 	if existing, err := a.Store.GetOutboundByIdemKey(ctx, userID, idemKey); err == nil {
-		return existing, nil
+		return safeOutbound(existing), nil
 	}
 
 	// SMTP-012: rolling-window send quota per account.
@@ -339,12 +369,40 @@ func (a *App) Send(ctx context.Context, in SendInput) (*domain.OutboundMessage, 
 // plain (permanent) error; SMTP errors carry temporary/permanent
 // classification from the adapter.
 func (a *App) deliver(ctx context.Context, out *domain.OutboundMessage, acc *domain.MailAccount, v *domain.DraftVersion) (domain.SendReceipt, error) {
+	// Scheduled retries also pass this gate. A policy tightened after approval
+	// must never be bypassed, nor may we silently change an approved HTML body.
+	if err := a.enforceSendPolicy(acc, v); err != nil {
+		return domain.SendReceipt{}, err
+	}
+	if err := a.enforceDLP(acc, v); err != nil {
+		return domain.SendReceipt{}, err
+	}
+	attachmentData := map[string][]byte{}
+	policyVersion := *v
+	policyVersion.BodyText, policyVersion.BodyHTML = draftPolicyText(v), ""
+	for _, attachment := range v.Attachments {
+		data, err := a.readDraftAttachment(ctx, attachment)
+		if err != nil {
+			return domain.SendReceipt{}, err
+		}
+		attachmentData[attachment.ID] = data
+		policyVersion.BodyText += "\n" + attachmentPolicyText(attachment, data)
+	}
+	if err := a.enforceDLP(acc, &policyVersion); err != nil {
+		return domain.SendReceipt{}, err
+	}
 	var inReplyTo, references string
 	if orig, err := a.replyContext(ctx, out.DraftID); err == nil && orig != nil && orig.MessageID != "" {
 		inReplyTo = orig.MessageID
 		references = strings.TrimSpace(orig.References + " " + orig.MessageID)
 	}
-	raw, err := buildMIME(acc, v, out.MessageID, inReplyTo, references)
+	var raw []byte
+	var err error
+	if len(v.Attachments) > 0 {
+		raw, err = buildMIMEWithAttachments(acc, v, out.MessageID, inReplyTo, references, attachmentData)
+	} else {
+		raw, err = buildMIME(acc, v, out.MessageID, inReplyTo, references)
+	}
 	if err != nil {
 		return domain.SendReceipt{}, err // permanent
 	}
@@ -361,7 +419,7 @@ func (a *App) deliver(ctx context.Context, out *domain.OutboundMessage, acc *dom
 		Host: acc.SMTPHost, Port: acc.SMTPPort, Security: acc.SMTPSecurity,
 		AuthMethod: acc.SMTPAuth, Username: acc.SMTPUsername, Password: secret,
 		InsecureSkipVerify: acc.InsecureSkipVerify,
-		ConnectTimeoutSec:  a.Cfg.Sync.ConnectTimeoutSec,
+		ConnectTimeoutSec:  a.EffectiveConfig().Sync.ConnectTimeoutSec,
 	}, domain.Envelope{From: acc.Email, To: rcpts}, bytes.NewReader(raw))
 }
 
@@ -380,33 +438,38 @@ func (a *App) replyContext(ctx context.Context, draftID string) (*domain.Message
 func (a *App) applySendResult(ctx context.Context, out *domain.OutboundMessage, draftID string, receipt domain.SendReceipt, sendErr error) *domain.OutboundMessage {
 	attempts := out.Attempts + 1
 	out.Attempts = attempts
-	maxRetries := a.Cfg.Send.MaxRetries
+	maxRetries := a.EffectiveConfig().Send.MaxRetries
 	if maxRetries <= 0 {
 		maxRetries = 1 // no retries configured: single attempt
 	}
 	switch {
 	case sendErr != nil && isTemporary(sendErr) && attempts < maxRetries:
 		next := time.Now().Add(a.retryBackoff(attempts)).Unix()
-		_ = a.Store.MarkOutboundRetry(ctx, out.ID, sendErr.Error(), attempts, next)
-		out.Status, out.SMTPResponse, out.NextAttemptAt = domain.OutboundRetryWait, sendErr.Error(), next
+		message := outboundDiagnostic(domain.OutboundRetryWait)
+		_ = a.Store.MarkOutboundRetry(ctx, out.ID, message, attempts, next)
+		out.Status, out.SMTPResponse, out.NextAttemptAt = domain.OutboundRetryWait, message, next
 		a.audit(ctx, "mail_send", "draft:"+draftID, "retry_scheduled",
 			fmt.Sprintf("attempt=%d next=%d", attempts, next))
 	case sendErr != nil && isTemporary(sendErr):
-		_ = a.Store.UpdateOutbound(ctx, out.ID, domain.OutboundFailed, "retries exhausted: "+sendErr.Error(), attempts)
-		out.Status, out.SMTPResponse = domain.OutboundFailed, sendErr.Error()
+		message := outboundDiagnostic(domain.OutboundFailed)
+		_ = a.Store.UpdateOutbound(ctx, out.ID, domain.OutboundFailed, message, attempts)
+		out.Status, out.SMTPResponse = domain.OutboundFailed, message
 		a.audit(ctx, "mail_send", "draft:"+draftID, "failed", "retries exhausted")
 	case sendErr != nil:
-		_ = a.Store.UpdateOutbound(ctx, out.ID, domain.OutboundFailed, sendErr.Error(), attempts)
-		out.Status, out.SMTPResponse = domain.OutboundFailed, sendErr.Error()
-		a.audit(ctx, "mail_send", "draft:"+draftID, "error", sendErr.Error())
+		message := outboundDiagnostic(domain.OutboundFailed)
+		_ = a.Store.UpdateOutbound(ctx, out.ID, domain.OutboundFailed, message, attempts)
+		out.Status, out.SMTPResponse = domain.OutboundFailed, message
+		a.audit(ctx, "mail_send", "draft:"+draftID, "error", message)
 	case receipt.Uncertain:
-		_ = a.Store.UpdateOutbound(ctx, out.ID, domain.OutboundUncertain, receipt.ServerResponse, attempts)
-		out.Status, out.SMTPResponse = domain.OutboundUncertain, receipt.ServerResponse
+		message := outboundDiagnostic(domain.OutboundUncertain)
+		_ = a.Store.UpdateOutbound(ctx, out.ID, domain.OutboundUncertain, message, attempts)
+		out.Status, out.SMTPResponse = domain.OutboundUncertain, message
 		a.audit(ctx, "mail_send", "draft:"+draftID, "uncertain", "response lost after DATA")
 	default:
-		_ = a.Store.UpdateOutbound(ctx, out.ID, domain.OutboundSent, receipt.ServerResponse, attempts)
+		message := outboundDiagnostic(domain.OutboundSent)
+		_ = a.Store.UpdateOutbound(ctx, out.ID, domain.OutboundSent, message, attempts)
 		_ = a.Store.SetDraftStatus(ctx, userIDFrom(ctx), draftID, domain.DraftSent)
-		out.Status, out.SMTPResponse = domain.OutboundSent, receipt.ServerResponse
+		out.Status, out.SMTPResponse = domain.OutboundSent, message
 		a.audit(ctx, "mail_send", "draft:"+draftID, "ok", "outbound="+out.ID)
 	}
 	metrics.SMTPSend.WithLabelValues(sendResultLabel(out.Status)).Inc()
@@ -432,12 +495,13 @@ func sendResultLabel(s domain.OutboundStatus) string {
 
 // retryBackoff is exponential (base * 2^(attempt-1)) capped at RetryMaxSeconds.
 func (a *App) retryBackoff(attempt int) time.Duration {
-	base := time.Duration(a.Cfg.Send.RetryBaseSeconds) * time.Second
+	cfg := a.EffectiveConfig()
+	base := time.Duration(cfg.Send.RetryBaseSeconds) * time.Second
 	d := base
 	for i := 1; i < attempt; i++ {
 		d *= 2
 	}
-	if max := time.Duration(a.Cfg.Send.RetryMaxSeconds) * time.Second; max > 0 && d > max {
+	if max := time.Duration(cfg.Send.RetryMaxSeconds) * time.Second; max > 0 && d > max {
 		d = max
 	}
 	return d
@@ -467,7 +531,7 @@ func (a *App) ListOutbound(ctx context.Context, limit int) ([]OutboundView, erro
 	}
 	out := make([]OutboundView, 0, len(rows))
 	for _, o := range rows {
-		view := OutboundView{Outbound: o}
+		view := OutboundView{Outbound: *safeOutbound(&o)}
 		// Best-effort enrichment: a discarded draft must not hide its delivery.
 		if _, v, derr := a.Store.GetDraft(ctx, userID, o.DraftID); derr == nil && v != nil {
 			view.Subject = v.Subject
@@ -481,14 +545,16 @@ func (a *App) ListOutbound(ctx context.Context, limit int) ([]OutboundView, erro
 }
 
 func (a *App) GetOutbound(ctx context.Context, id string) (*domain.OutboundMessage, error) {
-	return a.Store.GetOutbound(ctx, userIDFrom(ctx), id)
+	out, err := a.Store.GetOutbound(ctx, userIDFrom(ctx), id)
+	return safeOutbound(out), err
 }
 
 // checkSendRate enforces per-account per-minute and per-hour send quotas
 // against the durable outbound history (SMTP-012).
 func (a *App) checkSendRate(ctx context.Context, accountID string) error {
 	now := time.Now()
-	if lim := a.Cfg.Send.MaxPerMinute; lim > 0 {
+	cfg := a.EffectiveConfig()
+	if lim := cfg.Send.MaxPerMinute; lim > 0 {
 		n, err := a.Store.CountSentSince(ctx, userIDFrom(ctx), accountID, now.Add(-time.Minute).Unix())
 		if err != nil {
 			return err
@@ -497,7 +563,7 @@ func (a *App) checkSendRate(ctx context.Context, accountID string) error {
 			return userErrf("send rate limit reached: %d/min for this account", lim)
 		}
 	}
-	if lim := a.Cfg.Send.MaxPerHour; lim > 0 {
+	if lim := cfg.Send.MaxPerHour; lim > 0 {
 		n, err := a.Store.CountSentSince(ctx, userIDFrom(ctx), accountID, now.Add(-time.Hour).Unix())
 		if err != nil {
 			return err
@@ -505,6 +571,38 @@ func (a *App) checkSendRate(ctx context.Context, accountID string) error {
 		if n >= lim {
 			return userErrf("send rate limit reached: %d/hour for this account", lim)
 		}
+	}
+	return nil
+}
+
+func (a *App) enforceSendPolicy(acc *domain.MailAccount, v *domain.DraftVersion) error {
+	for _, source := range mailhtml.RemoteImageSources(mailhtml.SanitizeApprovedOutbound(v.BodyHTML)) {
+		mode := a.Setting("mail.outbound_images")
+		if mode == "allow" {
+			continue
+		}
+		if mode == "proxy" && mailhtml.IsProxiedImage(source, a.Setting("mail.image_proxy_url")) {
+			continue
+		}
+		return userErrf("outbound image policy changed; render the draft again and request a new approval")
+	}
+	if err := a.validateDraftAttachments(v); err != nil {
+		return err
+	}
+	if !a.SettingBool("mail.smtp_enabled") {
+		return userErrf("SMTP sending is disabled by administrator policy")
+	}
+	if a.SettingBool("mail.tls_required") && (acc.SMTPSecurity != "tls" && acc.SMTPSecurity != "starttls" || acc.InsecureSkipVerify) {
+		return userErrf("verified SMTP TLS is required by administrator policy")
+	}
+	if a.SettingBool("mail.smtp_auth_required") && (acc.SMTPAuth == "none" || acc.SMTPAuth == "" || acc.SMTPSecret == "" || acc.SMTPUsername == "") {
+		return userErrf("SMTP authentication is required by administrator policy")
+	}
+	if !a.SettingBool("mail.html_enabled") && v.BodyHTML != "" {
+		return userErrf("HTML mail is disabled by administrator policy; save as plain text and request approval again")
+	}
+	if max := a.SettingInt("send.max_recipients"); max > 0 && len(v.To)+len(v.Cc)+len(v.Bcc) > max {
+		return userErrf("recipient count exceeds administrator limit (%d)", max)
 	}
 	return nil
 }

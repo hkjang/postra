@@ -65,34 +65,26 @@ const digestStateKey = "internal.last_digest."
 // RunDigestWorker produces each active user's daily briefing at the configured
 // hour. Leader-only and idempotent per day.
 func (a *App) RunDigestWorker(ctx context.Context) {
-	if !a.Cfg.Sync.DailyDigestEnabled {
-		slog.Info("daily digest disabled (sync.daily_digest_enabled = false)")
-		return
+	a.runLiveWorker(ctx, "digest-worker", a.digestWorkerInterval, false,
+		func() { a.digestOnce(ctx) })
+}
+
+func (a *App) digestWorkerInterval() time.Duration {
+	if !a.EffectiveConfig().Sync.DailyDigestEnabled {
+		return 0
 	}
-	slog.Info("daily digest worker started", "hour", a.Cfg.Sync.DailyDigestHour)
-	ticker := time.NewTicker(10 * time.Minute)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if a.IsLeader() {
-				a.guard("digest-worker", func() { a.digestOnce(ctx) })
-			}
-		}
-	}
+	return 10 * time.Minute
 }
 
 // digestOnce generates today's briefing for every active user that has not had
 // one yet, once the configured hour has arrived.
 func (a *App) digestOnce(ctx context.Context) int {
 	now := time.Now()
-	if now.Hour() < a.Cfg.Sync.DailyDigestHour {
+	if now.Hour() < a.EffectiveConfig().Sync.DailyDigestHour {
 		return 0
 	}
 	today := now.Format("2006-01-02")
-	if err := a.checkAIPolicy(ctx); err != nil {
+	if err := a.checkTaskAIPolicy(ctx, "digest"); err != nil {
 		slog.Debug("digest worker: skipped by AI policy", "err", err)
 		return 0
 	}

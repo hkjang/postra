@@ -1,5 +1,5 @@
 export class APIError extends Error {
-  constructor(message: string, public status: number) { super(message); this.name = 'APIError' }
+  constructor(message: string, public status: number, public code?: string, public traceID?: string) { super(message); this.name = 'APIError' }
 }
 type Options = {method?: string; body?: unknown; signal?: AbortSignal}
 
@@ -11,7 +11,7 @@ export function csrfToken() {
 // Browser identity is an HttpOnly session cookie. Never persist API keys or
 // bearer tokens in localStorage. The only script-readable token is CSRF.
 export async function api<T>(path: string, options: Options = {}): Promise<T> {
-  if (!path.startsWith('/api/')) throw new Error('API 경로가 올바르지 않습니다.')
+  if (!path.startsWith('/api/') && !path.startsWith('/auth/')) throw new Error('API 경로가 올바르지 않습니다.')
   const method = options.method ?? (options.body === undefined ? 'GET' : 'POST')
   const headers: Record<string, string> = {Accept: 'application/json'}
   if (options.body !== undefined) headers['Content-Type'] = 'application/json'
@@ -23,9 +23,12 @@ export async function api<T>(path: string, options: Options = {}): Promise<T> {
   try { result = text ? JSON.parse(text) : undefined } catch { result = undefined }
   if (!response.ok) {
     // No request body, credentials, or upstream HTML is placed in exceptions.
-    const error = result && typeof result === 'object' && 'error' in result ? String(result.error) : `요청을 처리하지 못했습니다 (${response.status}).`
-    if (response.status === 401) window.dispatchEvent(new Event('postra:unauthorized'))
-    throw new APIError(error, response.status)
+    const error = result && typeof result === 'object' && 'message' in result ? String(result.message) : result && typeof result === 'object' && 'error' in result ? String(result.error) : `요청을 처리하지 못했습니다 (${response.status}).`
+    if (response.status === 401 && !/^\/auth\/(?:login|setup)(?:\?|$)/.test(path)) window.dispatchEvent(new Event('postra:unauthorized'))
+    const contract = result && typeof result === 'object' ? result as Record<string, unknown> : {}
+    const code = typeof contract.code === 'string' ? contract.code.slice(0, 120) : undefined
+    const traceID = typeof contract.trace_id === 'string' ? contract.trace_id.slice(0, 128) : undefined
+    throw new APIError(error, response.status, code, traceID)
   }
   return result as T
 }

@@ -7,16 +7,17 @@ package mcpserver
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"postra/internal/application"
 	"postra/internal/domain"
 	"postra/internal/platform/build"
-	"postra/internal/platform/metrics"
-	"postra/internal/platform/telemetry"
 )
 
 func boolPtr(b bool) *bool { return &b }
@@ -29,60 +30,14 @@ var (
 	destructive = &mcp.ToolAnnotations{DestructiveHint: boolPtr(true), OpenWorldHint: boolPtr(true)}
 )
 
-// metricsMiddleware records every MCP tool invocation (§18.1). It labels by
-// tool name and result (ok/error), covering both handler errors and tool
-// results flagged IsError. Non-tool methods (initialize, list, …) pass through
-// unmeasured to keep the series set focused on tool usage.
-func metricsMiddleware(next mcp.MethodHandler) mcp.MethodHandler {
-	return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
-		if method != "tools/call" {
-			return next(ctx, method, req)
-		}
-		tool := "unknown"
-		if p, ok := req.GetParams().(*mcp.CallToolParamsRaw); ok && p.Name != "" {
-			tool = p.Name
-		}
-		ctx, span := telemetry.Start(ctx, "mcp.tool", telemetry.Attr("mcp.tool", tool))
-		defer span.End()
-		res, err := next(ctx, method, req)
-		result := "ok"
-		if err != nil {
-			result = "error"
-		} else if ctr, ok := res.(*mcp.CallToolResult); ok && ctr.IsError {
-			result = "error"
-		}
-		metrics.MCPRequests.WithLabelValues(tool, result).Inc()
-		return res, err
-	}
-}
-
-// policyMiddleware enforces the central MCP gateway policy before a tool runs
-// (§MCP 정책 게이트웨이). Local stdio callers have no principal and are allowed;
-// remote callers are checked against the configured policy for their role.
-func policyMiddleware(app *application.App) mcp.Middleware {
-	return func(next mcp.MethodHandler) mcp.MethodHandler {
-		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
-			if method != "tools/call" {
-				return next(ctx, method, req)
-			}
-			if p, ok := req.GetParams().(*mcp.CallToolParamsRaw); ok && p.Name != "" {
-				if err := app.CheckMCPToolPolicy(ctx, p.Name); err != nil {
-					return &mcp.CallToolResult{
-						IsError: true,
-						Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}},
-					}, nil
-				}
-			}
-			return next(ctx, method, req)
-		}
-	}
-}
-
 // NewServer builds the MCP server with the full tool catalog.
 func NewServer(app *application.App) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: "postra-mail", Version: build.Version}, nil)
-	s.AddReceivingMiddleware(metricsMiddleware)
-	s.AddReceivingMiddleware(policyMiddleware(app))
+	s.AddReceivingMiddleware(gatewayMiddleware(app))
+	registerDiscoveryTools(s, app)
+	registerRenderTools(s, app)
+	registerParityTools(s, app)
+	registerDraftAttachmentTools(s, app)
 	registerAccountTools(s, app)
 	registerSyncTools(s, app)
 	registerQueryTools(s, app)
@@ -102,7 +57,7 @@ func NewServer(app *application.App) *mcp.Server {
 // (§5.2). Server deletion requires a fresh approval token bound to the exact
 // UIDL set; local deletion is destructive but does not touch the server.
 func registerDeleteTools(s *mcp.Server, app *application.App) {
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_local_delete",
 		Description: "Delete a message from LOCAL storage only (DB rows + stored blobs). The mail server copy is untouched. Destructive.",
 		Annotations: &mcp.ToolAnnotations{DestructiveHint: boolPtr(true), OpenWorldHint: boolPtr(false)},
@@ -119,7 +74,7 @@ func registerDeleteTools(s *mcp.Server, app *application.App) {
 		return nil, map[string]string{"status": "deleted", "message_id": in.MessageID}, nil
 	})
 
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_server_delete_preview",
 		Description: "Preview which maildrop messages could be deleted on the POP3 server. Only messages already stored locally are eligible. Deletes nothing; returns a payload hash for approval.",
 		Annotations: readExtern,
@@ -131,7 +86,7 @@ func registerDeleteTools(s *mcp.Server, app *application.App) {
 		return nil, pv, nil
 	})
 
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_server_delete_request_approval",
 		Description: "Request a one-time approval token to delete the currently-eligible messages from the POP3 server. Show the preview to the user and obtain explicit confirmation before mail_server_delete.",
 		Annotations: writeExtern,
@@ -147,7 +102,7 @@ func registerDeleteTools(s *mcp.Server, app *application.App) {
 		return nil, map[string]any{"preview": pv, "approval": tok}, nil
 	})
 
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_server_delete",
 		Description: "Delete the approved UIDLs from the POP3 server. Requires an approval token bound to the exact account + UIDL set. Very destructive and externally visible — only call after explicit user confirmation.",
 		Annotations: destructive,
@@ -168,10 +123,12 @@ func registerDeleteTools(s *mcp.Server, app *application.App) {
 // non-sensitive listing of tool names grouped by capability.
 func toolCatalogSummary() map[string]any {
 	groups := map[string][]string{
+		"render":    {"mail_render", "mail_text_rewrite", "mail_templates", "mail_signature_list", "mail_signature_get", "mail_signature_save", "mail_signature_delete"},
+		"discovery": {"mail_capabilities", "mail_identity", "mail_system_info"},
 		"account_secret": {"mail_account_list", "mail_account_get", "mail_account_create",
 			"mail_account_update", "mail_account_test", "mail_account_disable",
 			"secret_registration_begin", "secret_rotation_begin", "secret_revoke"},
-		"sync": {"mail_sync_start", "job_status", "job_cancel"},
+		"sync": {"mail_sync_start", "mail_events", "job_list", "job_status", "job_cancel"},
 		"query": {"mail_search", "mail_message_get", "mail_thread_get", "mail_thread_timeline",
 			"mail_attachment_list", "mail_hybrid_search", "mail_batch_update", "mail_work_inbox"},
 		"ai": {"mail_summarize", "mail_classify", "mail_action_items_extract",
@@ -179,11 +136,11 @@ func toolCatalogSummary() map[string]any {
 			"mail_question_answer", "mail_embeddings_build", "mail_semantic_search",
 			"mail_attachment_summarize", "mail_eval_prompt", "mail_suggest_replies",
 			"mail_calendar_extract", "mail_daily_digest"},
-		"compose_send": {"mail_draft_create", "mail_draft_update", "mail_draft_rewrite",
-			"mail_send_preview", "mail_send_request_approval", "mail_send", "mail_outbound_status"},
+		"compose_send": {"mail_drafts_list", "mail_draft_get", "mail_draft_create", "mail_draft_update", "mail_draft_rewrite", "mail_draft_delete", "mail_draft_attachment_add", "mail_draft_attachment_get", "mail_draft_attachment_remove",
+			"mail_send_preview", "mail_send_request_approval", "mail_send", "mail_outbound_status", "mail_outbound_list"},
 		"automation":    {"mail_rule_draft_from_text", "mail_rules_list", "mail_rule_create", "mail_rule_update", "mail_rule_delete", "mail_apply_rules"},
-		"action_cards":  {"mail_action_cards_extract", "mail_action_cards_list", "mail_action_card_set_status", "mail_action_card_export"},
-		"collaboration": {"mail_team_inbox", "mail_collab_get", "mail_assign", "mail_set_work_status", "mail_add_note"},
+		"action_cards":  {"mail_action_cards_extract", "mail_action_cards_list", "mail_action_card_create", "mail_action_card_set_status", "mail_action_card_export"},
+		"collaboration": {"mail_team_inbox", "mail_collab_get", "mail_assign", "mail_set_work_status", "mail_set_sla", "mail_add_note"},
 		"attachments":   {"mail_attachment_list", "mail_attachment_extract_text", "mail_attachment_summarize"},
 		"audit":         {"mail_audit_search"},
 	}
@@ -212,6 +169,9 @@ func toolCatalogSummary() map[string]any {
 
 // RunStdio serves MCP over stdin/stdout (local transport, §10.1).
 func RunStdio(ctx context.Context, app *application.App) error {
+	if !app.SettingBool("mcp.enabled") {
+		return &domain.PublicError{Code: "capability_disabled", Message: "MCP 기능이 비활성화되어 있습니다.", Status: 403}
+	}
 	return NewServer(app).Run(application.WithActor(ctx, "mcp"), &mcp.StdioTransport{})
 }
 
@@ -223,15 +183,40 @@ func RunStdio(ctx context.Context, app *application.App) error {
 func HTTPHandler(app *application.App, apiToken string) http.Handler {
 	inner := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 		return NewServer(app)
-	}, nil)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx := application.WithActor(r.Context(), "mcp")
+	}, &mcp.StreamableHTTPOptions{SessionTimeout: time.Duration(app.SettingInt("mcp.session_timeout_sec")) * time.Second})
+	// The SDK binds sessions using TokenInfo, not arbitrary context values.
+	// Include the key ID so a narrower key belonging to the same user cannot
+	// resume a more privileged client's stream.
+	bound := auth.RequireBearerToken(func(ctx context.Context, _ string, _ *http.Request) (*auth.TokenInfo, error) {
+		p, ok := application.PrincipalFrom(ctx)
+		if !ok {
+			return nil, auth.ErrInvalidToken
+		}
+		// This short-lived SDK assertion is created only after the real key or
+		// OIDC token was revalidated above on THIS HTTP request. It is not a
+		// replacement expiry or an extension of the underlying credential.
+		return &auth.TokenInfo{UserID: p.UserID + ":" + p.AuthMethod + ":" + p.MCPKeyID, Scopes: p.MCPScopes, Expiration: time.Now().Add(time.Minute), Extra: map[string]any{"postra_principal": p, "postra_trace_id": application.RequestTrace(ctx)}}, nil
+	}, nil)(inner)
+	protected := http.NewCrossOriginProtection()
+	return protected.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := application.WithRequestTrace(application.WithActor(r.Context(), "mcp"), "")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("X-Trace-ID", application.RequestTrace(ctx))
+		if !app.SettingBool("mcp.enabled") || !app.SettingBool("mcp.http_enabled") {
+			writeMCPHTTPError(w, ctx, &domain.PublicError{Code: "capability_disabled", Message: "MCP HTTP 기능이 비활성화되어 있습니다.", Status: 503})
+			return
+		}
 		if app.Cfg.Auth.Enabled || apiToken != "" {
-			raw := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+			header := r.Header.Get("Authorization")
+			raw := strings.TrimPrefix(header, "Bearer ")
+			if !strings.HasPrefix(header, "Bearer ") || strings.TrimSpace(raw) == "" {
+				writeMCPHTTPError(w, ctx, &domain.PublicError{Code: "unauthorized", Message: "MCP 인증이 필요합니다.", Status: 401})
+				return
+			}
 			var principal domain.Principal
 			ok := false
 			if apiToken != "" && subtle.ConstantTimeCompare([]byte(raw), []byte(apiToken)) == 1 {
-				if u, err := app.Store.GetUser(r.Context(), application.DefaultUserID); err == nil {
+				if u, err := app.Store.GetUser(r.Context(), application.DefaultUserID); err == nil && u.Status == domain.UserActive {
 					principal = domain.Principal{UserID: u.ID, LoginID: u.LoginID, DisplayName: u.DisplayName,
 						Role: domain.RoleAdmin, AuthMethod: "api_token"}
 					ok = true
@@ -248,14 +233,25 @@ func HTTPHandler(app *application.App, apiToken string) http.Handler {
 				}
 			}
 			if !ok {
-				http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+				writeMCPHTTPError(w, ctx, &domain.PublicError{Code: "unauthorized", Message: "MCP 인증에 실패했습니다.", Status: 401})
 				return
 			}
 			ctx = application.WithPrincipal(ctx, principal)
+			bound.ServeHTTP(w, r.WithContext(ctx))
+			return
 		}
 		inner.ServeHTTP(w, r.WithContext(ctx))
+	}))
+}
 
-	})
+func writeMCPHTTPError(w http.ResponseWriter, ctx context.Context, err error) {
+	status, body := application.PublicError(ctx, err)
+	w.Header().Set("Content-Type", "application/json")
+	if status == http.StatusUnauthorized {
+		w.Header().Set("WWW-Authenticate", "Bearer")
+	}
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(body)
 }
 
 // ---------- account & secret tools ----------
@@ -267,7 +263,7 @@ type accountIDInput struct {
 }
 
 func registerAccountTools(s *mcp.Server, app *application.App) {
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_account_list",
 		Description: "List registered mail accounts (never includes secret values).",
 		Annotations: readOnly,
@@ -279,7 +275,7 @@ func registerAccountTools(s *mcp.Server, app *application.App) {
 		return nil, map[string]any{"accounts": accs}, nil
 	})
 
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_account_get",
 		Description: "Get one mail account's non-secret settings.",
 		Annotations: readOnly,
@@ -291,7 +287,7 @@ func registerAccountTools(s *mcp.Server, app *application.App) {
 		return nil, acc, nil
 	})
 
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name: "mail_account_create",
 		Description: "Register a mail account. POP3/SMTP credentials must be referenced by secret_ref values " +
 			"obtained via the secure registration flow (see secret_registration_begin) — never raw passwords.",
@@ -304,7 +300,7 @@ func registerAccountTools(s *mcp.Server, app *application.App) {
 		return nil, acc, nil
 	})
 
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_account_update",
 		Description: "Update non-secret account settings (hosts, ports, security mode, usernames).",
 		Annotations: writeExtern,
@@ -316,7 +312,7 @@ func registerAccountTools(s *mcp.Server, app *application.App) {
 		return nil, acc, nil
 	})
 
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_account_test",
 		Description: "Run staged connection diagnostics (DNS, TLS, AUTH, UIDL / SMTP EHLO) for an account.",
 		Annotations: readExtern,
@@ -328,7 +324,7 @@ func registerAccountTools(s *mcp.Server, app *application.App) {
 		return nil, map[string]any{"diagnostics": diags}, nil
 	})
 
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_account_disable",
 		Description: "Disable an account: stops sync and send immediately; stored data is preserved.",
 		Annotations: writeLocal,
@@ -339,7 +335,7 @@ func registerAccountTools(s *mcp.Server, app *application.App) {
 		return nil, map[string]string{"status": "disabled"}, nil
 	})
 
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name: "secret_registration_begin",
 		Description: "Begin secure credential registration. Returns instructions for the out-of-band input path " +
 			"(CLI TTY or authenticated REST). Secret values are NEVER accepted as MCP tool arguments.",
@@ -348,7 +344,7 @@ func registerAccountTools(s *mcp.Server, app *application.App) {
 		return nil, map[string]string{"instructions": app.SecretRegistrationInstructions()}, nil
 	})
 
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name: "secret_rotation_begin",
 		Description: "Begin credential rotation for an existing secret reference. Returns the out-of-band " +
 			"instructions; the new value is never passed through MCP.",
@@ -363,7 +359,7 @@ func registerAccountTools(s *mcp.Server, app *application.App) {
 		}, nil
 	})
 
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "secret_revoke",
 		Description: "Revoke a secret reference permanently. Destructive: accounts using it will fail until rotated.",
 		Annotations: destructive,
@@ -384,7 +380,7 @@ func registerAccountTools(s *mcp.Server, app *application.App) {
 // ---------- sync & job tools ----------
 
 func registerSyncTools(s *mcp.Server, app *application.App) {
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_sync_start",
 		Description: "Start an asynchronous POP3 sync for an account. Returns a job_id to poll with job_status.",
 		Annotations: writeExtern,
@@ -403,7 +399,7 @@ func registerSyncTools(s *mcp.Server, app *application.App) {
 	type jobIDInput struct {
 		JobID string `json:"job_id" jsonschema:"the job ID"`
 	}
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "job_status",
 		Description: "Get status, progress, and statistics of an asynchronous job (sync, analysis, ...).",
 		Annotations: readOnly,
@@ -415,7 +411,7 @@ func registerSyncTools(s *mcp.Server, app *application.App) {
 		return nil, job, nil
 	})
 
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "job_cancel",
 		Description: "Cancel a running asynchronous job.",
 		Annotations: writeLocal,
@@ -430,7 +426,7 @@ func registerSyncTools(s *mcp.Server, app *application.App) {
 // ---------- search & read tools ----------
 
 func registerQueryTools(s *mcp.Server, app *application.App) {
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_search",
 		Description: "Search mail by keyword and filters (from, to, subject, date range, attachments). Cursor-paginated.",
 		Annotations: readOnly,
@@ -445,7 +441,7 @@ func registerQueryTools(s *mcp.Server, app *application.App) {
 	type messageIDInput struct {
 		MessageID string `json:"message_id" jsonschema:"the internal message ID (msg_...)"`
 	}
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_message_get",
 		Description: "Get a parsed message: headers, text body, sanitized HTML, attachment list. Set mask=true to redact PII/secrets.",
 		Annotations: readOnly,
@@ -464,7 +460,7 @@ func registerQueryTools(s *mcp.Server, app *application.App) {
 		return nil, mv, nil
 	})
 
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_thread_get",
 		Description: "Get all messages of a conversation thread in chronological order.",
 		Annotations: readOnly,
@@ -479,7 +475,7 @@ func registerQueryTools(s *mcp.Server, app *application.App) {
 		return nil, tv, nil
 	})
 
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_attachment_list",
 		Description: "List attachments of a message (name, type, size, hash) without downloading content.",
 		Annotations: readOnly,
@@ -491,7 +487,7 @@ func registerQueryTools(s *mcp.Server, app *application.App) {
 		return nil, map[string]any{"attachments": atts}, nil
 	})
 
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_hybrid_search",
 		Description: "Hybrid search combining full-text keyword search and semantic vector search via Reciprocal Rank Fusion (RRF). Returns messages ranked by fused score, optionally collapsed to one hit per thread.",
 		Annotations: readExtern,
@@ -516,7 +512,7 @@ func registerQueryTools(s *mcp.Server, app *application.App) {
 		return nil, map[string]any{"results": views, "count": len(views)}, nil
 	})
 
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_thread_timeline",
 		Description: "Get a conversation thread as an ordered timeline (oldest first) with bodies and attachments for an interactive view.",
 		Annotations: readOnly,
@@ -530,7 +526,7 @@ func registerQueryTools(s *mcp.Server, app *application.App) {
 		return nil, map[string]any{"timeline": tl, "count": len(tl)}, nil
 	})
 
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_work_inbox",
 		Description: "Task-oriented triage of the active inbox, grouped into important / snoozed_due / attention / reference buckets with counts.",
 		Annotations: readOnly,
@@ -545,7 +541,7 @@ func registerQueryTools(s *mcp.Server, app *application.App) {
 		return nil, inbox, nil
 	})
 
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_batch_update",
 		Description: "Bulk-update messages. action ∈ {archive, unarchive, mark_important, unmark_important, snooze, unsnooze, add_label, remove_label, delete}. Returns per-message success/failure. Deleting in bulk requires confirm=true.",
 		Annotations: writeLocal,
@@ -587,18 +583,18 @@ func registerAITools(s *mcp.Server, app *application.App) {
 	}
 	aiAnn := &mcp.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: boolPtr(true)}
 
-	mcp.AddTool(s, &mcp.Tool{Name: "mail_summarize",
+	addTool(s, &mcp.Tool{Name: "mail_summarize",
 		Description: "AI-summarize one message: key points, requests, dates.", Annotations: aiAnn}, analyze("summarize"))
-	mcp.AddTool(s, &mcp.Tool{Name: "mail_classify",
+	addTool(s, &mcp.Tool{Name: "mail_classify",
 		Description: "AI-classify a message (work/ad/notification/personal/security) with importance.", Annotations: aiAnn}, analyze("classify"))
-	mcp.AddTool(s, &mcp.Tool{Name: "mail_action_items_extract",
+	addTool(s, &mcp.Tool{Name: "mail_action_items_extract",
 		Description: "Extract action items (task, assignee, due date, evidence) from a message.", Annotations: aiAnn}, analyze("action_items"))
-	mcp.AddTool(s, &mcp.Tool{Name: "mail_entities_extract",
+	addTool(s, &mcp.Tool{Name: "mail_entities_extract",
 		Description: "Extract entities (people, companies, projects, amounts, contacts) from a message.", Annotations: aiAnn}, analyze("entities"))
-	mcp.AddTool(s, &mcp.Tool{Name: "mail_phishing_inspect",
+	addTool(s, &mcp.Tool{Name: "mail_phishing_inspect",
 		Description: "AI phishing-risk assessment of a message including authentication headers.", Annotations: aiAnn}, analyze("phishing"))
 
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_thread_summarize",
 		Description: "AI-summarize a whole thread: progress, decisions, open items.",
 		Annotations: aiAnn,
@@ -612,7 +608,7 @@ func registerAITools(s *mcp.Server, app *application.App) {
 		return nil, an, nil
 	})
 
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_attachment_extract_text",
 		Description: "Extract plain text from a text-based attachment (text/*, JSON, CSV, HTML). Binary/OCR formats return unsupported.",
 		Annotations: readOnly,
@@ -627,7 +623,7 @@ func registerAITools(s *mcp.Server, app *application.App) {
 		return nil, res, nil
 	})
 
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_attachment_summarize",
 		Description: "Extract a text-based attachment and AI-summarize it (key points, tables/figures, risks).",
 		Annotations: aiAnn,
@@ -642,7 +638,7 @@ func registerAITools(s *mcp.Server, app *application.App) {
 		return nil, an, nil
 	})
 
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_auth_inspect",
 		Description: "Structured SPF/DKIM/DMARC/ARC verdicts, From-domain alignment, and a 0-100 sender-domain risk score for a message. Deterministic and offline (reads the receiving MTA's recorded Authentication-Results).",
 		Annotations: readOnly,
@@ -656,7 +652,7 @@ func registerAITools(s *mcp.Server, app *application.App) {
 		return nil, res, nil
 	})
 
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_embeddings_build",
 		Description: "Build embeddings for stored messages lacking them, enabling semantic search. Returns a job_id.",
 		Annotations: aiAnn,
@@ -671,7 +667,7 @@ func registerAITools(s *mcp.Server, app *application.App) {
 		return nil, job, nil
 	})
 
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_semantic_search",
 		Description: "Meaning-based search over embedded messages. Returns messages ranked by similarity with scores and a short reason.",
 		Annotations: aiAnn,
@@ -687,7 +683,7 @@ func registerAITools(s *mcp.Server, app *application.App) {
 		return nil, map[string]any{"results": hits}, nil
 	})
 
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_eval_prompt",
 		Description: "Evaluate an analysis type over labeled cases (message_id + expected [+ field]) and report accuracy and latency for the active prompt version.",
 		Annotations: aiAnn,
@@ -702,22 +698,19 @@ func registerAITools(s *mcp.Server, app *application.App) {
 		return nil, res, nil
 	})
 
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_question_answer",
-		Description: "Answer a question from the user's own mailbox, with evidence message IDs.",
+		Description: "Ask Postra: answer from your own mail, work states and action cards with verified message citations, explicit date/keyword constraints and disclosed retrieval limits. Never sends mail or changes work state.",
 		Annotations: aiAnn,
-	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct {
-		Question  string `json:"question" jsonschema:"the question to answer from the mailbox"`
-		AccountID string `json:"account_id,omitempty" jsonschema:"optional account scope"`
-	}) (*mcp.CallToolResult, any, error) {
-		an, err := app.AnswerQuestion(ctx, in.Question, in.AccountID)
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in application.AskInput) (*mcp.CallToolResult, any, error) {
+		an, err := app.Ask(ctx, in)
 		if err != nil {
 			return nil, nil, err
 		}
 		return nil, an, nil
 	})
 
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_calendar_extract",
 		Description: "Extract meetings/deadlines from a message as calendar events (also renderable as iCalendar).",
 		Annotations: aiAnn,
@@ -731,7 +724,7 @@ func registerAITools(s *mcp.Server, app *application.App) {
 		return nil, out, nil
 	})
 
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_rule_draft_from_text",
 		Description: "Turn a plain-language filing request into a mail rule. Returns an unsaved preview; save it with mail_rule_create.",
 		Annotations: aiAnn,
@@ -745,7 +738,7 @@ func registerAITools(s *mcp.Server, app *application.App) {
 		return nil, map[string]any{"rule": rule, "saved": false}, nil
 	})
 
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_daily_digest",
 		Description: "Summarize recent mail into a briefing: what needs a reply, deadlines, and FYI.",
 		Annotations: aiAnn,
@@ -760,7 +753,7 @@ func registerAITools(s *mcp.Server, app *application.App) {
 		return nil, an, nil
 	})
 
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_suggest_replies",
 		Description: "Suggest short, ready-to-send reply options for a message (the user picks/edits/sends; nothing is sent automatically).",
 		Annotations: aiAnn,
@@ -778,12 +771,15 @@ func registerAITools(s *mcp.Server, app *application.App) {
 // ---------- compose & send tools ----------
 
 func registerComposeTools(s *mcp.Server, app *application.App) {
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name: "mail_draft_create",
 		Description: "Create a mail draft (new/reply/reply_all/forward). With 'instructions', the AI writes the body. " +
 			"Drafts are never sent automatically — sending requires mail_send_request_approval + mail_send.",
 		Annotations: &mcp.ToolAnnotations{IdempotentHint: false, DestructiveHint: boolPtr(false), OpenWorldHint: boolPtr(false)},
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in application.CreateDraftInput) (*mcp.CallToolResult, any, error) {
+		if in.Format == "" {
+			in.Format = "auto"
+		}
 		dv, err := app.CreateDraft(ctx, in)
 		if err != nil {
 			return nil, nil, err
@@ -791,7 +787,7 @@ func registerComposeTools(s *mcp.Server, app *application.App) {
 		return nil, dv, nil
 	})
 
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_draft_update",
 		Description: "Update a draft's subject, body, or recipients. Creates a new user-authored version and invalidates prior approvals.",
 		Annotations: writeLocal,
@@ -803,7 +799,7 @@ func registerComposeTools(s *mcp.Server, app *application.App) {
 		return nil, dv, nil
 	})
 
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_draft_rewrite",
 		Description: "AI-rewrite a draft in a given style (formal, concise, friendly, translate to <lang>, ...).",
 		Annotations: writeLocal,
@@ -821,7 +817,7 @@ func registerComposeTools(s *mcp.Server, app *application.App) {
 	type draftIDInput struct {
 		DraftID string `json:"draft_id" jsonschema:"the draft ID"`
 	}
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_send_preview",
 		Description: "Preview exactly what would be sent: from, recipients, subject, body, external-domain warnings, payload hash.",
 		Annotations: readOnly,
@@ -833,7 +829,7 @@ func registerComposeTools(s *mcp.Server, app *application.App) {
 		return nil, p, nil
 	})
 
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name: "mail_send_request_approval",
 		Description: "Request a one-time send-approval token for the draft's CURRENT version. " +
 			"Show the returned preview to the user and obtain their explicit confirmation before calling mail_send. " +
@@ -851,7 +847,7 @@ func registerComposeTools(s *mcp.Server, app *application.App) {
 		return nil, map[string]any{"preview": preview, "approval": tok}, nil
 	})
 
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name: "mail_send",
 		Description: "Send an approved draft via SMTP. Requires a valid approval token bound to the draft's current content. " +
 			"Destructive and externally visible — only call after the user explicitly confirmed the preview.",
@@ -864,7 +860,7 @@ func registerComposeTools(s *mcp.Server, app *application.App) {
 		return nil, out, nil
 	})
 
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_outbound_status",
 		Description: "Get the delivery status of an outbound message (sent / failed / send_uncertain).",
 		Annotations: readOnly,
@@ -882,7 +878,7 @@ func registerComposeTools(s *mcp.Server, app *application.App) {
 // ---------- rule (automation) tools ----------
 
 func registerRuleTools(s *mcp.Server, app *application.App) {
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_rules_list",
 		Description: "List the caller's mail automation rules (conditions → actions), ordered by priority.",
 		Annotations: readOnly,
@@ -894,7 +890,7 @@ func registerRuleTools(s *mcp.Server, app *application.App) {
 		return nil, map[string]any{"rules": rules}, nil
 	})
 
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name: "mail_rule_create",
 		Description: "Create a mail automation rule. Fields: name, match(all|any), priority, conditions[{field,operator,value}], " +
 			"actions[{type,value}], stop_on_match. Condition fields: from,to,subject,body,account,has_attachment,is_important. " +
@@ -908,7 +904,7 @@ func registerRuleTools(s *mcp.Server, app *application.App) {
 		return nil, rule, nil
 	})
 
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_rule_update",
 		Description: "Update an existing mail automation rule (must include id).",
 		Annotations: writeLocal,
@@ -920,7 +916,7 @@ func registerRuleTools(s *mcp.Server, app *application.App) {
 		return nil, rule, nil
 	})
 
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_rule_delete",
 		Description: "Delete a mail automation rule.",
 		Annotations: writeLocal,
@@ -933,7 +929,7 @@ func registerRuleTools(s *mcp.Server, app *application.App) {
 		return nil, map[string]string{"status": "deleted"}, nil
 	})
 
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_apply_rules",
 		Description: "Evaluate the caller's rules against one stored message and apply matching actions. Returns which rules matched.",
 		Annotations: writeLocal,
@@ -952,7 +948,7 @@ func registerRuleTools(s *mcp.Server, app *application.App) {
 
 func registerActionCardTools(s *mcp.Server, app *application.App) {
 	aiAnn := &mcp.ToolAnnotations{ReadOnlyHint: false, OpenWorldHint: boolPtr(true)}
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_action_cards_extract",
 		Description: "AI-extract actionable cards (meeting/todo/approval/inquiry) from a message and store them as pending for review.",
 		Annotations: aiAnn,
@@ -966,7 +962,7 @@ func registerActionCardTools(s *mcp.Server, app *application.App) {
 		return nil, map[string]any{"cards": cards, "count": len(cards)}, nil
 	})
 
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_action_cards_list",
 		Description: "List extracted action cards, optionally filtered by status (pending|approved|rejected|done|exported).",
 		Annotations: readOnly,
@@ -981,7 +977,7 @@ func registerActionCardTools(s *mcp.Server, app *application.App) {
 		return nil, map[string]any{"cards": cards}, nil
 	})
 
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_action_card_set_status",
 		Description: "Set an action card's status (approved|rejected|done|pending).",
 		Annotations: writeLocal,
@@ -996,7 +992,7 @@ func registerActionCardTools(s *mcp.Server, app *application.App) {
 		return nil, card, nil
 	})
 
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_action_card_export",
 		Description: "Export an APPROVED action card to a target system (calendar/jira/itsm). Returns a structured payload for the integration to apply; Postra performs no external write itself.",
 		Annotations: writeLocal,
@@ -1016,9 +1012,9 @@ func registerActionCardTools(s *mcp.Server, app *application.App) {
 // ---------- collaboration (shared mailbox) tools ----------
 
 func registerCollabTools(s *mcp.Server, app *application.App) {
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_team_inbox",
-		Description: "List messages with shared-mailbox collaboration state, optionally filtered by status (open|pending|resolved) and assignee.",
+		Description: "List owned messages with work state, filtered by new|needs_action|in_progress|waiting|done and assignee. Legacy open|pending|resolved aliases retain equivalent filters.",
 		Annotations: readOnly,
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct {
 		Status   string `json:"status,omitempty"`
@@ -1032,7 +1028,7 @@ func registerCollabTools(s *mcp.Server, app *application.App) {
 		return nil, map[string]any{"items": items, "count": len(items)}, nil
 	})
 
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_collab_get",
 		Description: "Get a message's collaboration state (assignee, status, SLA) and internal team notes.",
 		Annotations: readOnly,
@@ -1046,7 +1042,7 @@ func registerCollabTools(s *mcp.Server, app *application.App) {
 		return nil, v, nil
 	})
 
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_assign",
 		Description: "Assign a message to a team member (or clear with an empty assignee).",
 		Annotations: writeLocal,
@@ -1061,13 +1057,13 @@ func registerCollabTools(s *mcp.Server, app *application.App) {
 		return nil, mc, nil
 	})
 
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_set_work_status",
-		Description: "Set a message's collaboration work status (open|pending|resolved).",
+		Description: "Set an owned message's work status: new|needs_action|in_progress|waiting|done. Legacy open|pending|resolved aliases remain accepted.",
 		Annotations: writeLocal,
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in struct {
 		MessageID string `json:"message_id" jsonschema:"the internal message ID"`
-		Status    string `json:"status" jsonschema:"open|pending|resolved"`
+		Status    string `json:"status" jsonschema:"new|needs_action|in_progress|waiting|done; legacy open|pending|resolved accepted"`
 	}) (*mcp.CallToolResult, any, error) {
 		mc, err := app.SetMessageWorkStatus(ctx, in.MessageID, in.Status)
 		if err != nil {
@@ -1076,7 +1072,7 @@ func registerCollabTools(s *mcp.Server, app *application.App) {
 		return nil, mc, nil
 	})
 
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_add_note",
 		Description: "Add an internal team note to a message (never sent to anyone).",
 		Annotations: writeLocal,
@@ -1095,7 +1091,7 @@ func registerCollabTools(s *mcp.Server, app *application.App) {
 // ---------- audit tools ----------
 
 func registerAuditTools(s *mcp.Server, app *application.App) {
-	mcp.AddTool(s, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "mail_audit_search",
 		Description: "Read recent audit events (account changes, secret usage, sync, AI analysis, approvals, sends).",
 		Annotations: readOnly,

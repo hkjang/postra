@@ -50,17 +50,21 @@ type Principal struct {
 	DisplayName string   `json:"display_name"`
 	Role        UserRole `json:"role"`
 	AuthMethod  string   `json:"auth_method"` // local | oidc | api_token | mcp_key | cli
+	MCPKeyID    string   `json:"mcp_key_id,omitempty"`
+	MCPScopes   []string `json:"mcp_scopes,omitempty"`
 }
 
 func (p Principal) IsAdmin() bool { return p.Role == RoleAdmin }
 
 type MCPKey struct {
-	ID         string `json:"id"`
-	UserID     string `json:"user_id"`
-	Name       string `json:"name"`
-	KeyHash    string `json:"-"`
-	KeyPrefix  string `json:"key_prefix"`
-	Status     string `json:"status"` // active | revoked
-	CreatedAt  int64  `json:"created_at"`
-	LastUsedAt int64  `json:"last_used_at,omitempty"`
+	ID           string   `json:"id"`
+	UserID       string   `json:"user_id"`
+	Name         string   `json:"name"`
+	KeyHash      string   `json:"-"`
+	KeyPrefix    string   `json:"key_prefix"`
+	Status       string   `json:"status"` // active | revoked
+	CreatedAt    int64    `json:"created_at"`
+	LastUsedAt   int64    `json:"last_used_at,omitempty"`
+	Scopes       []string `json:"scopes"`
+	LegacyScopes bool     `json:"legacy_scopes,omitempty"`
 }

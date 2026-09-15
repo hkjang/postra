@@ -123,10 +123,10 @@ func verifyCitations(resultJSON string, allowed map[string]bool) (string, int) {
 // never see citations that were not in the evidence actually supplied.
 func (a *App) applyCitationVerification(ctx context.Context, an *domain.Analysis, allowed map[string]bool) {
 	fixed, dropped := verifyCitations(an.ResultJSON, allowed)
+	an.ResultJSON = fixed
 	if dropped == 0 {
 		return
 	}
-	an.ResultJSON = fixed
 	slog.Warn("dropped unverifiable AI citations", "analysis", an.ID, "dropped", dropped)
 	a.audit(ctx, "ai_citations_dropped", "analysis:"+an.ID, "ok",
 		fmt.Sprintf("dropped=%d (모델이 근거로 제시한 메일 ID가 검색 결과에 없음)", dropped))

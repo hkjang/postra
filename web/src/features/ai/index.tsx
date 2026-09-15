@@ -1,10 +1,11 @@
-import {useState, type FormEvent} from 'react'
-import {Link, useSearchParams} from 'react-router-dom'
+import {useState} from 'react'
+import {Link} from 'react-router-dom'
 import {useMutation, useQuery} from '@tanstack/react-query'
-import {ArrowUp, FileText, Sparkles} from 'lucide-react'
+import {Sparkles} from 'lucide-react'
 import {z} from 'zod'
 import {api} from '@/api/client'
-import {Button, EmptyState, ErrorState, Loading, PageHeader, Textarea} from '@/components/ui'
+import {Button, EmptyState, ErrorState, Loading, PageHeader} from '@/components/ui'
+import {AskWorkspace} from './AskWorkspace'
 import type {Account, Analysis} from '@/features/messages/types'
 
 type Answer = {answer?: string; evidence_message_ids?: string[]; confidence?: number; headline?: string; needs_reply?: {message_id: string; who: string; what: string}[]; deadlines?: {message_id: string; what: string; when: string}[]; fyi?: string[]; volume_note?: string}
@@ -26,13 +27,7 @@ function AccountSelect({value, onChange}: {value: string; onChange: (value: stri
   return <label className="row small muted">대상 계정<select className="input" style={{width: 'auto', maxWidth: '100%'}} value={value} onChange={event => onChange(event.target.value)}><option value="">내 모든 계정</option>{accounts.data?.map(account => <option key={account.id} value={account.id}>{account.email}</option>)}</select></label>
 }
 export function AskPage() {
-  const [params] = useSearchParams()
-  const [question, setQuestion] = useState(params.get('q') || '')
-  const [account, setAccount] = useState('')
-  const answer = useMutation({mutationFn: () => api<Analysis>('/api/qa', {body: {question, account_id: account}})})
-  const result = resultOf(answer.data)
-  function ask(event: FormEvent) {event.preventDefault(); if (question.trim()) answer.mutate()}
-  return <div className="page ai-page"><div className="ai-hero"><Sparkles size={32}/><h1>Ask Postra</h1><p className="muted">내 메일을 근거로, 업무의 맥락을 찾아보세요.</p></div><form className="stack" onSubmit={ask}><div className="ai-question"><Textarea aria-label="AI에게 질문" value={question} onChange={event => setQuestion(event.target.value)} placeholder="지난주 계약 검토와 관련해 회신해야 할 내용을 알려줘" required/><Button type="submit" disabled={answer.isPending || !question.trim()}><ArrowUp size={17}/>{answer.isPending ? '근거를 찾는 중…' : '질문하기'}</Button></div><AccountSelect value={account} onChange={setAccount}/></form>{answer.isPending && <Loading label="내 메일에서 답변의 근거를 찾고 있습니다…"/>}{answer.error && <ErrorState error={answer.error}/>}<p className="small muted">질문을 실행하면 설정된 AI가 접근 가능한 메일을 분석합니다. 답변은 원본 메일과 확인해 주세요.</p>{result && <article className="ai-result"><h2><Sparkles size={18}/>메일에서 찾은 답변</h2><p className="pre-wrap">{result.answer || '답변을 생성하지 못했습니다.'}</p>{!!result.evidence_message_ids?.length && <><h3>근거 메일</h3><div className="evidence-list">{result.evidence_message_ids.map((id, index) => <Link key={id} to={`/mail?message=${encodeURIComponent(id)}`}><FileText size={12}/>근거 {index + 1}</Link>)}</div></>}<p className="small muted">{answer.data?.model}{typeof result.confidence === 'number' ? ` · 신뢰도 ${Math.round(result.confidence * 100)}%` : ''}</p></article>}</div>
+  return <AskWorkspace/>
 }
 export function DigestPage() {
   const [account, setAccount] = useState('')

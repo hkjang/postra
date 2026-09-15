@@ -35,16 +35,32 @@ type Draft struct {
 // DraftVersion keeps AI-generated and user-edited revisions apart via Author
 // (DRAFT-002/003).
 type DraftVersion struct {
-	DraftID   string    `json:"draft_id"`
-	Version   int       `json:"version"`
-	Subject   string    `json:"subject"`
-	BodyText  string    `json:"body_text"`
-	BodyHTML  string    `json:"body_html,omitempty"`
-	To        []Address `json:"to"`
-	Cc        []Address `json:"cc,omitempty"`
-	Bcc       []Address `json:"bcc,omitempty"`
-	Author    string    `json:"author"` // "ai" | "user"
-	CreatedAt int64     `json:"created_at"`
+	DraftID     string            `json:"draft_id"`
+	Version     int               `json:"version"`
+	Subject     string            `json:"subject"`
+	BodyText    string            `json:"body_text"`
+	BodyHTML    string            `json:"body_html,omitempty"`
+	To          []Address         `json:"to"`
+	Cc          []Address         `json:"cc,omitempty"`
+	Bcc         []Address         `json:"bcc,omitempty"`
+	Author      string            `json:"author"` // "ai" | "user"
+	CreatedAt   int64             `json:"created_at"`
+	Attachments []DraftAttachment `json:"attachments,omitempty"`
+}
+
+// DraftAttachment is an immutable reference to an owner-scanned encrypted
+// object. Every attachment edit produces a new draft version and approval hash.
+type DraftAttachment struct {
+	ID         string     `json:"id"`
+	Name       string     `json:"name"`
+	MIMEType   string     `json:"mime_type"`
+	Size       int64      `json:"size"`
+	Hash       string     `json:"hash"`
+	StorageURI string     `json:"storage_uri"`
+	Inline     bool       `json:"inline"`
+	ContentID  string     `json:"content_id,omitempty"`
+	ScanStatus ScanStatus `json:"scan_status"`
+	ScanDetail string     `json:"scan_detail,omitempty"`
 }
 
 // ApprovalRequest binds an approval to the exact payload being approved

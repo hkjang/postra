@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -169,6 +168,15 @@ func (a *App) SystemSettings(ctx context.Context) (map[string]string, error) {
 			stored[key] = value
 		}
 	}
+	for _, d := range SettingsDefinitions() {
+		if d.Apply == "fixed" {
+			stored[d.Key] = d.Default
+		}
+	}
+	// Extra headers can carry gateway credentials. Legacy APIs may report
+	// registration, but must never disclose the plaintext JSON or env value.
+	stored[SettingAIExtraHeaders] = ""
+	stored["ai.extra_headers_registered"] = strconv.FormatBool(aiCfg.ExtraHeaders != "" || aiCfg.ExtraHeadersRef != "")
 	return stored, nil
 }
 
@@ -176,6 +184,18 @@ func (a *App) SystemSettings(ctx context.Context) (map[string]string, error) {
 // services and scanners are constructed. Authentication/OIDC settings are also
 // read dynamically, while other policy changes take effect after restart.
 func applyStoredSettings(cfg *config.Config, values map[string]string) {
+	// Storage/encryption/bootstrap values describe adapters already constructed
+	// by the launcher. A historical DB row must not misrepresent those adapters
+	// or silently toggle encryption without a data migration.
+	filtered := make(map[string]string, len(values))
+	for key, value := range values {
+		if d, ok := settingDefinition(key); ok && (d.Apply == "deployment" || d.Apply == "fixed") {
+			continue
+		}
+		filtered[key] = value
+	}
+	values = filtered
+	config.ApplyValues(cfg, values)
 	cfg.Auth.SessionHours = intSetting(values, SettingAuthSessionHours, cfg.Auth.SessionHours)
 	cfg.Sync.AutoSyncMinutes = intSetting(values, SettingSyncAutoMinutes, cfg.Sync.AutoSyncMinutes)
 	cfg.Sync.InitialWindowDays = intSetting(values, SettingSyncInitialWindowDays, cfg.Sync.InitialWindowDays)
@@ -221,20 +241,50 @@ func applyStoredSettings(cfg *config.Config, values map[string]string) {
 	cfg.Attachments.ArchiveMaxRatio = floatSetting(values, SettingArchiveMaxRatio, cfg.Attachments.ArchiveMaxRatio)
 	cfg.AllowInsecureMail = boolSetting(values, SettingAllowInsecureMail, cfg.AllowInsecureMail)
 	cfg.AllowPrivateHosts = boolSetting(values, SettingAllowPrivateHosts, cfg.AllowPrivateHosts)
-	cfg.EncryptAtRest = boolSetting(values, SettingEncryptAtRest, cfg.EncryptAtRest)
 }
 
 func (a *App) AdminSaveSettings(ctx context.Context, values map[string]string, oidcClientSecret string) error {
+	a.settingsWriteMu.Lock()
+	defer a.settingsWriteMu.Unlock()
+	return a.adminSaveSettings(ctx, values, oidcClientSecret)
+}
+
+func (a *App) adminSaveSettings(ctx context.Context, values map[string]string, oidcClientSecret string) error {
 	if _, err := requireAdmin(ctx); err != nil {
 		return err
 	}
+	stored, err := a.Store.GetSettings(ctx)
+	if err != nil {
+		return err
+	}
+	return a.adminSaveSettingsSnapshot(ctx, values, oidcClientSecret, stored)
+}
+
+// AdminPatch passes its already revision-checked snapshot here. Rereading it
+// before commit would accept another replica's write and silently defeat CAS.
+func (a *App) adminSaveSettingsSnapshot(ctx context.Context, values map[string]string, oidcClientSecret string, storedBefore map[string]string) error {
+	if _, err := requireAdmin(ctx); err != nil {
+		return err
+	}
+	var newRefs []domain.SecretRef
+	committed := false
+	defer func() {
+		if !committed {
+			a.revokeUnreferencedSettingSecrets(newRefs)
+		}
+	}()
 	clean := map[string]string{}
 	for key, value := range values {
+		if d, ok := settingDefinition(key); ok && d.Apply == "fixed" {
+			return userErrf("설정 %s은 항상 적용되는 고정 정책이며 변경할 수 없습니다", key)
+		}
 		if allowedSettings[key] {
 			clean[key] = strings.TrimSpace(value)
 		}
 	}
-	storedBefore, _ := a.Store.GetSettings(ctx)
+	if err := validateSettingValues(clean); err != nil {
+		return err
+	}
 	oldOIDCRef := storedBefore[SettingOIDCSecretRef]
 	if oldOIDCRef == "" {
 		oldOIDCRef = a.Cfg.Auth.OIDCSecretRef
@@ -255,36 +305,56 @@ func (a *App) AdminSaveSettings(ctx context.Context, values map[string]string, o
 		return err
 	}
 	if oidcClientSecret != "" {
-		ref, err := a.RegisterSecret(ctx, domain.SecretAPIKey, "OIDC client secret",
-			domain.NewSecretHandle([]byte(oidcClientSecret)))
+		handle := domain.NewSecretHandle([]byte(oidcClientSecret))
+		ref, err := a.RegisterSecret(ctx, domain.SecretAPIKey, "OIDC client secret", handle)
+		handle.Zero()
 		if err != nil {
 			return err
 		}
 		clean[SettingOIDCSecretRef] = string(ref)
+		newRefs = append(newRefs, ref)
 	}
 	// The Milvus token arrives as a write-only plaintext field. Register it in
 	// the SecretStore and persist only the reference; never store the token in
 	// system_settings (P1 Milvus 토큰 보안).
+	oldMilvusRef := storedBefore[SettingVectorMilvusTokenRef]
 	if token := strings.TrimSpace(values[SettingVectorMilvusToken]); token != "" {
-		oldRef := storedBefore[SettingVectorMilvusTokenRef]
-		ref, err := a.RegisterSecret(ctx, domain.SecretAPIKey, "Milvus access token",
-			domain.NewSecretHandle([]byte(token)))
+		handle := domain.NewSecretHandle([]byte(token))
+		ref, err := a.RegisterSecret(ctx, domain.SecretAPIKey, "Milvus access token", handle)
+		handle.Zero()
 		if err != nil {
 			return err
 		}
 		clean[SettingVectorMilvusTokenRef] = string(ref)
-		if oldRef != "" && oldRef != string(ref) {
-			_ = a.RevokeSecret(ctx, domain.SecretRef(oldRef))
-		}
+		newRefs = append(newRefs, ref)
 	}
 	delete(clean, SettingVectorMilvusToken) // never persist the plaintext token
-	if err := a.Store.UpsertSettings(ctx, clean); err != nil {
+	if storedBefore[SettingVectorMilvusToken] != "" && clean[SettingVectorMilvusTokenRef] != "" {
+		clean[SettingVectorMilvusToken] = "" // scrub a pre-migration plaintext row
+	}
+	hasNewHeaders := clean[SettingAIExtraHeaders] != ""
+	if err := a.encryptHeaderSetting(ctx, clean); err != nil {
 		return err
 	}
-	if removeOIDCSecret && oldOIDCRef != "" {
-		_ = a.RevokeSecret(ctx, domain.SecretRef(oldOIDCRef))
+	if hasNewHeaders {
+		newRefs = append(newRefs, domain.SecretRef(clean["ai.extra_headers_ref"]))
 	}
-	a.applyAISettings(clean)
+	if err := a.commitAdminSettings(ctx, storedBefore, clean); err != nil {
+		return err
+	}
+	committed = true
+	if removeOIDCSecret && oldOIDCRef != "" {
+		a.revokeUnreferencedSettingSecrets([]domain.SecretRef{domain.SecretRef(oldOIDCRef)})
+	}
+	if newRef := clean[SettingVectorMilvusTokenRef]; newRef != "" && oldMilvusRef != "" && oldMilvusRef != newRef {
+		a.revokeUnreferencedSettingSecrets([]domain.SecretRef{domain.SecretRef(oldMilvusRef)})
+	}
+	if stored, err := a.Store.GetSettings(ctx); err == nil {
+		a.applyAISettings(stored)
+		a.applyRuntimeSettings(stored)
+	} else {
+		a.applyAISettings(clean)
+	}
 
 	hasVectorSetting := false
 	for k := range clean {
@@ -304,7 +374,7 @@ func (a *App) AdminSaveSettings(ctx context.Context, values map[string]string, o
 		notifier.NotifySettingsChange(ctx)
 	}
 
-	a.audit(ctx, "settings_update", "system", "ok", "keys="+strconv.Itoa(len(clean)))
+	a.auditSettingsChanges(ctx, storedBefore, clean)
 	return nil
 }
 
@@ -348,6 +418,8 @@ func (a *App) TrackingConfig(ctx context.Context) tracking.Config {
 // AdminAllowTrackingHost appends one blocked origin to the tracking allow
 // list — the one-click fix for a policy report on the admin screen.
 func (a *App) AdminAllowTrackingHost(ctx context.Context, origin string) error {
+	a.settingsWriteMu.Lock()
+	defer a.settingsWriteMu.Unlock()
 	if _, err := requireAdmin(ctx); err != nil {
 		return err
 	}
@@ -361,7 +433,7 @@ func (a *App) AdminAllowTrackingHost(ctx context.Context, origin string) error {
 		return err
 	}
 	updated := tracking.AddAllowedHost(stored[tracking.SettingAllowedHosts], origin)
-	if err := a.Store.UpsertSettings(ctx, map[string]string{tracking.SettingAllowedHosts: updated}); err != nil {
+	if err := a.commitAdminSettings(ctx, stored, map[string]string{tracking.SettingAllowedHosts: updated}); err != nil {
 		return err
 	}
 	if notifier, ok := a.Store.(interface{ NotifySettingsChange(ctx context.Context) }); ok {
@@ -382,14 +454,30 @@ type aiConfigurable interface {
 }
 
 func (a *App) AdminSaveAISettings(ctx context.Context, values map[string]string, apiKey string) error {
+	a.settingsWriteMu.Lock()
+	defer a.settingsWriteMu.Unlock()
 	if _, err := requireAdmin(ctx); err != nil {
 		return err
 	}
+	var newRefs []domain.SecretRef
+	committed := false
+	defer func() {
+		if !committed {
+			a.revokeUnreferencedSettingSecrets(newRefs)
+		}
+	}()
 	clean := map[string]string{}
 	for key, value := range values {
 		if allowedSettings[key] && strings.HasPrefix(key, "ai.") {
 			clean[key] = strings.TrimSpace(value)
 		}
+	}
+	if err := validateSettingValues(clean); err != nil {
+		return err
+	}
+	storedBefore, err := a.Store.GetSettings(ctx)
+	if err != nil {
+		return err
 	}
 	u, err := url.Parse(clean[SettingAIBaseURL])
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
@@ -398,7 +486,10 @@ func (a *App) AdminSaveAISettings(ctx context.Context, values map[string]string,
 	if clean[SettingAIModel] == "" {
 		return userErrf("AI model is required")
 	}
-	oldKeyRef := a.currentAIConfig().APIKeyRef
+	oldKeyRef, keyWasStored := storedBefore[SettingAIAPIKeyRef]
+	if !keyWasStored {
+		oldKeyRef = a.initialConfig.AI.APIKeyRef
+	}
 	requestedKeyRef, keyRefProvided := values[SettingAIAPIKeyRef]
 	removeKey := apiKey == "" && keyRefProvided && requestedKeyRef == ""
 	if apiKey != "" {
@@ -409,16 +500,30 @@ func (a *App) AdminSaveAISettings(ctx context.Context, values map[string]string,
 			return err
 		}
 		clean[SettingAIAPIKeyRef] = string(ref)
+		newRefs = append(newRefs, ref)
 	}
-	if err := a.Store.UpsertSettings(ctx, clean); err != nil {
+	hasNewHeaders := clean[SettingAIExtraHeaders] != ""
+	if err := a.encryptHeaderSetting(ctx, clean); err != nil {
 		return err
 	}
-	if removeKey && oldKeyRef != "" {
-		_ = a.RevokeSecret(ctx, domain.SecretRef(oldKeyRef))
-	} else if apiKey != "" && oldKeyRef != "" && oldKeyRef != clean[SettingAIAPIKeyRef] {
-		_ = a.RevokeSecret(ctx, domain.SecretRef(oldKeyRef))
+	if hasNewHeaders {
+		newRefs = append(newRefs, domain.SecretRef(clean["ai.extra_headers_ref"]))
 	}
-	a.applyAISettings(clean)
+	if err := a.commitAdminSettings(ctx, storedBefore, clean); err != nil {
+		return err
+	}
+	committed = true
+	if removeKey && oldKeyRef != "" {
+		a.revokeUnreferencedSettingSecrets([]domain.SecretRef{domain.SecretRef(oldKeyRef)})
+	} else if apiKey != "" && oldKeyRef != "" && oldKeyRef != clean[SettingAIAPIKeyRef] {
+		a.revokeUnreferencedSettingSecrets([]domain.SecretRef{domain.SecretRef(oldKeyRef)})
+	}
+	if stored, err := a.Store.GetSettings(ctx); err == nil {
+		a.applyAISettings(stored)
+		a.applyRuntimeSettings(stored)
+	} else {
+		a.applyAISettings(clean)
+	}
 
 	if notifier, ok := a.Store.(interface{ NotifySettingsChange(ctx context.Context) }); ok {
 		notifier.NotifySettingsChange(ctx)
@@ -426,6 +531,23 @@ func (a *App) AdminSaveAISettings(ctx context.Context, values map[string]string,
 
 	cfg := a.currentAIConfig()
 	a.audit(ctx, "ai_settings_update", "system:ai", "ok", "model="+cfg.Model)
+	a.auditSettingsChanges(ctx, storedBefore, clean)
+	return nil
+}
+
+func (a *App) encryptHeaderSetting(ctx context.Context, values map[string]string) error {
+	value := values[SettingAIExtraHeaders]
+	if value == "" {
+		return nil
+	}
+	handle := domain.NewSecretHandle([]byte(value))
+	defer handle.Zero()
+	ref, err := a.RegisterSecret(ctx, domain.SecretAPIKey, "AI extra headers", handle)
+	if err != nil {
+		return err
+	}
+	values["ai.extra_headers_ref"] = string(ref)
+	values[SettingAIExtraHeaders] = ""
 	return nil
 }
 
@@ -468,7 +590,7 @@ func (a *App) AdminTestAI(ctx context.Context) (AIConnectionResult, error) {
 	})
 	out := AIConnectionResult{Model: a.currentAIConfig().Model, LatencyMS: time.Since(start).Milliseconds()}
 	if err != nil {
-		out.Message = sanitizeAIConnectionMessage(err.Error())
+		out.Message = providerDiagnostic(err)
 		return out, nil
 	}
 	out.OK = strings.TrimSpace(result.Text) != ""
@@ -479,18 +601,6 @@ func (a *App) AdminTestAI(ctx context.Context) (AIConnectionResult, error) {
 	}
 	return out, nil
 }
-
-func sanitizeAIConnectionMessage(message string) string {
-	// Adapter errors are already sanitized. This is a final transport boundary
-	// guard for errors produced by alternative AIProvider implementations.
-	message = aiConnectionSecretPattern.ReplaceAllString(message, `$1$2[REDACTED]`)
-	return aiConnectionOpenAIKeyPattern.ReplaceAllString(message, "[REDACTED]")
-}
-
-var (
-	aiConnectionSecretPattern    = regexp.MustCompile(`(?i)(api[_ -]?key|authorization|bearer|access[_ -]?token|secret)(["'\s:=]+)([^\s"',;}]+)`)
-	aiConnectionOpenAIKeyPattern = regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{8,}\b`)
-)
 
 type EmbeddingStoreTestResult struct {
 	OK                   bool   `json:"ok"`
@@ -530,7 +640,7 @@ func (a *App) AdminTestEmbeddingStore(ctx context.Context) (EmbeddingStoreTestRe
 	})
 	result.AIEmbedLatencyMS = time.Since(embedStart).Milliseconds()
 	if err != nil {
-		result.Message = fmt.Sprintf("AI embedding failed: %v", err)
+		result.Message = "AI embedding: " + providerDiagnostic(err)
 		return result, nil
 	}
 	if len(embedRes.Vectors) == 0 || len(embedRes.Vectors[0]) == 0 {
@@ -543,7 +653,7 @@ func (a *App) AdminTestEmbeddingStore(ctx context.Context) (EmbeddingStoreTestRe
 	err = a.VectorStore().Ping(ctx)
 	result.VectorStoreLatencyMS = time.Since(vectorStart).Milliseconds()
 	if err != nil {
-		result.Message = fmt.Sprintf("AI embedding succeeded but Vector store check failed: %v", err)
+		result.Message = "Vector store: " + providerDiagnostic(err)
 		return result, nil
 	}
 	result.VectorStoreOK = true
