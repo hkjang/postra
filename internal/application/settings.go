@@ -11,6 +11,7 @@ import (
 
 	"postra/internal/domain"
 	"postra/internal/platform/config"
+	"postra/internal/platform/notifymail"
 	"postra/internal/platform/tracking"
 )
 
@@ -329,6 +330,19 @@ func (a *App) adminSaveSettingsSnapshot(ctx context.Context, values map[string]s
 		newRefs = append(newRefs, ref)
 	}
 	delete(clean, SettingVectorMilvusToken) // never persist the plaintext token
+	// The relay password reaches this path as a reference from AdminPatchSettings;
+	// a legacy caller sending the plaintext gets it registered the same way, so
+	// the settings table never holds it (MAIL-STANDARD: 비밀번호는 되읽히지 않는다).
+	if password, ok := clean[notifymail.KeyPassword]; ok && password != "" && !strings.HasPrefix(password, "sec_") {
+		handle := domain.NewSecretHandle([]byte(password))
+		ref, err := a.RegisterSecret(ctx, domain.SecretAPIKey, "알림 SMTP 비밀번호", handle)
+		handle.Zero()
+		if err != nil {
+			return err
+		}
+		clean[notifymail.KeyPassword] = string(ref)
+		newRefs = append(newRefs, ref)
+	}
 	if storedBefore[SettingVectorMilvusToken] != "" && clean[SettingVectorMilvusTokenRef] != "" {
 		clean[SettingVectorMilvusToken] = "" // scrub a pre-migration plaintext row
 	}

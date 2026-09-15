@@ -6,7 +6,7 @@ import {api} from '@/api/client'
 import {Badge, Button, ErrorState, Input, PageHeader} from '@/components/ui'
 import {SettingsEditor} from '@/features/settings/SettingsEditor'
 import {UsersPanel, ProvisioningPanel, PurgePanel} from './users'
-import {AuditPanel, IncidentsPanel} from './activity'
+import {AuditPanel, IncidentsPanel, MailNotificationsPanel} from './activity'
 import {MCPAdminPage} from '@/features/mcp'
 
 const categories = [['general', '일반'], ['auth', '인증 및 SSO'], ['mail', '메일'], ['ai', 'AI'], ['search', '검색 및 임베딩'], ['mcp', 'MCP'], ['send', '발송 정책'], ['attachments', '첨부파일'], ['sync', '동기화'], ['security', '보안'], ['notifications', '알림'], ['storage', '저장소'], ['system', '시스템'], ['users', '사용자 관리'], ['audit', '감사 로그']]
@@ -37,7 +37,7 @@ export function OperationsConsole() {
     <div className="operations-layout"><nav className="operations-nav" aria-label="관리자 설정 카테고리">{categories.map(([key, label]) => <Button key={key} variant={category === key && !query ? 'secondary' : 'ghost'} aria-current={category === key && !query ? 'page' : undefined} onClick={() => {setQuery(''); setParams({category: key})}}>{label}</Button>)}</nav>
       <div className="operations-content stack">{!query && <h2>{categories.find(([key]) => key === category)?.[1]}</h2>}
         {(query || !['users', 'audit'].includes(category)) && <><ConnectionTests key={category} category={category}/><SettingsEditor admin category={category} query={query}/></>}
-        {!query && <>{category === 'users' && <UsersPanel/>}{category === 'auth' && <ProvisioningPanel/>}{category === 'mcp' && <MCPAdminPage/>}{category === 'audit' && <AuditPanel/>}{category === 'storage' && <PurgePanel/>}{category === 'system' && <IncidentsPanel/>}{category === 'security' && <Button asChild variant="outline"><Link to="/admin/tracking">방문 추적 · CSP 허용 및 위반 관리</Link></Button>}</>}
+        {!query && <>{category === 'users' && <UsersPanel/>}{category === 'auth' && <ProvisioningPanel/>}{category === 'mcp' && <MCPAdminPage/>}{category === 'audit' && <AuditPanel/>}{category === 'storage' && <PurgePanel/>}{category === 'system' && <IncidentsPanel/>}{category === 'notifications' && <MailNotificationsPanel/>}{category === 'security' && <Button asChild variant="outline"><Link to="/admin/tracking">방문 추적 · CSP 허용 및 위반 관리</Link></Button>}</>}
       </div>
     </div>
   </div>

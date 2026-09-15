@@ -18,6 +18,7 @@ import (
 	"postra/internal/adapters/persistence"
 	"postra/internal/domain"
 	"postra/internal/platform/metrics"
+	"postra/internal/platform/notifymail"
 	"postra/internal/platform/telemetry"
 )
 
@@ -186,6 +187,9 @@ func (a *App) runSync(ctx context.Context, job *domain.Job, acc *domain.MailAcco
 			// POP-011: no endless retries on bad credentials.
 			_ = a.Store.SetAccountStatus(context.Background(), acc.UserID, acc.ID, domain.AccountCredentialError)
 			finish(domain.JobFailed, providerAuthFailed)
+			// Collection stays stopped until the owner re-enters the password;
+			// without a mail the inbox just goes quiet.
+			a.NotifyMail(ctx, notifymail.SyncCredentialError(acc.Name, acc.Email, acc.ID), "", []string{acc.UserID})
 			return
 		}
 		finish(domain.JobFailed, providerDiagnostic(err))

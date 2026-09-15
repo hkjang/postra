@@ -167,6 +167,9 @@ type SMTPSendOptions struct {
 	Password           *SecretHandle
 	InsecureSkipVerify bool
 	ConnectTimeoutSec  int
+	// OpportunisticTLS upgrades a SecurityNone session with STARTTLS when the
+	// server advertises it, and stays plaintext otherwise (relay "auto" mode).
+	OpportunisticTLS bool
 }
 
 // SMTPClient wraps a maintained SMTP implementation behind a stable port

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"math"
 	"net/http"
+	"net/mail"
 	"net/url"
 	"reflect"
 	"strconv"
@@ -11,6 +12,7 @@ import (
 	"sync"
 
 	"postra/internal/platform/config"
+	"postra/internal/platform/notifymail"
 	"postra/internal/platform/tracking"
 )
 
@@ -236,6 +238,7 @@ func buildSettingsDefinitions() []SettingDefinition {
 		{Key: "mcp.permissions.admin_write", Label: "MCP admin_write 권한", Category: "mcp", Type: "bool", Default: "false", Scope: "admin", Apply: "live", Lockable: false},
 	}
 	result = append(result, extra...)
+	result = append(result, notifyMailDefinitions()...)
 	for _, key := range tracking.SettingKeys {
 		d := SettingDefinition{Key: key, Label: key, Category: "security", Type: "string", Default: tracking.Defaults[key], Scope: "admin", Apply: "live"}
 		if strings.HasSuffix(key, "enabled") {
@@ -248,6 +251,49 @@ func buildSettingsDefinitions() []SettingDefinition {
 		result = append(result, d)
 	}
 	return result
+}
+
+// notifyMailDefinitions are the relay notification settings (MAIL-STANDARD).
+// The keys are shared with every other internal service; the password is a
+// write-only secret whose stored value is a SecretStore reference.
+func notifyMailDefinitions() []SettingDefinition {
+	def := func(key, label, typ string) SettingDefinition {
+		return SettingDefinition{Key: key, Label: label, Category: "notifications", Type: typ, Default: notifymail.Defaults[key], Scope: "admin", Apply: "live"}
+	}
+	out := []SettingDefinition{
+		def(notifymail.KeyEnabled, "알림 메일 발송 (SMTP 릴레이)", "bool"),
+		def(notifymail.KeyHost, "알림 SMTP 릴레이 주소", "string"),
+		def(notifymail.KeyPort, "알림 SMTP 포트", "int"),
+		def(notifymail.KeySecurity, "알림 SMTP 보안", "enum"),
+		def(notifymail.KeySkipTLSVerify, "알림 SMTP 인증서 검증 생략", "bool"),
+		def(notifymail.KeyUsername, "알림 SMTP 사용자 이름 (선택)", "string"),
+		def(notifymail.KeyPassword, "알림 SMTP 비밀번호 (선택)", "secret"),
+		def(notifymail.KeyFromAddress, "알림 보내는 주소", "string"),
+		def(notifymail.KeyFromName, "알림 보내는 이름", "string"),
+		def(notifymail.KeyBaseURL, "알림 메일 속 링크 기준 URL", "url"),
+		def(notifymail.KeyTimeout, "알림 SMTP 제한 시간(초)", "int"),
+		def(notifymail.NotifyKey(notifymail.EventSendFailed), "알림: 발송 실패로 멈춤", "bool"),
+		def(notifymail.NotifyKey(notifymail.EventAssigned), "알림: 담당 배정", "bool"),
+		def(notifymail.NotifyKey(notifymail.EventSyncCredentialError), "알림: 수집 인증 실패", "bool"),
+		def(notifymail.NotifyKey(notifymail.EventIncident), "알림: 심각 장애 (관리자)", "bool"),
+	}
+	for i := range out {
+		switch out[i].Key {
+		case notifymail.KeyEnabled:
+			out[i].Help = "사내 SMTP 릴레이로 이벤트 알림을 보냅니다. 기본은 꺼짐이며, 릴레이는 대개 포트 25·인증 없음·TLS 없음입니다."
+		case notifymail.KeySecurity:
+			out[i].Options = notifymail.SecurityOptions
+			out[i].Help = "auto 는 서버가 STARTTLS 를 알리면 쓰고 아니면 평문으로 보냅니다. 465 포트는 자동으로 tls 입니다."
+		case notifymail.KeyPassword:
+			out[i].Secret = true
+			out[i].Help = "인증이 없는 릴레이는 비워 둡니다. 저장한 비밀번호는 다시 조회할 수 없습니다."
+		case notifymail.KeyBaseURL:
+			out[i].Help = "메일 속 '바로 열기' 링크가 가리킬 이 앱의 공개 주소입니다. 비우면 링크를 넣지 않습니다."
+		case notifymail.KeySkipTLSVerify:
+			out[i].Help = "사내 인증서가 사설일 때만 켭니다."
+		}
+	}
+	return out
 }
 
 func settingDefinition(key string) (SettingDefinition, bool) {
@@ -311,6 +357,14 @@ func validateSetting(d SettingDefinition, value string) error {
 			if n < 5 || n > 300 {
 				return fail()
 			}
+		case notifymail.KeyPort:
+			if n < 1 || n > 65535 {
+				return fail()
+			}
+		case notifymail.KeyTimeout:
+			if n < 1 || n > 300 {
+				return fail()
+			}
 		}
 	case "number":
 		n, err := strconv.ParseFloat(value, 64)
@@ -341,6 +395,17 @@ func validateSetting(d SettingDefinition, value string) error {
 				return userErrf("설정 %s은 인증정보나 쿼리 문자열이 없는 HTTP(S) URL이어야 합니다", d.Key)
 			}
 		}
+	}
+	if d.Key == notifymail.KeyFromAddress && value != "" {
+		if _, err := mail.ParseAddress(value); err != nil || strings.ContainsAny(value, "<>\r\n") {
+			return userErrf("설정 %s 은 이름 없는 메일 주소여야 합니다", d.Key)
+		}
+	}
+	if (d.Key == notifymail.KeyHost || d.Key == notifymail.KeyUsername) && strings.ContainsAny(value, " \t\r\n") {
+		return fail()
+	}
+	if d.Key == notifymail.KeyFromName && strings.ContainsAny(value, "\r\n") {
+		return fail()
 	}
 	if d.Key == "ai.task_models" && value != "" {
 		var routes map[string]config.AITaskRoute
