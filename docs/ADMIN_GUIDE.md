@@ -272,6 +272,35 @@ Keycloak에 새 `https://<host>/auth/oidc/callback` URI를 먼저 추가하고 P
 
 사용자·메일·초안·KEK는 그대로 보존합니다. 관리자도 다른 사람의 메일을 열 수 없고, 이전 소유자의 데이터 정리는 별도 관리자 purge 확인 흐름을 사용합니다. [전체 이전 안내](REACT_WORKSPACE.md)와 [기능/보안 회귀 기록](LEGACY_PARITY.md)을 확인하세요.
 
+### 6.5 다른 서비스로 보내기 (handoff 허용 목록)
+
+메일 화면에서 메일 한 통을 사내 다른 서비스(muni·ptium·weekly 등)에 **마크다운 문서로 넘길** 수 있습니다. 사람이 파일을 내려받아 다시 올리지 않습니다. Postra 는 사내 문서 넘기기 표준의 **보내는 쪽**만 맡고 형식은 `markdown` 하나입니다. 받는 쪽(`/handoff`)은 만들지 않으므로 Postra 가 외부 주소를 대신 가져오는 일은 없습니다.
+
+동작은 이렇습니다. 사용자가 단추를 누르면 브라우저가 Postra 에 5분짜리 **한 번만 쓸 수 있는 표(claim)** 를 요청하고(`POST /api/v1/handoff/claims`, 로그인 필요), 새 창에서 받는 서비스의 `<origin>/handoff?source=<Postra 공개 주소>&claim=<표>` 를 엽니다. 받는 서비스는 `GET /api/v1/handoff/claims/{claim}` 으로 문서를 한 번 받아 갑니다 — 이 요청에는 로그인이 없고 표가 곧 자격입니다. 서비스끼리 서로의 자격 증명을 들고 있지 않습니다. 이미 쓴 표, 만료된 표, 모르는 표는 모두 이유를 구별하지 않는 `404` 입니다.
+
+허용 목록은 `/app/admin?category=security`(보안) 에서 바꾸거나 `PATCH /api/v1/admin/configuration` 의 `values` 로 저장합니다. **기본값은 비어 있고, 비어 있는 동안 메일 화면에 보내기 단추가 보이지 않습니다.** 새로 설치한 곳에서는 아무것도 달라지지 않습니다.
+
+| 설정 키 | 기본값 | 의미 |
+| --- | --- | --- |
+| `handoff.targets` | 빈 값 | 받는 서비스 허용 목록. JSON 배열, 항목마다 `name`(표시 이름)·`origin`(스킴+호스트[:포트]만, 경로·쿼리·인증정보 불가)·`formats`(그 서비스가 받는 형식). 같은 origin 두 번 불가, 최대 20개 |
+| `handoff.source_origin` | 빈 값 | 받는 서비스가 문서를 받아 갈 Postra 의 공개 오리진(예: `https://postra.intra`). 비우면 요청이 들어온 주소(리버스 프록시의 `X-Forwarded-Proto`/`X-Forwarded-Host` 존중)를 씁니다. 프록시 뒤라면 명시하는 편이 안전합니다 |
+
+```bash
+curl -X PATCH https://postra.intra/api/v1/admin/configuration \
+  -H 'Authorization: Bearer <admin token>' -H 'Content-Type: application/json' \
+  -d '{"values":{
+        "handoff.source_origin":"https://postra.intra",
+        "handoff.targets":"[{\"name\":\"Ptium\",\"origin\":\"https://ptium.intra\",\"formats\":[\"markdown\",\"docx\"]},{\"name\":\"Kanpic\",\"origin\":\"https://kanpic.intra\",\"formats\":[\"csv\",\"xlsx\"]}]"
+      }}'
+```
+
+- 단추는 `formats` 에 `markdown` 이 있는 서비스에만 생깁니다. 위 예에서 Kanpic 은 목록에 남아 있지만 단추가 없습니다. 받는 쪽 목록은 `GET /api/v1/handoff/targets` 로 확인할 수 있습니다.
+- 목록을 읽을 수 없게 만드는 저장(경로가 붙은 origin, 모르는 형식, 중복 origin 등)은 `400` 으로 거부하고 저장하지 않습니다.
+- 받는 서비스 쪽 허용 목록에는 `handoff.source_origin` 과 **정확히 같은** 오리진을 등록해야 합니다. 받는 쪽은 목록에 없는 `source` 에는 요청을 보내지 않습니다.
+- 표는 그 사용자가 읽을 수 있는 메일 한 통에만 묶입니다. 표를 만든다고 권한이 넓어지지 않으며, 남의 메일로는 표가 만들어지지 않습니다.
+- 표는 `handoff_claims` 표(SQLite·PostgreSQL, 다중 replica 공유)에 SHA-256 다이제스트로만 저장되고 수령 때 삭제됩니다. 문서 본문은 수령 시점에 다시 만들므로 암호화된 본문 컬럼 밖에 평문 사본이 남지 않습니다. 표 값은 로그·감사 로그에 남지 않고, 감사 로그에는 `handoff_claim_issued`/`handoff_claim_collected` 와 메일 ID·크기만 남습니다.
+- 넘기는 문서는 제목·보낸이·받는이·참조·날짜·첨부 이름 목록과 텍스트 본문입니다. 첨부 파일 자체는 넘기지 않습니다.
+
 ---
 
 ## 7. 전체 릴리즈 이력 (Release History: v0.1.0 ~ v0.10.5)

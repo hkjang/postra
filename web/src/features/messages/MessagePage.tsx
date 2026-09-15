@@ -8,6 +8,7 @@ import { AIContext } from './AIContext'
 import { MailBody } from './MailBody'
 import { ReceivedImages } from './ReceivedImages'
 import { CopyMCPContext } from './CopyMCPContext'
+import { HandoffButtons } from './HandoffButtons'
 import { registerMailCommands } from '@/lib/mail-commands'
 import {usePersonalPreferences} from '@/features/settings/preferences'
 import { addresses, mailDate, type DraftView, type MessageView } from './types'
@@ -82,6 +83,7 @@ export function MessagePane({ id, onClose }: { id: string; onClose?: () => void 
       {body?.unavailable ? <ErrorState error={new Error(body.unavailable_reason || '본문을 불러올 수 없습니다. 계정에서 본문을 재동기화해 주세요.')} /> : <MailBody key={`${id}:${body?.images_allowed}:${body?.image_sender_trusted}:${body?.image_domain_trusted}`} html={body?.html_sanitized} text={body?.text_body} receivedMessageID={id} allowImagesOnce={imagesOnce} />}
       {body?.html_sanitized && body.text_body && <details className="message-attachments"><summary>원문 텍스트 보기</summary><div className="pre-wrap">{body.text_body}</div></details>}
       {!!attachments?.length && <section className="message-attachments"><h3><Paperclip size={16} /> 첨부파일 {attachments.length}</h3>{attachments.map(att => <div className="attachment-row" key={att.id}><div><strong>{att.name}</strong><small>{Math.ceil(att.size / 1024)} KB · {att.scan_status}</small>{att.scan_detail && <small>{att.scan_detail}</small>}</div>{att.scan_status === 'blocked' ? <span className="danger-text">보안 정책으로 차단됨</span> : <a className="attachment-download" href={`/api/messages/${encodeURIComponent(id)}/attachments/${encodeURIComponent(att.id)}${att.scan_status === 'clean' ? '' : '?ack=true'}`} download onClick={event => {if (att.scan_status !== 'clean' && !window.confirm('격리 또는 의심 첨부입니다. 위험을 이해하고 다운로드하시겠습니까?')) event.preventDefault()}}><Download size={16}/><span>{att.scan_status === 'clean' ? '다운로드' : '위험 확인 후 다운로드'}</span></a>}</div>)}</section>}
+      <HandoffButtons messageID={id}/>
       <div className="message-attachments"><Button variant="ghost" size="sm" asChild><Link to={`/team?message=${encodeURIComponent(id)}`}>담당자 · 처리 상태 · 메모 관리</Link></Button></div>
       <footer className="message-actions"><Button disabled={reply.isPending || update.isPending} onClick={() => replyTo('reply')} title="답장 (R)"><Reply size={17} /> 답장</Button><Button variant="secondary" disabled={reply.isPending || update.isPending} onClick={() => replyTo('reply_all')} title="전체 답장 (A)"><ReplyAll size={17} /> 전체 답장</Button><Button variant="ghost" disabled={reply.isPending || update.isPending} onClick={() => replyTo('forward')} title="전달 (F)"><Forward size={17} /> 전달</Button></footer>
     </article>

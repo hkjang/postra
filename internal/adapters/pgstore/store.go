@@ -343,6 +343,11 @@ func (s *Store) migrate(ctx context.Context) error {
 			id TEXT PRIMARY KEY, user_id TEXT NOT NULL, action_type TEXT NOT NULL, draft_id TEXT, draft_version INT,
 			payload_hash TEXT NOT NULL, token_hash TEXT NOT NULL, approver TEXT, expires_at BIGINT NOT NULL,
 			status TEXT NOT NULL DEFAULT 'pending', created_at BIGINT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS handoff_claims (
+			claim_digest TEXT PRIMARY KEY, user_id TEXT NOT NULL, message_id TEXT NOT NULL,
+			filename TEXT NOT NULL, content_type TEXT NOT NULL, bytes BIGINT NOT NULL,
+			expires_at BIGINT NOT NULL, created_at BIGINT NOT NULL)`,
+		`CREATE INDEX IF NOT EXISTS idx_handoff_claims_expires ON handoff_claims(expires_at)`,
 		`CREATE TABLE IF NOT EXISTS outbound_messages (
 			id TEXT PRIMARY KEY, user_id TEXT NOT NULL, draft_id TEXT NOT NULL, draft_version INT NOT NULL,
 			idempotency_key TEXT UNIQUE, message_id_hdr TEXT, status TEXT NOT NULL, smtp_response TEXT,
@@ -665,7 +670,8 @@ func (s *Store) PurgeDeletedUserMailByEmail(ctx context.Context, email string) (
 			`DELETE FROM messages WHERE user_id=$1`,
 			`DELETE FROM sync_checkpoints WHERE account_id IN (SELECT id FROM mail_accounts WHERE user_id=$1)`,
 			`DELETE FROM threads WHERE user_id=$1`, `DELETE FROM draft_versions WHERE draft_id IN (SELECT id FROM drafts WHERE user_id=$1)`,
-			`DELETE FROM approvals WHERE user_id=$1`, `DELETE FROM outbound_messages WHERE user_id=$1`,
+			`DELETE FROM approvals WHERE user_id=$1`, `DELETE FROM handoff_claims WHERE user_id=$1`,
+			`DELETE FROM outbound_messages WHERE user_id=$1`,
 			`DELETE FROM drafts WHERE user_id=$1`, `DELETE FROM analyses WHERE user_id=$1`,
 			`DELETE FROM jobs WHERE user_id=$1`, `DELETE FROM mail_rules WHERE user_id=$1`,
 			`DELETE FROM mail_accounts WHERE user_id=$1`,
@@ -1905,6 +1911,38 @@ func (s *Store) ConsumeApproval(ctx context.Context, tokenHash, payloadHash stri
 		return "", 0, err
 	}
 	return draftID, version, tx.Commit(ctx)
+}
+
+// ---------- handoff claims ----------
+
+func (s *Store) InsertHandoffClaim(ctx context.Context, c *domain.HandoffClaim) error {
+	c.CreatedAt = now()
+	_, err := s.pool.Exec(ctx, `INSERT INTO handoff_claims
+	 (claim_digest,user_id,message_id,filename,content_type,bytes,expires_at,created_at)
+	 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+		c.Digest, c.UserID, c.MessageID, c.Filename, c.ContentType, c.Bytes, c.ExpiresAt, c.CreatedAt)
+	return err
+}
+
+// ConsumeHandoffClaim deletes the unexpired claim and returns it in one
+// statement, so a second collector finds nothing.
+func (s *Store) ConsumeHandoffClaim(ctx context.Context, digest string, nowTS int64) (*domain.HandoffClaim, error) {
+	c := &domain.HandoffClaim{Digest: digest}
+	err := s.pool.QueryRow(ctx, `DELETE FROM handoff_claims WHERE claim_digest=$1 AND expires_at > $2
+	 RETURNING user_id,message_id,filename,content_type,bytes,expires_at,created_at`, digest, nowTS).
+		Scan(&c.UserID, &c.MessageID, &c.Filename, &c.ContentType, &c.Bytes, &c.ExpiresAt, &c.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, domain.ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+func (s *Store) SweepHandoffClaims(ctx context.Context, nowTS int64) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM handoff_claims WHERE expires_at <= $1`, nowTS)
+	return err
 }
 
 // ---------- outbound ----------

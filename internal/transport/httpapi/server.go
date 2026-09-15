@@ -40,6 +40,7 @@ func (s *Server) Handler() http.Handler {
 	s.registerEventsRoutes(mux)
 	s.registerWorkflowRoutes(mux)
 	s.registerReceivedImageRoutes(mux)
+	s.registerHandoffRoutes(mux)
 
 	mux.HandleFunc("GET /api/me", s.me)
 	mux.HandleFunc("GET /api/auth/session", s.browserSession)
@@ -414,7 +415,8 @@ func publicPath(p string) bool {
 	case "/livez", "/readyz", "/healthz", "/api/livez", "/api/readyz", "/api/healthz", "/api/auth/session":
 		return true
 	}
-	return false
+	// Collecting a handoff claim: the claim in the path is the credential.
+	return handoffCollectPath(p)
 }
 
 func (s *Server) middleware(mux *http.ServeMux) http.Handler {
