@@ -1077,7 +1077,7 @@
             <a href="#" class="brand">
                 <img src="assets/logo.png" alt="Postra AI Mail Platform Official Logo" width="40" height="40">
                 <span class="brand-title">Postra</span>
-                <span class="brand-badge">Enterprise v0.10.5</span>
+                <span class="brand-badge">Workspace v0.20.0</span>
             </a>
             <nav>
                 <ul class="nav-links">
@@ -1259,7 +1259,7 @@
                         <div class="arch-layer">
                             <span class="arch-layer-header">1. Transport Layer</span>
                             <h4>접근 인터페이스</h4>
-                            <span class="arch-item-tag">Web UI (/ui)</span>
+                            <span class="arch-item-tag">React UI (/app)</span>
                             <span class="arch-item-tag">REST API (/api)</span>
                             <span class="arch-item-tag">MCP Streamable HTTP</span>
                             <span class="arch-item-tag">CLI / MCP Stdio</span>
@@ -1580,7 +1580,7 @@ go build -o postra ./cmd/postra
 ./postra account test --id acc_xxx
 ./postra sync --account acc_xxx --wait
 
-<span class="term-comment"># 5. 통합 서비스 기동 (Web UI: http://127.0.0.1:8480/ui)</span>
+<span class="term-comment"># 5. 통합 서비스 기동 (Web UI: http://127.0.0.1:8480/app/)</span>
 ./postra serve</code></pre>
                     </div>
                 </div>
@@ -1602,7 +1602,7 @@ go build -o postra ./cmd/postra
                         <div>
                             <span class="doc-badge badge-user">User Manual</span>
                             <h3>사용자 가이드</h3>
-                            <p>통합 웹 워크스페이스(`/ui/`), 스마트 받은편지함 사용법, 자연어 검색, 자동화 규칙 및 AI 초안 승인 절차를 설명합니다.</p>
+                            <p>React 웹 워크스페이스(`/app/`), 스마트 받은편지함, 자연어 검색, 업무·액션, 안전한 HTML 메일 작성과 AI 초안 승인 절차를 설명합니다.</p>
                         </div>
                         <div class="doc-actions">
                             <a href="USER_GUIDE.md" class="btn btn-secondary" target="_blank">

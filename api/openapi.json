@@ -1,0 +1,2360 @@
+{
+  "components": {
+    "schemas": {
+      "AddDraftAttachmentInput": {
+        "type": "object",
+        "properties": {
+          "draft_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "data_base64": {
+            "type": "string"
+          },
+          "inline": {
+            "type": "boolean"
+          }
+        },
+        "title": "AddDraftAttachmentInput",
+        "required": [
+          "name",
+          "data_base64"
+        ]
+      },
+      "AskInput": {
+        "type": "object",
+        "properties": {
+          "question": {
+            "type": "string",
+            "description": "question to answer from your own mail and work evidence"
+          },
+          "account_id": {
+            "type": "string",
+            "description": "optional owned account"
+          },
+          "mode": {
+            "type": "string",
+            "description": "auto, keyword, semantic, hybrid, work, or actions"
+          },
+          "search_text": {
+            "type": "string",
+            "description": "optional precise keyword filter; no unrelated-mail fallback"
+          },
+          "from": {
+            "type": "string",
+            "description": "optional sender filter"
+          },
+          "since": {
+            "type": "integer",
+            "description": "inclusive sender-date lower bound, Unix seconds"
+          },
+          "until": {
+            "type": "integer",
+            "description": "exclusive sender-date upper bound, Unix seconds"
+          },
+          "time_zone": {
+            "type": "string",
+            "description": "IANA zone for relative dates; defaults to UTC"
+          },
+          "incomplete_only": {
+            "type": "boolean",
+            "description": "exclude completed work/actions; does not prove a mail is unanswered"
+          }
+        },
+        "title": "AskInput",
+        "required": [
+          "question"
+        ]
+      },
+      "AskResult": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string"
+          },
+          "target_type": {
+            "type": "string"
+          },
+          "target_id": {
+            "type": "string"
+          },
+          "analysis_type": {
+            "type": "string"
+          },
+          "result_json": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "prompt_version": {
+            "type": "string"
+          },
+          "input_hash": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "integer"
+          },
+          "retrieval": {
+            "type": "object",
+            "properties": {
+              "mode": {
+                "type": "string"
+              },
+              "since": {
+                "type": "integer"
+              },
+              "until": {
+                "type": "integer"
+              },
+              "time_zone": {
+                "type": "string"
+              },
+              "sources": {
+                "type": [
+                  "null",
+                  "array"
+                ],
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "message_id": {
+                      "type": "string"
+                    },
+                    "subject": {
+                      "type": "string"
+                    },
+                    "from": {
+                      "type": "string"
+                    },
+                    "date": {
+                      "type": "integer"
+                    },
+                    "work_status": {
+                      "type": "string"
+                    },
+                    "action_ids": {
+                      "type": [
+                        "null",
+                        "array"
+                      ],
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": [
+                    "message_id",
+                    "subject",
+                    "from",
+                    "date"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "warnings": {
+                "type": [
+                  "null",
+                  "array"
+                ],
+                "items": {
+                  "type": "string"
+                }
+              },
+              "bounded": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "mode",
+              "time_zone",
+              "sources",
+              "warnings",
+              "bounded"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "title": "AskResult",
+        "required": [
+          "retrieval"
+        ],
+        "additionalProperties": false
+      },
+      "AskRetrieval": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": "string"
+          },
+          "since": {
+            "type": "integer"
+          },
+          "until": {
+            "type": "integer"
+          },
+          "time_zone": {
+            "type": "string"
+          },
+          "sources": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "object",
+              "properties": {
+                "message_id": {
+                  "type": "string"
+                },
+                "subject": {
+                  "type": "string"
+                },
+                "from": {
+                  "type": "string"
+                },
+                "date": {
+                  "type": "integer"
+                },
+                "work_status": {
+                  "type": "string"
+                },
+                "action_ids": {
+                  "type": [
+                    "null",
+                    "array"
+                  ],
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "message_id",
+                "subject",
+                "from",
+                "date"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "warnings": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "bounded": {
+            "type": "boolean"
+          }
+        },
+        "title": "AskRetrieval",
+        "required": [
+          "mode",
+          "time_zone",
+          "sources",
+          "warnings",
+          "bounded"
+        ],
+        "additionalProperties": false
+      },
+      "AskSource": {
+        "type": "object",
+        "properties": {
+          "message_id": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "from": {
+            "type": "string"
+          },
+          "date": {
+            "type": "integer"
+          },
+          "work_status": {
+            "type": "string"
+          },
+          "action_ids": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "title": "AskSource",
+        "required": [
+          "message_id",
+          "subject",
+          "from",
+          "date"
+        ],
+        "additionalProperties": false
+      },
+      "CreateDraftInput": {
+        "type": "object",
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "default": "new"
+          },
+          "reply_to_message_id": {
+            "type": "string"
+          },
+          "to": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "cc": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "bcc": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "subject": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "body_html": {
+            "type": "string"
+          },
+          "format": {
+            "type": "string"
+          },
+          "template": {
+            "type": "string"
+          },
+          "use_signature": {
+            "type": [
+              "null",
+              "boolean"
+            ]
+          },
+          "signature_id": {
+            "type": "string"
+          },
+          "smart_format": {
+            "type": "boolean"
+          },
+          "intent": {
+            "type": "string"
+          },
+          "tone": {
+            "type": "string"
+          },
+          "length": {
+            "type": "string"
+          },
+          "language": {
+            "type": "string"
+          },
+          "instructions": {
+            "type": "string"
+          },
+          "body_author": {
+            "type": "string"
+          }
+        },
+        "title": "CreateDraftInput",
+        "required": [
+          "account_id"
+        ]
+      },
+      "DraftAttachment": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "mime_type": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer"
+          },
+          "hash": {
+            "type": "string"
+          },
+          "storage_uri": {
+            "type": "string"
+          },
+          "inline": {
+            "type": "boolean"
+          },
+          "content_id": {
+            "type": "string"
+          },
+          "scan_status": {
+            "type": "string"
+          },
+          "scan_detail": {
+            "type": "string"
+          }
+        },
+        "title": "DraftAttachment",
+        "required": [
+          "id",
+          "name",
+          "mime_type",
+          "size",
+          "hash",
+          "storage_uri",
+          "inline",
+          "scan_status"
+        ],
+        "additionalProperties": false
+      },
+      "DraftView": {
+        "type": "object",
+        "properties": {
+          "draft": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "user_id": {
+                "type": "string"
+              },
+              "account_id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "reply_to_message_id": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "current_version": {
+                "type": "integer"
+              },
+              "created_at": {
+                "type": "integer"
+              },
+              "updated_at": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "user_id",
+              "account_id",
+              "kind",
+              "status",
+              "current_version",
+              "created_at",
+              "updated_at"
+            ],
+            "additionalProperties": false
+          },
+          "version": {
+            "type": "object",
+            "properties": {
+              "draft_id": {
+                "type": "string"
+              },
+              "version": {
+                "type": "integer"
+              },
+              "subject": {
+                "type": "string"
+              },
+              "body_text": {
+                "type": "string"
+              },
+              "body_html": {
+                "type": "string"
+              },
+              "to": {
+                "type": [
+                  "null",
+                  "array"
+                ],
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "email": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "email"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "cc": {
+                "type": [
+                  "null",
+                  "array"
+                ],
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "email": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "email"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "bcc": {
+                "type": [
+                  "null",
+                  "array"
+                ],
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "email": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "email"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "author": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "integer"
+              },
+              "attachments": {
+                "type": [
+                  "null",
+                  "array"
+                ],
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "mime_type": {
+                      "type": "string"
+                    },
+                    "size": {
+                      "type": "integer"
+                    },
+                    "hash": {
+                      "type": "string"
+                    },
+                    "storage_uri": {
+                      "type": "string"
+                    },
+                    "inline": {
+                      "type": "boolean"
+                    },
+                    "content_id": {
+                      "type": "string"
+                    },
+                    "scan_status": {
+                      "type": "string"
+                    },
+                    "scan_detail": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "name",
+                    "mime_type",
+                    "size",
+                    "hash",
+                    "storage_uri",
+                    "inline",
+                    "scan_status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "draft_id",
+              "version",
+              "subject",
+              "body_text",
+              "to",
+              "author",
+              "created_at"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "title": "DraftView",
+        "required": [
+          "draft",
+          "version"
+        ],
+        "additionalProperties": false
+      },
+      "EffectiveSetting": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "default": {
+            "type": "string"
+          },
+          "environment": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "scope": {
+            "type": "string"
+          },
+          "apply": {
+            "type": "string"
+          },
+          "secret": {
+            "type": "boolean"
+          },
+          "lockable": {
+            "type": "boolean"
+          },
+          "options": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "help": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "locked": {
+            "type": "boolean"
+          },
+          "registered": {
+            "type": "boolean"
+          },
+          "pending_restart": {
+            "type": "boolean"
+          },
+          "active_value": {
+            "type": "string"
+          }
+        },
+        "title": "EffectiveSetting",
+        "required": [
+          "key",
+          "label",
+          "category",
+          "type",
+          "default",
+          "scope",
+          "apply",
+          "secret",
+          "lockable",
+          "value",
+          "source",
+          "locked"
+        ],
+        "additionalProperties": false
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "details": {
+            "type": [
+              "null",
+              "object"
+            ],
+            "additionalProperties": true
+          },
+          "trace_id": {
+            "type": "string"
+          }
+        },
+        "title": "ErrorResponse",
+        "required": [
+          "code",
+          "message",
+          "trace_id"
+        ]
+      },
+      "MailSignature": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "account_id": {
+            "type": "string"
+          },
+          "body_html": {
+            "type": "string"
+          },
+          "body_text": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "department": {
+            "type": "string"
+          },
+          "company": {
+            "type": "string"
+          },
+          "phone": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "logo_url": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "integer"
+          },
+          "updated_at": {
+            "type": "integer"
+          }
+        },
+        "title": "MailSignature",
+        "required": [
+          "id",
+          "user_id",
+          "name",
+          "body_text",
+          "created_at",
+          "updated_at"
+        ],
+        "additionalProperties": false
+      },
+      "MailTemplate": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          }
+        },
+        "title": "MailTemplate",
+        "required": [
+          "id",
+          "name",
+          "description"
+        ],
+        "additionalProperties": false
+      },
+      "RenderMailInput": {
+        "type": "object",
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "body_html": {
+            "type": "string"
+          },
+          "format": {
+            "type": "string"
+          },
+          "template": {
+            "type": "string"
+          },
+          "use_signature": {
+            "type": [
+              "null",
+              "boolean"
+            ]
+          },
+          "signature_id": {
+            "type": "string"
+          },
+          "smart_format": {
+            "type": "boolean"
+          },
+          "intent": {
+            "type": "string"
+          },
+          "tone": {
+            "type": "string"
+          },
+          "length": {
+            "type": "string"
+          },
+          "language": {
+            "type": "string"
+          },
+          "reply_to_message_id": {
+            "type": "string"
+          }
+        },
+        "title": "RenderMailInput"
+      },
+      "RenderedMail": {
+        "type": "object",
+        "properties": {
+          "body_html": {
+            "type": "string"
+          },
+          "body_text": {
+            "type": "string"
+          },
+          "format": {
+            "type": "string"
+          },
+          "template": {
+            "type": "string"
+          },
+          "warnings": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "title": "RenderedMail",
+        "required": [
+          "body_text",
+          "format",
+          "template"
+        ],
+        "additionalProperties": false
+      },
+      "SaveMailSignatureInput": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "account_id": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "body_html": {
+            "type": "string"
+          },
+          "format": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "department": {
+            "type": "string"
+          },
+          "company": {
+            "type": "string"
+          },
+          "phone": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "logo_url": {
+            "type": "string"
+          }
+        },
+        "title": "SaveMailSignatureInput",
+        "required": [
+          "name"
+        ]
+      },
+      "SendPreview": {
+        "type": "object",
+        "properties": {
+          "draft_id": {
+            "type": "string"
+          },
+          "draft_version": {
+            "type": "integer"
+          },
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "cc": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "bcc": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "subject": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "body_html": {
+            "type": "string"
+          },
+          "external_domains": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "recipient_count": {
+            "type": "integer"
+          },
+          "warnings": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "payload_hash": {
+            "type": "string"
+          },
+          "dlp_findings": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string"
+                },
+                "count": {
+                  "type": "integer"
+                },
+                "term": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "count"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "dlp_blocked": {
+            "type": "boolean"
+          },
+          "attachments": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "mime_type": {
+                  "type": "string"
+                },
+                "size": {
+                  "type": "integer"
+                },
+                "hash": {
+                  "type": "string"
+                },
+                "storage_uri": {
+                  "type": "string"
+                },
+                "inline": {
+                  "type": "boolean"
+                },
+                "content_id": {
+                  "type": "string"
+                },
+                "scan_status": {
+                  "type": "string"
+                },
+                "scan_detail": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "mime_type",
+                "size",
+                "hash",
+                "storage_uri",
+                "inline",
+                "scan_status"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "title": "SendPreview",
+        "required": [
+          "draft_id",
+          "draft_version",
+          "from",
+          "to",
+          "subject",
+          "body",
+          "recipient_count",
+          "payload_hash"
+        ],
+        "additionalProperties": false
+      },
+      "SettingDefinition": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "default": {
+            "type": "string"
+          },
+          "environment": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "scope": {
+            "type": "string"
+          },
+          "apply": {
+            "type": "string"
+          },
+          "secret": {
+            "type": "boolean"
+          },
+          "lockable": {
+            "type": "boolean"
+          },
+          "options": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "help": {
+            "type": "string"
+          }
+        },
+        "title": "SettingDefinition",
+        "required": [
+          "key",
+          "label",
+          "category",
+          "type",
+          "default",
+          "scope",
+          "apply",
+          "secret",
+          "lockable"
+        ],
+        "additionalProperties": false
+      },
+      "SettingsPatch": {
+        "type": "object",
+        "properties": {
+          "values": {
+            "type": [
+              "null",
+              "object"
+            ],
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "secrets": {
+            "type": [
+              "null",
+              "object"
+            ],
+            "description": "Write-only replacement secrets. Never returned by settings reads.",
+            "writeOnly": true,
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "locks": {
+            "type": [
+              "null",
+              "object"
+            ],
+            "additionalProperties": {
+              "type": "boolean"
+            }
+          },
+          "reset": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "revision": {
+            "type": "string"
+          }
+        },
+        "title": "SettingsPatch"
+      },
+      "SettingsView": {
+        "type": "object",
+        "properties": {
+          "fields": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "object",
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "category": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string"
+                },
+                "default": {
+                  "type": "string"
+                },
+                "environment": {
+                  "type": [
+                    "null",
+                    "array"
+                  ],
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "scope": {
+                  "type": "string"
+                },
+                "apply": {
+                  "type": "string"
+                },
+                "secret": {
+                  "type": "boolean"
+                },
+                "lockable": {
+                  "type": "boolean"
+                },
+                "options": {
+                  "type": [
+                    "null",
+                    "array"
+                  ],
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "help": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "string"
+                },
+                "source": {
+                  "type": "string"
+                },
+                "locked": {
+                  "type": "boolean"
+                },
+                "registered": {
+                  "type": "boolean"
+                },
+                "pending_restart": {
+                  "type": "boolean"
+                },
+                "active_value": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "key",
+                "label",
+                "category",
+                "type",
+                "default",
+                "scope",
+                "apply",
+                "secret",
+                "lockable",
+                "value",
+                "source",
+                "locked"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "revision": {
+            "type": "string"
+          },
+          "runtime": {
+            "type": [
+              "null",
+              "object"
+            ],
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        },
+        "title": "SettingsView",
+        "required": [
+          "fields",
+          "revision"
+        ],
+        "additionalProperties": false
+      },
+      "UpdateDraftInput": {
+        "type": "object",
+        "properties": {
+          "draft_id": {
+            "type": "string"
+          },
+          "subject": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "body": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "body_html": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "to": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "cc": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "bcc": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "format": {
+            "type": "string"
+          },
+          "template": {
+            "type": "string"
+          },
+          "use_signature": {
+            "type": [
+              "null",
+              "boolean"
+            ]
+          },
+          "signature_id": {
+            "type": "string"
+          },
+          "smart_format": {
+            "type": "boolean"
+          },
+          "intent": {
+            "type": "string"
+          },
+          "tone": {
+            "type": "string"
+          },
+          "length": {
+            "type": "string"
+          },
+          "language": {
+            "type": "string"
+          }
+        },
+        "title": "UpdateDraftInput"
+      }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "description": "Scoped Postra MCP key or supported deployment bearer credentials. Capabilities and ownership are enforced by the server.",
+        "scheme": "bearer",
+        "type": "http"
+      },
+      "sessionCookie": {
+        "description": "Browser session; mutations additionally require same-origin CSRF checks.",
+        "in": "cookie",
+        "name": "postra_session",
+        "type": "apiKey"
+      }
+    }
+  },
+  "info": {
+    "description": "Generated from Go DTOs for settings, Ask, rendering, drafts, preview, attachment mutation and signatures only. This is not the complete Postra REST/MCP API. /api/v1 is canonical; /api is a compatibility alias using the same handlers. Sending/approval, binary downloads, auth, admin probes, and other operations are intentionally outside this snapshot. JSON schemas describe wire shapes, not every dynamic validation or permission rule.",
+    "title": "Postra canonical core API — partial coverage",
+    "version": "1"
+  },
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "openapi": "3.1.0",
+  "paths": {
+    "/accounts/{id}/preferences": {
+      "get": {
+        "operationId": "accountPreferencesGet",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettingsView"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Classified error; dynamic ownership, scopes, policy and revision checks remain authoritative. Legacy error alias may also be present."
+          }
+        },
+        "summary": "Effective preferences for an owned account"
+      },
+      "patch": {
+        "operationId": "accountPreferencesPatch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Required with cookie authentication, together with an allowed same-origin Origin header. Bearer requests follow their separate scope policy.",
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SettingsPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettingsView"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Classified error; dynamic ownership, scopes, policy and revision checks remain authoritative. Legacy error alias may also be present."
+          }
+        },
+        "summary": "Update an owned account's unlocked preferences"
+      }
+    },
+    "/admin/configuration": {
+      "get": {
+        "operationId": "adminConfigurationGet",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettingsView"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Classified error; dynamic ownership, scopes, policy and revision checks remain authoritative. Legacy error alias may also be present."
+          }
+        },
+        "summary": "Administrator catalog with effective values and lock/source metadata"
+      },
+      "patch": {
+        "operationId": "adminConfigurationPatch",
+        "parameters": [
+          {
+            "description": "Required with cookie authentication, together with an allowed same-origin Origin header. Bearer requests follow their separate scope policy.",
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SettingsPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettingsView"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Classified error; dynamic ownership, scopes, policy and revision checks remain authoritative. Legacy error alias may also be present."
+          }
+        },
+        "summary": "Administrator settings and write-only secret update"
+      }
+    },
+    "/drafts": {
+      "post": {
+        "operationId": "draftCreate",
+        "parameters": [
+          {
+            "description": "Required with cookie authentication, together with an allowed same-origin Origin header. Bearer requests follow their separate scope policy.",
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateDraftInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftView"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Classified error; dynamic ownership, scopes, policy and revision checks remain authoritative. Legacy error alias may also be present."
+          }
+        },
+        "summary": "Create a draft without approving or sending"
+      }
+    },
+    "/drafts/{id}": {
+      "get": {
+        "operationId": "draftGet",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftView"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Classified error; dynamic ownership, scopes, policy and revision checks remain authoritative. Legacy error alias may also be present."
+          }
+        },
+        "summary": "Read the current version of an owned draft"
+      },
+      "patch": {
+        "operationId": "draftUpdate",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Required with cookie authentication, together with an allowed same-origin Origin header. Bearer requests follow their separate scope policy.",
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateDraftInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftView"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Classified error; dynamic ownership, scopes, policy and revision checks remain authoritative. Legacy error alias may also be present."
+          }
+        },
+        "summary": "Create a new immutable version; invalidates earlier approval"
+      }
+    },
+    "/drafts/{id}/attachments": {
+      "post": {
+        "operationId": "draftAttachmentAdd",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Required with cookie authentication, together with an allowed same-origin Origin header. Bearer requests follow their separate scope policy.",
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Multipart upload only: true inserts a validated PNG/JPEG/GIF as a CID image. JSON uploads use their inline field.",
+            "in": "query",
+            "name": "inline",
+            "schema": {
+              "default": false,
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddDraftAttachmentInput"
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "file": {
+                    "format": "binary",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "file"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftView"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Classified error; dynamic ownership, scopes, policy and revision checks remain authoritative. Legacy error alias may also be present."
+          }
+        },
+        "summary": "Add a scanned attachment in a new draft version"
+      }
+    },
+    "/drafts/{id}/attachments/{attachment}": {
+      "delete": {
+        "operationId": "draftAttachmentRemove",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "attachment",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Required with cookie authentication, together with an allowed same-origin Origin header. Bearer requests follow their separate scope policy.",
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftView"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Classified error; dynamic ownership, scopes, policy and revision checks remain authoritative. Legacy error alias may also be present."
+          }
+        },
+        "summary": "Remove an attachment from a new version, retaining history"
+      }
+    },
+    "/drafts/{id}/preview": {
+      "post": {
+        "operationId": "draftSendPreview",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Required with cookie authentication, together with an allowed same-origin Origin header. Bearer requests follow their separate scope policy.",
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SendPreview"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Classified error; dynamic ownership, scopes, policy and revision checks remain authoritative. Legacy error alias may also be present."
+          }
+        },
+        "summary": "Review canonical send payload and policies; does not issue approval"
+      }
+    },
+    "/mail/render": {
+      "post": {
+        "operationId": "mailRender",
+        "parameters": [
+          {
+            "description": "Required with cookie authentication, together with an allowed same-origin Origin header. Bearer requests follow their separate scope policy.",
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenderMailInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RenderedMail"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Classified error; dynamic ownership, scopes, policy and revision checks remain authoritative. Legacy error alias may also be present."
+          }
+        },
+        "summary": "Render locally; optional explicit smart_format uses AI but never sends"
+      }
+    },
+    "/mail/templates": {
+      "get": {
+        "operationId": "mailTemplates",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/MailTemplate"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Classified error; dynamic ownership, scopes, policy and revision checks remain authoritative. Legacy error alias may also be present."
+          }
+        },
+        "summary": "List deterministic built-in templates"
+      }
+    },
+    "/preferences": {
+      "get": {
+        "operationId": "preferencesGet",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettingsView"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Classified error; dynamic ownership, scopes, policy and revision checks remain authoritative. Legacy error alias may also be present."
+          }
+        },
+        "summary": "Current user's effective preferences"
+      },
+      "patch": {
+        "operationId": "preferencesPatch",
+        "parameters": [
+          {
+            "description": "Required with cookie authentication, together with an allowed same-origin Origin header. Bearer requests follow their separate scope policy.",
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SettingsPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettingsView"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Classified error; dynamic ownership, scopes, policy and revision checks remain authoritative. Legacy error alias may also be present."
+          }
+        },
+        "summary": "Update current user's unlocked preferences"
+      }
+    },
+    "/qa": {
+      "post": {
+        "operationId": "mailAsk",
+        "parameters": [
+          {
+            "description": "Required with cookie authentication, together with an allowed same-origin Origin header. Bearer requests follow their separate scope policy.",
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AskInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskResult"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Classified error; dynamic ownership, scopes, policy and revision checks remain authoritative. Legacy error alias may also be present."
+          }
+        },
+        "summary": "Answer a question using bounded owned-mail/work/action evidence"
+      }
+    },
+    "/signatures": {
+      "get": {
+        "operationId": "signaturesList",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/MailSignature"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Classified error; dynamic ownership, scopes, policy and revision checks remain authoritative. Legacy error alias may also be present."
+          }
+        },
+        "summary": "List only the current user's signatures"
+      },
+      "post": {
+        "operationId": "signatureCreate",
+        "parameters": [
+          {
+            "description": "Required with cookie authentication, together with an allowed same-origin Origin header. Bearer requests follow their separate scope policy.",
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SaveMailSignatureInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MailSignature"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Classified error; dynamic ownership, scopes, policy and revision checks remain authoritative. Legacy error alias may also be present."
+          }
+        },
+        "summary": "Create an owned signature"
+      }
+    },
+    "/signatures/{id}": {
+      "get": {
+        "operationId": "signatureGet",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MailSignature"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Classified error; dynamic ownership, scopes, policy and revision checks remain authoritative. Legacy error alias may also be present."
+          }
+        },
+        "summary": "Read an owned signature; administrator role does not bypass ownership"
+      },
+      "put": {
+        "operationId": "signatureUpdate",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Required with cookie authentication, together with an allowed same-origin Origin header. Bearer requests follow their separate scope policy.",
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SaveMailSignatureInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MailSignature"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Classified error; dynamic ownership, scopes, policy and revision checks remain authoritative. Legacy error alias may also be present."
+          }
+        },
+        "summary": "Update an owned signature; path ID is authoritative"
+      }
+    }
+  },
+  "security": [
+    {
+      "sessionCookie": []
+    },
+    {
+      "bearerAuth": []
+    }
+  ],
+  "servers": [
+    {
+      "description": "Canonical API v1",
+      "url": "/api/v1"
+    }
+  ],
+  "x-generated-by": "go run ./cmd/postra-contracts",
+  "x-legacy-base-path": "/api"
+}

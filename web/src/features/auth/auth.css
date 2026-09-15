@@ -1,0 +1,5 @@
+.auth-form {display:flex;flex-direction:column;gap:16px;text-align:left;margin:24px 0 16px}
+.auth-form label {display:flex;flex-direction:column;gap:8px;font-size:14px;font-weight:600}
+.auth-form small {font-weight:400}
+.auth-form .button {width:100%;justify-content:center}
+.login-panel .error-state {text-align:left;margin:16px 0;overflow-wrap:anywhere}

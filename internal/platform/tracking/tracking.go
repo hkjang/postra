@@ -134,12 +134,13 @@ func (c Config) Active(path string) bool {
 
 // IsAuthPath marks the screens that handle credentials.
 func IsAuthPath(path string) bool {
-	return path == "/ui/login" || path == "/ui/setup" || strings.HasPrefix(path, "/ui/auth/")
+	return path == "/ui/login" || path == "/ui/setup" || strings.HasPrefix(path, "/ui/auth/") ||
+		path == "/app/login" || path == "/app/setup" || path == "/app/error" || strings.HasPrefix(path, "/auth/")
 }
 
 // IsAdminPath marks the administration screens.
 func IsAdminPath(path string) bool {
-	return strings.HasPrefix(path, "/ui/admin/") || path == "/ui/admin"
+	return strings.HasPrefix(path, "/ui/admin/") || path == "/ui/admin" || strings.HasPrefix(path, "/app/admin/") || path == "/app/admin"
 }
 
 // ProxyEnabled reports whether /momento/* should be forwarded to the collector.

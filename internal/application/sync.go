@@ -65,6 +65,7 @@ func (a *App) StartSync(ctx context.Context, accountID string, opts SyncOptions)
 		a.syncLocks.Delete(accountID)
 		return nil, err
 	}
+	initial := *job // response must not race with the mutable worker-owned job
 	a.audit(ctx, "sync_start", "account:"+accountID, "ok", "job:"+job.ID)
 
 	jobCtx, cancel := context.WithCancel(a.background)
@@ -76,9 +77,9 @@ func (a *App) StartSync(ctx context.Context, accountID string, opts SyncOptions)
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				slog.Error("sync worker panic", "account", accountID, "job", job.ID, "panic", r)
+				slog.Error("sync worker panic", "account", accountID, "job", job.ID)
 				a.recordIncident(domain.SeverityCritical, "sync-worker",
-					fmt.Sprintf("panic: %v", r), string(debug.Stack()),
+					providerUnexpected, string(debug.Stack()),
 					withIncidentAccount(accountID), withIncidentJob(job.ID))
 			}
 		}()
@@ -87,7 +88,7 @@ func (a *App) StartSync(ctx context.Context, accountID string, opts SyncOptions)
 		defer a.jobCancels.Delete(job.ID)
 		a.runSync(jobCtx, job, acc, opts)
 	}()
-	return job, nil
+	return &initial, nil
 }
 
 func (a *App) CancelJob(ctx context.Context, jobID string) error {
@@ -103,11 +104,16 @@ func (a *App) CancelJob(ctx context.Context, jobID string) error {
 }
 
 func (a *App) GetJob(ctx context.Context, jobID string) (*domain.Job, error) {
-	return a.Store.GetJob(ctx, userIDFrom(ctx), jobID)
+	job, err := a.Store.GetJob(ctx, userIDFrom(ctx), jobID)
+	return safeJob(job), err
 }
 
 func (a *App) ListJobs(ctx context.Context, limit int) ([]domain.Job, error) {
-	return a.Store.ListJobs(ctx, userIDFrom(ctx), limit)
+	jobs, err := a.Store.ListJobs(ctx, userIDFrom(ctx), limit)
+	for i := range jobs {
+		jobs[i] = *safeJob(&jobs[i])
+	}
+	return jobs, err
 }
 
 func (a *App) runSync(ctx context.Context, job *domain.Job, acc *domain.MailAccount, opts SyncOptions) {
@@ -117,7 +123,7 @@ func (a *App) runSync(ctx context.Context, job *domain.Job, acc *domain.MailAcco
 	stats := domain.SyncStats{}
 	finish := func(status domain.JobStatus, errMsg string) {
 		job.Status = status
-		job.Error = errMsg
+		job.Error = jobDiagnostic(job.Type, status, errMsg)
 		job.Stats = map[string]int64{
 			"seen": stats.Seen, "new": stats.New, "duplicate": stats.Duplicate,
 			"failed": stats.Failed, "oversize": stats.Oversize, "parse_error": stats.ParseError,
@@ -128,16 +134,15 @@ func (a *App) runSync(ctx context.Context, job *domain.Job, acc *domain.MailAcco
 		a.audit(context.Background(), "sync_finish", "account:"+acc.ID, string(status),
 			fmt.Sprintf("job:%s new=%d dup=%d failed=%d", job.ID, stats.New, stats.Duplicate, stats.Failed))
 		if status == domain.JobFailed {
-			a.recordIncident(domain.SeverityError, "sync", errMsg, "",
+			a.recordIncident(domain.SeverityError, "sync", job.Error, "",
 				withIncidentAccount(acc.ID), withIncidentJob(job.ID))
 		}
 	}
 
 	defer func() {
 		if r := recover(); r != nil {
-			errStr := fmt.Sprintf("panic during sync: %v", r)
-			slog.Error("runSync caught panic", "account", acc.ID, "job", job.ID, "panic", r)
-			finish(domain.JobFailed, errStr)
+			slog.Error("runSync caught panic", "account", acc.ID, "job", job.ID)
+			finish(domain.JobFailed, providerUnexpected)
 		}
 	}()
 
@@ -165,13 +170,11 @@ func (a *App) runSync(ctx context.Context, job *domain.Job, acc *domain.MailAcco
 	// Bound concurrent syncs so a scheduler fan-out over many accounts (plus
 	// IMAP IDLE triggers) doesn't buffer many whole messages at once and OOM
 	// the container (which K8s then restarts, orphaning this very job).
-	select {
-	case a.syncSem <- struct{}{}:
-		defer func() { <-a.syncSem }()
-	case <-ctx.Done():
+	if err := a.acquireSyncSlot(ctx); err != nil {
 		finish(domain.JobCancelled, "cancelled")
 		return
 	}
+	defer a.releaseSyncSlot()
 
 	job.Status = domain.JobRunning
 	_ = a.Store.UpdateJob(ctx, job)
@@ -182,10 +185,10 @@ func (a *App) runSync(ctx context.Context, job *domain.Job, acc *domain.MailAcco
 		if errors.As(err, &authErr) {
 			// POP-011: no endless retries on bad credentials.
 			_ = a.Store.SetAccountStatus(context.Background(), acc.UserID, acc.ID, domain.AccountCredentialError)
-			finish(domain.JobFailed, "authentication failed; account moved to credential_error")
+			finish(domain.JobFailed, providerAuthFailed)
 			return
 		}
-		finish(domain.JobFailed, "connect failed: "+err.Error())
+		finish(domain.JobFailed, providerDiagnostic(err))
 		return
 	}
 	defer sess.Close()
@@ -197,7 +200,7 @@ func (a *App) runSync(ctx context.Context, job *domain.Job, acc *domain.MailAcco
 	if !uidlSupported {
 		remote, err = sess.List(ctx)
 		if err != nil {
-			finish(domain.JobFailed, "LIST failed: "+err.Error())
+			finish(domain.JobFailed, providerListFailed)
 			return
 		}
 	} else {
@@ -227,7 +230,7 @@ func (a *App) runSync(ctx context.Context, job *domain.Job, acc *domain.MailAcco
 		return
 	}
 
-	maxN := a.Cfg.Sync.MaxPerSync
+	maxN := a.EffectiveConfig().Sync.MaxPerSync
 	if opts.FullSync || opts.MaxMessages < 0 {
 		maxN = 0
 	} else if opts.MaxMessages > 0 {
@@ -252,7 +255,7 @@ func (a *App) runSync(ctx context.Context, job *domain.Job, acc *domain.MailAcco
 				continue
 			}
 		}
-		if a.Cfg.Sync.MaxMessageBytes > 0 && rm.Size > a.Cfg.Sync.MaxMessageBytes {
+		if maxBytes := a.EffectiveConfig().Sync.MaxMessageBytes; maxBytes > 0 && rm.Size > maxBytes {
 			stats.Oversize++
 			continue
 		}
@@ -327,7 +330,7 @@ func (a *App) fetchRaw(ctx context.Context, sess domain.POP3Session, number int)
 		return nil, err
 	}
 	defer rc.Close()
-	return io.ReadAll(io.LimitReader(rc, a.Cfg.Sync.MaxMessageBytes+1))
+	return io.ReadAll(io.LimitReader(rc, a.EffectiveConfig().Sync.MaxMessageBytes+1))
 }
 
 // ingestOne downloads, stores, and indexes a single message. Each message is
@@ -342,8 +345,8 @@ func (a *App) ingestOne(ctx context.Context, sess domain.POP3Session, acc *domai
 		raw = nil
 		parsed = nil
 		if r := recover(); r != nil {
-			slog.Error("ingestOne caught panic", "account", acc.ID, "uidl", rm.UIDL, "panic", r)
-			err = fmt.Errorf("ingest panic: %v", r)
+			slog.Error("ingestOne caught panic", "account", acc.ID)
+			err = errors.New(providerUnexpected)
 		}
 	}()
 
@@ -351,12 +354,13 @@ func (a *App) ingestOne(ctx context.Context, sess domain.POP3Session, acc *domai
 	if err != nil {
 		return err
 	}
-	raw, err = io.ReadAll(io.LimitReader(rc, a.Cfg.Sync.MaxMessageBytes+1))
+	maxBytes := a.EffectiveConfig().Sync.MaxMessageBytes
+	raw, err = io.ReadAll(io.LimitReader(rc, maxBytes+1))
 	rc.Close()
 	if err != nil {
 		return err
 	}
-	if a.Cfg.Sync.MaxMessageBytes > 0 && int64(len(raw)) > a.Cfg.Sync.MaxMessageBytes {
+	if maxBytes > 0 && int64(len(raw)) > maxBytes {
 		stats.Oversize++
 		return nil
 	}
@@ -419,7 +423,7 @@ func (a *App) ingestOne(ctx context.Context, sess domain.POP3Session, acc *domai
 	for i := range parsed.Attachments {
 		ap := &parsed.Attachments[i]
 		// Policy + archive scan before retention (MIME-011/012/015).
-		verdict := a.Scanner.Scan(ctx, domain.ScanInput{
+		verdict := a.ScanAttachment(ctx, domain.ScanInput{
 			Name: ap.Name, MIMEType: ap.MIMEType, Data: ap.Data,
 		})
 		at := domain.Attachment{

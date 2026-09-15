@@ -47,9 +47,10 @@ func TestParseMultipart(t *testing.T) {
 	if strings.Contains(p.HTMLSafe, "script") || strings.Contains(p.HTMLSafe, "onclick") {
 		t.Errorf("sanitizer left dangerous content: %q", p.HTMLSafe)
 	}
-	// MIME-009: external image blocked, cid kept
-	if strings.Contains(p.HTMLSafe, "http://evil") {
-		t.Errorf("external image survived: %q", p.HTMLSafe)
+	// MIME-009: remote source is inert metadata, never an automatically
+	// loaded src; CID metadata remains available for attachment resolution.
+	if strings.Contains(p.HTMLSafe, `src="http://evil`) || !strings.Contains(p.HTMLSafe, `data-postra-image="http://evil`) {
+		t.Errorf("external image was not safely made inert: %q", p.HTMLSafe)
 	}
 	if !strings.Contains(p.HTMLSafe, "cid:inline1") {
 		t.Errorf("cid image should survive: %q", p.HTMLSafe)

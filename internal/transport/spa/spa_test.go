@@ -1,12 +1,27 @@
 package spa
 
 import (
+	"bytes"
+	"image"
+	_ "image/jpeg"
+	_ "image/png"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"testing/fstest"
 )
+
+func TestEmbeddedBrandAssets(t *testing.T) {
+	for _, name := range []string{"favicon.png", "logo.png"} {
+		response := httptest.NewRecorder()
+		Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/app/"+name, nil))
+		_, format, err := image.DecodeConfig(bytes.NewReader(response.Body.Bytes()))
+		if response.Code != http.StatusOK || err != nil || response.Header().Get("Content-Type") != "image/"+format {
+			t.Fatalf("brand asset %s missing from offline bundle: %d %s", name, response.Code, response.Header().Get("Content-Type"))
+		}
+	}
+}
 
 func TestPublicShellDeepLinksAndStaticIsolation(t *testing.T) {
 	h := handler(fstest.MapFS{

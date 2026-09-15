@@ -439,6 +439,22 @@ func ClientIP(remoteAddr string) string {
 // ---------- MCP Key Management ----------
 
 func (a *App) CreateMCPKey(ctx context.Context, name string) (*domain.MCPKey, string, error) {
+	return a.CreateMCPKeyWithScopes(ctx, name, nil)
+}
+
+func (a *App) CreateMCPKeyWithScopes(ctx context.Context, name string, scopes []string) (*domain.MCPKey, string, error) {
+	resolved, err := NormalizeMCPScopes(scopes)
+	if err != nil {
+		return nil, "", err
+	}
+	if p, ok := PrincipalFrom(ctx); ok {
+		if p.AuthMethod == "mcp_key" {
+			return nil, "", &domain.PublicError{Code: "forbidden", Message: "MCP 키로 새 자격 증명을 발급할 수 없습니다.", Status: 403}
+		}
+		if !p.IsAdmin() && (contains(resolved, "admin.read") || contains(resolved, "admin.write")) {
+			return nil, "", &domain.PublicError{Code: "forbidden", Message: "관리자 권한 범위는 관리자만 부여할 수 있습니다.", Status: 403}
+		}
+	}
 	userID := userIDFrom(ctx)
 	if userID == "" {
 		return nil, "", userErrf("authentication required")
@@ -462,6 +478,7 @@ func (a *App) CreateMCPKey(ctx context.Context, name string) (*domain.MCPKey, st
 		KeyHash:   hash,
 		KeyPrefix: prefix,
 		Status:    "active",
+		Scopes:    resolved,
 	}
 	if err := a.Store.CreateMCPKey(ctx, key); err != nil {
 		return nil, "", err
@@ -523,5 +540,6 @@ func (a *App) AuthenticateMCPKey(ctx context.Context, raw string) (*domain.MCPKe
 		_ = a.Store.TouchMCPKey(ctx, key.ID, now)
 	}
 	p := principalFor(u, "mcp_key")
+	p.MCPKeyID, p.MCPScopes = key.ID, append([]string{}, key.Scopes...)
 	return key, p, nil
 }

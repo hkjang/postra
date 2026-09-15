@@ -1,6 +1,6 @@
 # Postra React 워크스페이스
 
-`/app/`은 React·TypeScript·Vite로 만든 브라우저 워크스페이스입니다. 기존 `/api`와 HttpOnly 로그인 세션을 사용하며, 기존 `/ui` 화면도 유지합니다. 운영 서버에서 Node, npm, 외부 CDN을 실행하거나 호출하지 않습니다.
+`/app/`은 공식 React·TypeScript·Vite 브라우저 워크스페이스입니다. `/auth` 인증, `/api`와 HttpOnly 로그인 세션을 사용하며, 이전 `/ui` 템플릿은 제거했습니다. 운영 서버에서 Node, npm, 외부 CDN을 실행하거나 호출하지 않습니다.
 
 ## 개발
 
@@ -12,7 +12,9 @@ npm ci
 npm run dev
 ```
 
-개발 서버의 `/api`·`/ui` 요청은 `http://127.0.0.1:8480`으로 전달합니다. 별도 터미널에서 설정된 테스트용 Postra 서버를 실행하세요. 실제 메일 발송은 승인 후 수행되므로 개발에는 테스트 계정을 사용하세요.
+개발 서버의 `/auth`·`/api`(수신 HTML iframe 포함)·`/tracking`·`/momento` 요청은 `http://127.0.0.1:8480`으로 전달합니다. 브라우저의 Host를 유지하므로 로컬 로그인·CSRF 검증을 끄지 않습니다. 다른 테스트 서버를 쓰려면 `POSTRA_DEV_API_TARGET=http://127.0.0.1:<port> npm run dev`로 실행하세요. 별도 터미널에서 테스트용 Postra 서버를 실행하고 실제 메일 발송에는 테스트 계정을 사용하세요.
+
+SSO를 Vite에서 시험할 때는 별도 테스트 IdP/설정에서 브라우저가 접속한 개발 출처의 `/auth/oidc/callback`을 정확히 등록하세요. 운영 IdP/Redirect URL을 임의로 덮어쓰지 마세요.
 
 ## 빌드와 포함된 산출물
 
@@ -33,7 +35,7 @@ git status --short -- internal/transport/spa/assets
 프런트엔드 산출물을 커밋하므로 Node 없이 다음 명령으로 빌드할 수 있습니다.
 
 ```bash
-make build-offline VERSION=v0.19.1
+make build-offline VERSION=v0.20.0
 ```
 
 필요한 Go 버전과 Go 모듈 캐시는 미리 준비되어 있어야 합니다. 이 대상은 `GOPROXY=off`, `GOTOOLCHAIN=local`을 사용하여 네트워크 다운로드를 하지 않습니다. React 소스를 오프라인에서 수정하려면 Node와 해당 잠금 파일의 npm 캐시도 별도로 준비해야 합니다.
@@ -61,7 +63,7 @@ npm run test:e2e
 
 Linux에서 Chromium 시스템 라이브러리가 부족하면 `npx playwright install --with-deps chromium`을 사용하세요. Playwright의 Chromium 대신 설치된 Chrome을 쓰려면 `POSTRA_CHROME=/usr/bin/google-chrome npm run test:e2e`로 실행할 수 있습니다.
 
-`npm run test:e2e`는 저장소의 `TestSPABrowser` Go 테스트를 활성화하며, 별도 서버나 운영 계정은 필요하지 않습니다. 스크린샷을 남기려면 미리 생성한 디렉터리를 `POSTRA_SPA_SCREENSHOT_DIR`로 지정하세요. CI는 Chromium을 설치한 뒤 같은 검사를 실행하고, 실패 시 해당 디렉터리를 `spa-browser-failure-screenshots` 아티팩트로 7일간 보관합니다.
+`npm run test:e2e`는 SMTP 승인·발송과 신규 setup·OIDC·설정 강제정책·사용자 격리·이미지 보호를 검증하는 Go 브라우저 테스트를 활성화하며, 별도 서버나 운영 계정은 필요하지 않습니다. 스크린샷을 남기려면 미리 생성한 디렉터리를 `POSTRA_SPA_SCREENSHOT_DIR`로 지정하세요. CI는 Chromium을 설치한 뒤 같은 검사를 실행하고, 실패 시 해당 디렉터리를 `spa-browser-failure-screenshots` 아티팩트로 7일간 보관합니다.
 
 ## 릴리즈와 제3자 고지
 

@@ -169,7 +169,37 @@ func (a *App) activePrompt(analysisType string) (string, promptSpec, bool) {
 // aiEndpointLocal reports whether the configured AI endpoint resolves only to
 // loopback/private addresses (no exfiltration risk).
 func (a *App) aiEndpointLocal(ctx context.Context) bool {
-	u, err := url.Parse(a.currentAIConfig().BaseURL)
+	return localAIEndpoint(ctx, a.currentAIConfig().BaseURL)
+}
+
+func (a *App) aiTaskEndpoint(task string) string {
+	cfg := a.currentAIConfig()
+	if task == "embedding" {
+		if cfg.EmbedBaseURL != "" {
+			return cfg.EmbedBaseURL
+		}
+		return cfg.BaseURL
+	}
+	return cfg.RouteForTask(task).BaseURL
+}
+
+func (a *App) checkTaskAIPolicy(ctx context.Context, task string) error {
+	if a.currentAIConfig().AllowExternal || localAIEndpoint(ctx, a.aiTaskEndpoint(task)) {
+		return nil
+	}
+	return userErrf("선택한 AI 작업은 외부 Endpoint를 사용합니다. 관리자 외부 AI 호출 정책을 확인하세요")
+}
+
+func (a *App) maskTaskInput(ctx context.Context, task, input string) string {
+	if a.currentAIConfig().MaskExternalPII && !localAIEndpoint(ctx, a.aiTaskEndpoint(task)) {
+		masked, _ := mask.Mask(input)
+		return masked
+	}
+	return input
+}
+
+func localAIEndpoint(ctx context.Context, endpoint string) bool {
+	u, err := url.Parse(endpoint)
 	if err != nil {
 		return false
 	}
@@ -221,14 +251,39 @@ func (a *App) runAnalysis(ctx context.Context, analysisType, targetType, targetI
 	if !ok {
 		return nil, userErrf("unknown analysis type %q", analysisType)
 	}
-	if err := a.checkAIPolicy(ctx); err != nil {
-		return nil, err
-	}
 	aiCfg := a.currentAIConfig()
+	taskKey := analysisType
+	switch analysisType {
+	case "draft_reply":
+		taskKey = "compose"
+	case "question_answer":
+		taskKey = "qa"
+	case "daily_digest":
+		taskKey = "digest"
+	case "triage":
+		taskKey = "classify"
+	}
+	if analysisType == "rewrite" && targetType == "mail" && targetID == "render" {
+		taskKey = "smart_format"
+	}
+	// Explicit legacy task routes keep their meaning during migration.
+	if _, legacy := aiCfg.TaskModels[analysisType]; legacy {
+		taskKey = analysisType
+	}
 	// Resolve the effective model for this task so the cache key and stored
 	// record reflect the actually-used model (§AI 작업별 모델 라우팅).
-	routedModel := aiCfg.RouteForTask(analysisType).Model
-	sum := sha256.Sum256([]byte(analysisType + "|" + pv + "|" + routedModel + "|" + userTask + "|" + untrusted))
+	route := aiCfg.RouteForTask(taskKey)
+	if !aiCfg.AllowExternal && !localAIEndpoint(ctx, route.BaseURL) {
+		return nil, userErrf("선택한 AI 작업은 외부 Endpoint를 사용합니다. 관리자 외부 AI 호출 정책을 확인하세요")
+	}
+	routedModel := route.Model
+	routeJSON, _ := json.Marshal(struct {
+		Route       any
+		Temperature float64
+		Context     int
+		Mask        bool
+	}{route, aiCfg.Temperature, aiCfg.ContextLength, aiCfg.MaskExternalPII})
+	sum := sha256.Sum256([]byte(analysisType + "|" + pv + "|" + string(routeJSON) + "|" + userTask + "|" + untrusted))
 	inputHash := hex.EncodeToString(sum[:])
 	if cached, err := a.Store.FindCachedAnalysis(ctx, userID, analysisType, inputHash, routedModel); err == nil {
 		return cached, nil // AI-008 cache
@@ -245,9 +300,10 @@ func (a *App) runAnalysis(ctx context.Context, analysisType, targetType, targetI
 	// in the untrusted block regardless (AI-014); this records the attempt so
 	// the user/admin can distrust anything derived from this message.
 	a.guardUntrusted(ctx, analysisType, targetType, targetID, content)
-	if aiCfg.MaskExternalPII && !a.aiEndpointLocal(ctx) {
+	if aiCfg.MaskExternalPII && !localAIEndpoint(ctx, route.BaseURL) {
 		masked, hits := mask.Mask(content)
 		content = masked
+		task, _ = mask.Mask(task)
 		if len(hits) > 0 {
 			a.audit(ctx, "ai_pii_masked", targetType+":"+targetID, "ok", fmt.Sprintf("%v", hits))
 		}
@@ -257,10 +313,10 @@ func (a *App) runAnalysis(ctx context.Context, analysisType, targetType, targetI
 		User:      task,
 		Untrusted: content,
 		JSONMode:  true,
-		Task:      analysisType,
+		Task:      taskKey,
 	})
 	if err != nil {
-		a.audit(ctx, "ai_analysis", targetType+":"+targetID, "error", analysisType+": "+err.Error())
+		a.audit(ctx, "ai_analysis", targetType+":"+targetID, "error", analysisType+": "+providerDiagnostic(err))
 		return nil, err
 	}
 	resultJSON, err := extractJSON(res.Text)
@@ -342,67 +398,11 @@ func (a *App) SummarizeThread(ctx context.Context, threadID string) (*domain.Ana
 // AnswerQuestion retrieves candidate mails within the user's own scope and
 // asks the model to answer with per-message citations (AI-009).
 func (a *App) AnswerQuestion(ctx context.Context, question, accountID string) (*domain.Analysis, error) {
-	if strings.TrimSpace(question) == "" {
-		return nil, userErrf("question is empty")
-	}
-	const topK = 6
-	msgs := a.retrieveForQuestion(ctx, question, accountID, topK)
-	if len(msgs) == 0 {
-		return nil, userErrf("답변할 근거가 될 메일을 찾지 못했습니다")
-	}
-	var sb strings.Builder
-	allowed := make(map[string]bool, len(msgs))
-	ids := make([]string, 0, len(msgs))
-	for _, m := range msgs {
-		ids = append(ids, m.ID)
-	}
-	// One batched, size-capped fetch: the evidence set is read in full only to
-	// keep a couple of thousand characters of each message.
-	bodies, err := a.Store.BodyTextBatch(ctx, userIDFrom(ctx), ids)
-	if err != nil {
-		bodies = map[string]string{}
-	}
-	for _, m := range msgs {
-		allowed[m.ID] = true
-		text := truncateRunes(bodies[m.ID], 2500)
-		if m.HasAttachments {
-			text += a.AttachmentsTextForIndex(ctx, m.ID, 1500)
-		}
-		fmt.Fprintf(&sb, "[%s] Subject: %s | From: %s | Date: %s\n%s\n\n",
-			m.ID, m.Subject, m.From.Email, fmtUnix(m.Date), text)
-	}
-	an, err := a.runAnalysis(ctx, "question_answer", "query", "adhoc", "Question: "+question, sb.String())
+	result, err := a.Ask(ctx, AskInput{Question: question, AccountID: accountID})
 	if err != nil {
 		return nil, err
 	}
-	// Never surface a citation the model was not actually given: a fabricated
-	// evidence ID reads as proof while pointing at nothing.
-	a.applyCitationVerification(ctx, an, allowed)
-	return an, nil
-}
-
-// retrieveForquestion gathers the candidate messages for RAG question
-// answering. It prefers hybrid (FTS + semantic RRF) retrieval so a question
-// phrased differently from the mail still surfaces the right threads; it
-// degrades to plain keyword search when embeddings/AI are unavailable, and
-// finally to the most recent mail so the model always has some grounding.
-func (a *App) retrieveForQuestion(ctx context.Context, question, accountID string, limit int) []domain.Message {
-	if views, err := a.HybridSearch(ctx, HybridSearchOptions{
-		Query: question, AccountID: accountID, Limit: limit,
-	}); err == nil && len(views) > 0 {
-		out := make([]domain.Message, 0, len(views))
-		for _, v := range views {
-			out = append(out, v.Message)
-		}
-		return out
-	}
-	if res, err := a.Search(ctx, domain.SearchQuery{Text: question, AccountID: accountID, Limit: limit}); err == nil && len(res.Messages) > 0 {
-		return res.Messages
-	}
-	if res, err := a.Search(ctx, domain.SearchQuery{AccountID: accountID, Limit: limit}); err == nil {
-		return res.Messages
-	}
-	return nil
+	return result.Analysis, nil
 }
 
 func fmtUnix(u int64) string {

@@ -1,17 +1,25 @@
-import {useState, type FormEvent} from 'react'
-import {Link, useNavigate} from 'react-router-dom'
-import {useQueryClient} from '@tanstack/react-query'
-import {FilePenLine, Plus} from 'lucide-react'
-import {Badge, Button, EmptyState, Input, PageHeader} from '@/components/ui'
-import type {DraftView} from '@/features/messages/types'
+import {useState} from 'react'
+import {Link} from 'react-router-dom'
+import {useInfiniteQuery, useMutation, useQueryClient} from '@tanstack/react-query'
+import {Plus, RefreshCw, Trash2} from 'lucide-react'
+import {api} from '@/api/client'
+import {Badge, Button, EmptyState, ErrorState, Loading, PageHeader} from '@/components/ui'
+import {addresses, mailDate, type Address} from '@/features/messages/types'
 
-// The existing Go API only supports draft-by-ID. Until a scoped list endpoint
-// is approved, never imply that a browser query cache is the full draft store.
+type DraftSummary = {id: string; account_id: string; status: string; current_version: number; updated_at: number; subject: string; to: Address[]; author: string}
+type DraftPage = {drafts: DraftSummary[]; next_cursor?: string}
+
 export function DraftsPage() {
   const cache = useQueryClient()
-  const navigate = useNavigate()
-  const [id, setID] = useState('')
-  const drafts = cache.getQueriesData<DraftView>({queryKey: ['draft']}).map(([, value]) => value).filter((value): value is DraftView => !!value && value.draft.status === 'open')
-  function open(event: FormEvent) {event.preventDefault(); if (id.trim()) navigate('/drafts/' + encodeURIComponent(id.trim()))}
-  return <div className="page"><PageHeader title="최근 작업한 초안" description="현재 브라우저 세션에서 열거나 저장한 초안입니다. 서버의 전체 초안 목록은 아닙니다." actions={<Button asChild><Link to="/compose"><Plus size={16}/>새 메일 작성</Link></Button>}/>{drafts.length ? drafts.map(view => <article className="outbound-item" key={view.draft.id}><div><h2><Link to={`/drafts/${view.draft.id}`}>{view.version.subject || '(제목 없음)'}</Link></h2><p className="muted">{view.version.to?.map(address => address.email).join(', ') || '수신자 미지정'}</p><small className="muted">{view.draft.id}</small></div><Badge variant="outline">{view.version.author === 'ai' ? 'AI 작성' : '작성 중'} · v{view.version.version}</Badge></article>) : <EmptyState title="이 세션에서 작업한 초안이 없습니다" description="새 메일을 저장하거나 기존 초안 ID로 이어서 작성할 수 있습니다."/>}<form className="row filters" onSubmit={open} style={{marginTop: 24}}><Input aria-label="기존 초안 ID" value={id} onChange={event => setID(event.target.value)} placeholder="기존 초안 ID로 열기" required/><Button variant="outline" type="submit"><FilePenLine size={16}/>초안 열기</Button></form><p className="small muted">초안 내용은 서버에 저장됩니다. 새로고침하면 이 최근 목록은 초기화되지만 초안 자체가 삭제되는 것은 아닙니다.</p></div>
+  const [status, setStatus] = useState('open')
+  const drafts = useInfiniteQuery({queryKey: ['drafts', status], initialPageParam: '', queryFn: ({pageParam, signal}) => api<DraftPage>(`/api/drafts?status=${status}&limit=50&cursor=${encodeURIComponent(pageParam)}`, {signal}), getNextPageParam: page => page.next_cursor || undefined})
+  const discard = useMutation({mutationFn: (id: string) => api(`/api/drafts/${encodeURIComponent(id)}`, {method: 'DELETE'}), onSuccess: (_, id) => {cache.removeQueries({queryKey: ['draft', id]}); void cache.invalidateQueries({queryKey: ['drafts']})}})
+  const rows = drafts.data?.pages.flatMap(page => page.drafts) ?? []
+  return <div className="page"><PageHeader title="저장된 초안" description="서버에 저장된 내 초안입니다. 다른 브라우저에서도 이어서 작성할 수 있습니다." actions={<><Button variant="outline" onClick={() => drafts.refetch()}><RefreshCw size={16}/>새로고침</Button><Button asChild><Link to="/compose"><Plus size={16}/>새 메일 작성</Link></Button></>}/>
+    <div className="tabs">{[{id: 'open', name: '작성 중'}, {id: 'approved', name: '승인됨'}, {id: 'discarded', name: '삭제된 초안'}].map(item => <button key={item.id} className={status === item.id ? 'active' : ''} onClick={() => setStatus(item.id)}>{item.name}</button>)}</div>
+    {discard.error && <ErrorState error={discard.error}/>}
+    {drafts.isPending ? <Loading/> : drafts.error ? <ErrorState error={drafts.error} retry={() => drafts.refetch()}/> : !rows.length ? <EmptyState title="저장된 초안이 없습니다" description="메일을 작성하고 저장하면 이곳에 표시됩니다."/> : rows.map(item => <article className="outbound-item" key={item.id}><div><h2><Link to={`/drafts/${encodeURIComponent(item.id)}`}>{item.subject || '(제목 없음)'}</Link></h2><p className="muted">{addresses(item.to) || '수신자 미지정'}</p><small className="muted">{mailDate(item.updated_at)} · v{item.current_version}</small></div><div className="row"><Badge variant="outline">{item.author === 'ai' ? 'AI 작성' : '직접 작성'}</Badge>{['open', 'approved'].includes(item.status) && <Button variant="ghost" size="icon" disabled={discard.isPending} aria-label={`${item.subject || '제목 없는'} 초안 삭제`} onClick={() => {if (window.confirm('이 초안을 삭제하시겠습니까? 발송되지 않으며 기존 메일 원본은 유지됩니다.')) discard.mutate(item.id)}}><Trash2 size={16}/></Button>}</div></article>)}
+    {drafts.hasNextPage && <Button variant="outline" disabled={drafts.isFetchingNextPage} onClick={() => drafts.fetchNextPage()}>초안 더 보기</Button>}
+    {status === 'discarded' && <p className="small muted">삭제된 초안은 감사 목적으로 보존되며 발송할 수 없습니다.</p>}
+  </div>
 }

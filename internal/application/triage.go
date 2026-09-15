@@ -27,33 +27,51 @@ const (
 // (searchable and filterable with the existing label facet), and urgent/high
 // mail is also flagged important. Opt-in, leader-only, bounded per tick.
 func (a *App) RunTriageWorker(ctx context.Context) {
-	if !a.Cfg.Sync.AutoTriage {
-		slog.Info("auto-triage disabled (sync.auto_triage = false)")
-		return
-	}
-	interval := time.Duration(a.Cfg.Sync.AutoTriageMinutes) * time.Minute
-	if interval <= 0 {
-		interval = 10 * time.Minute
-	}
-	slog.Info("triage worker started", "interval", interval)
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if a.IsLeader() {
-				a.guard("triage-worker", func() { a.triageOnce(ctx) })
-			}
+	a.runLiveWorker(ctx, "triage-worker", a.triageWorkerInterval, false,
+		func() { a.triageOnceMode(ctx, a.triageMode()) })
+}
+
+func (a *App) triageMode() string {
+	a.runtimeSettings.RLock()
+	mode, explicit := a.runtimeSettings.overrides["sync.triage_mode"]
+	a.runtimeSettings.RUnlock()
+	if !explicit {
+		if a.EffectiveConfig().Sync.AutoTriage {
+			return "all" // legacy opt-in remains effective until mode is selected
 		}
+		return "off"
 	}
+	switch mode {
+	case "important_only", "rules", "all":
+		return mode
+	default:
+		return "off"
+	}
+}
+
+func (a *App) triageWorkerInterval() time.Duration {
+	if a.triageMode() == "off" {
+		return 0
+	}
+	if interval := minutesDuration(a.EffectiveConfig().Sync.AutoTriageMinutes); interval > 0 {
+		return interval
+	}
+	return 10 * time.Minute
 }
 
 // triageOnce triages one bounded batch per active user. Returns how many
 // messages were labelled (exposed for tests).
 func (a *App) triageOnce(ctx context.Context) int {
-	if err := a.checkAIPolicy(ctx); err != nil {
+	// Explicit/manual pass retains its previous behavior. The automated worker
+	// supplies its effective mode and never invokes this opt-in bypass.
+	return a.triageOnceMode(ctx, "all")
+}
+
+func (a *App) triageOnceMode(ctx context.Context, mode string) int {
+	if mode != "all" && mode != "important_only" && mode != "rules" {
+		return 0
+	}
+	if err := a.checkTaskAIPolicy(ctx, "classify"); err != nil {
 		slog.Debug("triage worker: skipped by AI policy", "err", err)
 		return 0
 	}
@@ -71,7 +89,7 @@ func (a *App) triageOnce(ctx context.Context) int {
 		uctx := WithPrincipal(sctx, domain.Principal{
 			UserID: u.ID, LoginID: u.LoginID, Role: u.Role, AuthMethod: "triage-worker",
 		})
-		ids, err := a.Store.MessagesNeedingTriage(uctx, u.ID, since, triageBatch)
+		ids, err := a.triageCandidates(uctx, since, mode)
 		if err != nil || len(ids) == 0 {
 			continue
 		}
@@ -96,6 +114,92 @@ func (a *App) triageOnce(ctx context.Context) int {
 		slog.Info("triage worker: classified new mail", "count", total)
 	}
 	return total
+}
+
+func triageMatches(mode string, message *domain.Message, body *domain.MessageBody, rules []domain.MailRule) bool {
+	for _, label := range message.Labels {
+		if strings.HasPrefix(label, aiLabelPrefix) {
+			return false
+		}
+	}
+	switch mode {
+	case "all":
+		return true
+	case "important_only":
+		return message.IsImportant
+	case "rules":
+		for _, rule := range rules {
+			if rule.Enabled && ruleMatches(rule, message, body) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (a *App) triageCandidates(ctx context.Context, since int64, mode string) ([]string, error) {
+	if mode == "all" {
+		return a.Store.MessagesNeedingTriage(ctx, userIDFrom(ctx), since, triageBatch)
+	}
+	var rules []domain.MailRule
+	needBody := false
+	if mode == "rules" {
+		var err error
+		rules, err = a.ListRules(ctx)
+		if err != nil {
+			return nil, err
+		}
+		enabled := false
+		for _, rule := range rules {
+			if !rule.Enabled {
+				continue
+			}
+			enabled = true
+			for _, condition := range rule.Conditions {
+				needBody = needBody || condition.Field == domain.RuleFieldBody
+			}
+		}
+		if !enabled {
+			return nil, nil
+		}
+	}
+	query := domain.SearchQuery{UserID: userIDFrom(ctx), ReceivedSince: since, Limit: 100}
+	if mode == "important_only" {
+		important := true
+		query.IsImportant = &important
+	}
+	var ids []string
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		page, err := a.Store.Search(ctx, query)
+		if err != nil {
+			return nil, err
+		}
+		for i := range page.Messages {
+			message := &page.Messages[i]
+			var body *domain.MessageBody
+			if needBody {
+				body, err = a.Store.GetBody(ctx, userIDFrom(ctx), message.ID)
+				if err != nil {
+					continue // unavailable content cannot satisfy a rule
+				}
+			}
+			if triageMatches(mode, message, body, rules) {
+				ids = append(ids, message.ID)
+				if len(ids) == triageBatch {
+					return ids, nil
+				}
+			}
+		}
+		// Page past nonmatching mail; otherwise the first unimportant/unmatched
+		// messages would occupy every tick and starve eligible messages forever.
+		if page.NextCursor == "" || page.NextCursor == query.Cursor {
+			return ids, nil
+		}
+		query.Cursor = page.NextCursor
+	}
 }
 
 // triageMessage runs triage for one message and records the outcome as a

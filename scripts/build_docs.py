@@ -1,6 +1,15 @@
-import os, sys, re, subprocess
+import argparse
+import html
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import tempfile
 
 def parse_inline(text):
+    # Angle-bracket placeholders such as <HOST> are documentation, not HTML.
+    text = html.escape(text)
     text = re.sub(r'`([^`]+)`', r'<code>\1</code>', text)
     text = re.sub(r'\*\*([^*]+)\*\*', r'<strong>\1</strong>', text)
     text = re.sub(r'\*([^*]+)\*', r'<em>\1</em>', text)
@@ -157,15 +166,13 @@ def md_to_html(md_text, title="Document"):
 <meta charset="utf-8">
 <title>{title}</title>
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
-
   @page {{
     size: A4;
     margin: 18mm 15mm 18mm 15mm;
   }}
 
   body {{
-    font-family: 'Noto Sans KR', -apple-system, BlinkMacSystemFont, sans-serif;
+    font-family: 'Noto Sans KR', 'NanumGothic', -apple-system, BlinkMacSystemFont, sans-serif;
     color: #1e293b;
     line-height: 1.7;
     font-size: 10pt;
@@ -318,41 +325,45 @@ def md_to_html(md_text, title="Document"):
 """
     return full_html
 
-def convert_md_to_pdf(md_path, pdf_path, title):
+def convert_md_to_pdf(md_path, pdf_path, title, chrome=None, renderer="chromium"):
+    chrome = chrome or os.environ.get("POSTRA_CHROME") or os.environ.get("CHROME") or shutil.which("chromium-browser") or shutil.which("chromium")
+    if not chrome:
+        raise RuntimeError("Chromium not found; set POSTRA_CHROME or CHROME to a local executable")
     with open(md_path, 'r', encoding='utf-8') as f:
         md_content = f.read()
-    
     html_content = md_to_html(md_content, title)
-    tmp_html_path = md_path.replace('.md', '.tmp.html')
-    
-    with open(tmp_html_path, 'w', encoding='utf-8') as f:
-        f.write(html_content)
-        
-    cmd = [
-        "chromium-browser",
-        "--headless",
-        "--no-sandbox",
-        "--disable-gpu",
-        f"--print-to-pdf={pdf_path}",
-        tmp_html_path
-    ]
-    res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    if os.path.exists(tmp_html_path):
-        os.remove(tmp_html_path)
-        
-    if res.returncode == 0 and os.path.exists(pdf_path):
-        print(f"[OK] Successfully generated {pdf_path} ({os.path.getsize(pdf_path)} bytes)")
-    else:
-        print(f"[ERROR] Failed to generate {pdf_path}: {res.stderr.decode('utf-8')}")
+    # Relative documentation links must not expose the temporary build path in
+    # distributed PDFs. This only sets link destinations; printing is offline.
+    html_content = html_content.replace('<meta charset="utf-8">', '<meta charset="utf-8">\n<base href="https://github.com/hkjang/postra/blob/main/docs/">', 1)
+    pdf_path = Path(pdf_path).resolve()
+    # Render beside the destination so replacing an existing PDF is atomic.
+    # A missing browser, timeout or failed print must preserve the old artifact.
+    with tempfile.TemporaryDirectory(prefix=".postra-docs-", dir=pdf_path.parent) as temporary, tempfile.TemporaryDirectory(prefix="postra-docs-browser-") as profile:
+        temporary = Path(temporary)
+        temporary_html = temporary / "document.html"
+        temporary_pdf = temporary / "document.pdf"
+        temporary_html.write_text(html_content, encoding="utf-8")
+        cmd = [chrome, "--headless", "--no-sandbox", "--disable-gpu",
+               "--disable-background-networking", "--no-pdf-header-footer",
+               f"--user-data-dir={profile}",
+               f"--print-to-pdf={temporary_pdf}", temporary_html.as_uri()]
+        if renderer == "playwright":
+            cmd = ["node", str(Path(__file__).with_name("print_pdf.cjs")), chrome, temporary_html.as_uri(), str(temporary_pdf)]
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+        if res.returncode != 0 or not temporary_pdf.is_file() or temporary_pdf.stat().st_size == 0:
+            raise RuntimeError(f"Failed to generate {pdf_path.name}: {res.stderr.decode('utf-8', errors='replace')[-2000:]}")
+        os.replace(temporary_pdf, pdf_path)
+    print(f"[OK] Successfully generated {pdf_path.name} ({pdf_path.stat().st_size} bytes)")
 
 if __name__ == "__main__":
-    docs = [
-        ("docs/USER_GUIDE.md", "docs/USER_GUIDE.pdf", "Postra 사용자 가이드"),
-        ("docs/ADMIN_GUIDE.md", "docs/ADMIN_GUIDE.pdf", "Postra 관리자 가이드"),
-        ("docs/EXECUTIVE_REPORT.md", "docs/EXECUTIVE_REPORT.pdf", "Postra 경영진 보고서"),
-    ]
-    for md, pdf, title in docs:
-        if os.path.exists(md):
-            convert_md_to_pdf(md, pdf, title)
-        else:
-            print(f"[SKIP] {md} not found")
+    docs = {"USER_GUIDE": "Postra 사용자 가이드", "ADMIN_GUIDE": "Postra 관리자 가이드", "EXECUTIVE_REPORT": "Postra 경영진 보고서"}
+    parser = argparse.ArgumentParser(description="Print selected guides with local Chromium and fonts; no external font requests")
+    parser.add_argument("documents", nargs="*", help="Document names: USER_GUIDE, ADMIN_GUIDE, EXECUTIVE_REPORT (default: all)")
+    parser.add_argument("--renderer", choices=["chromium", "playwright"], default="chromium", help="Use Playwright from web/node_modules if Chromium CLI printing is unavailable")
+    args = parser.parse_args()
+    selected = args.documents or list(docs)
+    if any(name not in docs for name in selected):
+        parser.error("unknown document; select USER_GUIDE, ADMIN_GUIDE or EXECUTIVE_REPORT")
+    root = Path(__file__).resolve().parents[1]
+    for name in selected:
+        convert_md_to_pdf(root / "docs" / (name + ".md"), root / "docs" / (name + ".pdf"), docs[name], renderer=args.renderer)

@@ -10,7 +10,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -19,19 +18,28 @@ import (
 	"postra/internal/domain"
 	"postra/internal/platform/build"
 	"postra/internal/platform/metrics"
+	"postra/internal/platform/tracking"
 )
 
 type Server struct {
-	app      *application.App
-	apiToken string
+	app                *application.App
+	apiToken           string
+	trackingViolations *tracking.Recorder
 }
 
 func New(app *application.App, apiToken string) *Server {
-	return &Server{app: app, apiToken: apiToken}
+	return &Server{app: app, apiToken: apiToken, trackingViolations: tracking.NewRecorder()}
 }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	s.registerAuthRoutes(mux)
+	s.registerTrackingRoutes(mux)
+	s.registerRenderingRoutes(mux)
+	s.registerConfigurationRoutes(mux)
+	s.registerEventsRoutes(mux)
+	s.registerWorkflowRoutes(mux)
+	s.registerReceivedImageRoutes(mux)
 
 	mux.HandleFunc("GET /api/me", s.me)
 	mux.HandleFunc("GET /api/auth/session", s.browserSession)
@@ -124,6 +132,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/rules/{id}", s.deleteRule)
 
 	mux.HandleFunc("POST /api/drafts", s.createDraft)
+	mux.HandleFunc("GET /api/drafts", s.listDrafts)
 	mux.HandleFunc("GET /api/drafts/{id}", s.getDraft)
 	mux.HandleFunc("PATCH /api/drafts/{id}", s.updateDraft)
 	mux.HandleFunc("DELETE /api/drafts/{id}", s.deleteDraft)
@@ -140,6 +149,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/livez", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
+	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+	mux.HandleFunc("GET /readyz", s.readyz)
+	mux.HandleFunc("GET /healthz", s.readyz)
 	mux.HandleFunc("GET /api/readyz", s.readyz)
 	mux.HandleFunc("GET /api/healthz", s.readyz)
 	mux.HandleFunc("GET /api/system/info", s.systemInfo)
@@ -150,7 +164,7 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("GET /metrics", metrics.Handler())
 	}
 
-	return s.middleware(mux)
+	return versionedAPI(s.middleware(mux))
 }
 
 // ---------- identity and administration ----------
@@ -368,6 +382,9 @@ type statusRecorder struct {
 	code int
 }
 
+// ResponseController unwraps this metrics wrapper for SSE flush/deadlines.
+func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
+
 func (r *statusRecorder) WriteHeader(code int) {
 	r.code = code
 	r.ResponseWriter.WriteHeader(code)
@@ -378,7 +395,7 @@ func (s *Server) readyz(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
 	if err := s.app.Ready(ctx); err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "unavailable", "error": err.Error()})
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "unavailable", "error": "backing store unavailable"})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -387,8 +404,14 @@ func (s *Server) readyz(w http.ResponseWriter, r *http.Request) {
 // publicPaths are reachable without the API token: scrape and probe endpoints
 // that reveal no sensitive data.
 func publicPath(p string) bool {
+	if p == trackingReportPath || strings.HasPrefix(p, tracking.ProxyPath+"/") {
+		return true
+	}
+	if publicAuthPath(p) {
+		return true
+	}
 	switch p {
-	case "/api/livez", "/api/readyz", "/api/healthz", "/api/auth/session":
+	case "/livez", "/readyz", "/healthz", "/api/livez", "/api/readyz", "/api/healthz", "/api/auth/session":
 		return true
 	}
 	return false
@@ -396,6 +419,8 @@ func publicPath(p string) bool {
 
 func (s *Server) middleware(mux *http.ServeMux) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r = r.WithContext(application.WithRequestTrace(r.Context(), r.Header.Get("X-Request-ID")))
+		w.Header().Set("X-Request-ID", application.RequestTrace(r.Context()))
 		// Nothing here is a page, so nothing may run or load: the API gets a
 		// policy narrower than the UI's, and the tracking snippet never
 		// reaches it.
@@ -437,6 +462,12 @@ func (s *Server) middleware(mux *http.ServeMux) http.Handler {
 					return
 				}
 			}
+			if principal, ok := application.PrincipalFrom(ctx); ok && principal.AuthMethod == "mcp_key" {
+				if err := s.checkMCPRESTScope(ctx, route); err != nil {
+					writeErr(rec, err)
+					return
+				}
+			}
 			mux.ServeHTTP(rec, r.WithContext(ctx))
 		}()
 		metrics.HTTPRequests.WithLabelValues(route, r.Method, strconv.Itoa(rec.code)).Inc()
@@ -452,7 +483,7 @@ func (s *Server) authenticate(r *http.Request) (domain.Principal, bool) {
 	}
 	if s.apiToken != "" && subtle.ConstantTimeCompare([]byte(raw), []byte(s.apiToken)) == 1 {
 		u, err := s.app.Store.GetUser(r.Context(), application.DefaultUserID)
-		if err == nil {
+		if err == nil && u.Status == domain.UserActive {
 			return domain.Principal{UserID: u.ID, LoginID: u.LoginID, DisplayName: u.DisplayName,
 				Role: domain.RoleAdmin, AuthMethod: "api_token"}, true
 		}
@@ -484,22 +515,46 @@ func (s *Server) authenticate(r *http.Request) (domain.Principal, bool) {
 // ---------- helpers ----------
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
+	if code >= 400 {
+		if old, ok := v.(map[string]string); ok && old["error"] != "" {
+			kind := "invalid_request"
+			switch code {
+			case 401:
+				kind = "unauthorized"
+			case 403:
+				kind = "forbidden"
+			case 404:
+				kind = "not_found"
+			case 409:
+				kind = "conflict"
+			default:
+				if code >= 500 {
+					kind = "unavailable"
+				}
+			}
+			old["code"], old["message"], old["trace_id"] = kind, old["error"], w.Header().Get("X-Request-ID")
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	json.NewEncoder(w).Encode(v)
 }
 
 func writeErr(w http.ResponseWriter, err error) {
-	var ue *application.UserError
-	switch {
-	case errors.As(err, &ue):
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": ue.Msg})
-	case errors.Is(err, domain.ErrNotFound):
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
-	default:
-		slog.Error("request failed", "err", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	var syntax *json.SyntaxError
+	var shape *json.UnmarshalTypeError
+	if errors.As(err, &syntax) || errors.As(err, &shape) || errors.Is(err, io.EOF) {
+		err = &domain.PublicError{Code: "invalid_request", Message: "올바른 JSON 요청 본문이 필요합니다.", Status: 400}
 	}
+	ctx := application.WithRequestTrace(context.Background(), w.Header().Get("X-Request-ID"))
+	status, body := application.PublicError(ctx, err)
+	if status >= 500 {
+		slog.Error("request failed", "code", body.Code, "trace_id", body.TraceID)
+	}
+	writeJSON(w, status, struct {
+		domain.ErrorResponse
+		Error string `json:"error"`
+	}{body, body.Message})
 }
 
 func decode[T any](r *http.Request) (T, error) {
@@ -676,17 +731,15 @@ func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) systemInfo(w http.ResponseWriter, r *http.Request) {
-	pgConfigured := strings.TrimSpace(s.app.Cfg.PostgresDSN) != ""
-	driver := s.app.Cfg.StorageDriver
-	if pgConfigured && (driver == "" || driver == "sqlite") && os.Getenv("POSTRA_STORAGE_DRIVER") != "sqlite" {
-		driver = "postgres"
-	}
+	cfg := s.app.EffectiveConfig()
+	pgConfigured := strings.TrimSpace(cfg.PostgresDSN) != ""
+	driver := cfg.StorageDriver // resolved once by config.Load, not by request-time env reads
 	writeJSON(w, http.StatusOK, map[string]any{
 		"version":                 build.Version,
 		"storage_driver":          driver,
 		"postgres_dsn_configured": pgConfigured,
-		"auth_enabled":            s.app.Cfg.Auth.Enabled,
-		"ai_model":                s.app.Cfg.AI.Model,
+		"auth_enabled":            cfg.Auth.Enabled,
+		"ai_model":                cfg.AI.Model,
 	})
 }
 
@@ -723,6 +776,10 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 		b := v == "true" || v == "1"
 		sq.IsArchived = &b
 	}
+	if v := q.Get("is_read"); v != "" {
+		b := v == "true" || v == "1"
+		sq.IsRead = &b
+	}
 	res, err := s.app.Search(r.Context(), sq)
 	if err != nil {
 		writeErr(w, err)
@@ -737,6 +794,8 @@ func (s *Server) getMessage(w http.ResponseWriter, r *http.Request) {
 	var err error
 	if r.URL.Query().Get("mask") == "true" {
 		mv, err = s.app.GetMessageMasked(r.Context(), r.PathValue("id"), includeBody)
+	} else if includeBody && r.URL.Query().Get("external_images") == "once" {
+		mv, err = s.app.GetReceivedMessage(r.Context(), r.PathValue("id"), true)
 	} else {
 		mv, err = s.app.GetMessage(r.Context(), r.PathValue("id"), includeBody)
 	}
@@ -942,15 +1001,12 @@ func (s *Server) summarizeThread(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) questionAnswer(w http.ResponseWriter, r *http.Request) {
-	in, err := decode[struct {
-		Question  string `json:"question"`
-		AccountID string `json:"account_id"`
-	}](r)
+	in, err := decode[application.AskInput](r)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	an, err := s.app.AnswerQuestion(r.Context(), in.Question, in.AccountID)
+	an, err := s.app.Ask(r.Context(), in)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -1111,10 +1167,14 @@ func (s *Server) audit(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) createMCPKey(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Name string `json:"name"`
+		Name   string   `json:"name"`
+		Scopes []string `json:"scopes"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
-	key, rawKey, err := s.app.CreateMCPKey(r.Context(), body.Name)
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
+		writeErr(w, err)
+		return
+	}
+	key, rawKey, err := s.app.CreateMCPKeyWithScopes(r.Context(), body.Name, body.Scopes)
 	if err != nil {
 		writeErr(w, err)
 		return

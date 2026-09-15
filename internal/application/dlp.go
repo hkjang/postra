@@ -31,7 +31,7 @@ func (a *App) scanDLP(subject, body string) []DLPFinding {
 		}
 	}
 	lower := strings.ToLower(text)
-	for _, kw := range a.Cfg.Send.DLPKeywords {
+	for _, kw := range a.EffectiveConfig().Send.DLPKeywords {
 		kw = strings.TrimSpace(kw)
 		if kw == "" {
 			continue
@@ -45,7 +45,7 @@ func (a *App) scanDLP(subject, body string) []DLPFinding {
 
 // dlpPolicy returns the effective DLP policy ("off"|"warn"|"block").
 func (a *App) dlpPolicy() string {
-	p := strings.ToLower(strings.TrimSpace(a.Cfg.Send.DLPPolicy))
+	p := strings.ToLower(strings.TrimSpace(a.EffectiveConfig().Send.DLPPolicy))
 	switch p {
 	case "off", "warn", "block":
 		return p

@@ -1,6 +1,6 @@
 {
   "name": "postra-workspace",
-  "version": "0.19.1",
+  "version": "0.20.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -8,7 +8,7 @@
     "build": "tsc --noEmit && vite build --logLevel warn && node scripts/third-party-notices.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:e2e": "cd .. && POSTRA_SPA_BROWSER_TEST=1 go test ./internal/transport/httpapi -run '^TestSPABrowser$' -v -count=1"
+    "test:e2e": "cd .. && POSTRA_SPA_BROWSER_TEST=1 go test ./internal/transport/httpapi -run '^TestSPA(Browser|ConvergenceBrowser|DevProxyBrowser)$' -v -count=1"
   },
   "engines": {
     "node": ">=22.12"

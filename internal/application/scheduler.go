@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"postra/internal/domain"
@@ -54,32 +55,13 @@ func (a *App) RunJobReaper(ctx context.Context) {
 // cancelled. The per-account syncLocks in StartSync prevent overlap, so a
 // slow account is simply skipped on the next tick instead of stacking.
 func (a *App) RunScheduler(ctx context.Context) {
-	interval := time.Duration(a.Cfg.Sync.AutoSyncMinutes) * time.Minute
-	if interval <= 0 {
-		slog.Info("auto-sync disabled (sync.auto_sync_minutes = 0)")
-		return
-	}
-	slog.Info("scheduler started", "interval", interval)
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	// Job recovery is handled on the leader-transition edge (onBecameLeader),
-	// so it runs even when auto-sync is disabled. Here we only kick an initial
-	// sync if this node is already the leader.
-	if a.IsLeader() {
-		a.guard("scheduler", func() { a.syncAllActive(ctx) })
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if a.IsLeader() {
-				a.guard("scheduler", func() { a.syncAllActive(ctx) })
-			}
+	last := map[string]time.Time{}
+	a.runLiveWorker(ctx, "scheduler", func() time.Duration {
+		if a.EffectiveConfig().Sync.AutoSyncMinutes <= 0 {
+			return 0
 		}
-	}
+		return workerSettingsPoll
+	}, true, func() { a.syncActiveAccounts(ctx, time.Now(), last) })
 }
 
 // RunRetryWorker drains the outbox retry queue on a fixed cadence until ctx
@@ -137,13 +119,40 @@ func (a *App) ProcessRetries(ctx context.Context) int {
 }
 
 func (a *App) syncAllActive(ctx context.Context) {
+	// Explicit/manual pass retained for recovery and deterministic tests. The
+	// background scheduler additionally passes cadence state below.
+	a.syncActiveAccounts(ctx, time.Now(), nil)
+}
+
+func accountSyncInterval(defaultMinutes, minMinutes int, preferences map[string]string) time.Duration {
+	if defaultMinutes <= 0 || preferences["account.auto_sync"] == "false" {
+		return 0
+	}
+	minutes, _ := strconv.Atoi(preferences["account.sync_minutes"])
+	if minutes <= 0 {
+		minutes = defaultMinutes
+	}
+	if minMinutes < 1 {
+		minMinutes = 1
+	}
+	if minutes < minMinutes {
+		minutes = minMinutes
+	}
+	return minutesDuration(minutes)
+}
+
+func (a *App) syncActiveAccounts(ctx context.Context, now time.Time, last map[string]time.Time) {
 	sctx := WithActor(ctx, "scheduler")
 	users, err := a.Store.ListUsers(sctx)
 	if err != nil {
 		slog.Error("scheduler: list users failed", "err", err)
 		return
 	}
+	active := map[string]bool{}
 	for _, user := range users {
+		if ctx.Err() != nil {
+			return
+		}
 		if user.Status != domain.UserActive {
 			continue
 		}
@@ -159,9 +168,26 @@ func (a *App) syncAllActive(ctx context.Context) {
 			if acc.Status != domain.AccountActive || acc.POP3Host == "" {
 				continue
 			}
+			active[acc.ID] = true
+			preferences, err := a.EffectiveMailPreferences(uctx, acc.ID)
+			if err != nil || preferences["account.auto_sync"] == "false" {
+				continue
+			}
+			if last != nil {
+				interval := accountSyncInterval(a.EffectiveConfig().Sync.AutoSyncMinutes, a.SettingInt("sync.min_sync_minutes"), preferences)
+				if interval <= 0 || !last[acc.ID].IsZero() && now.Before(last[acc.ID].Add(interval)) {
+					continue
+				}
+				last[acc.ID] = now // failed attempts must not spin every poll
+			}
 			if _, err := a.StartSync(uctx, acc.ID, SyncOptions{}); err != nil {
 				slog.Debug("scheduler: sync skipped", "account", acc.ID, "reason", err)
 			}
+		}
+	}
+	for id := range last {
+		if !active[id] {
+			delete(last, id)
 		}
 	}
 }

@@ -11,12 +11,13 @@ vi.mock('@/api/client', async importOriginal => {
   return { ...original, api: vi.fn() }
 })
 vi.mock('@/components/layout/Workspace', () => ({ Workspace: () => <Outlet /> }))
+vi.mock('@/features/tracking', () => ({BrowserTracking: () => null}))
 vi.mock('@/features/inbox/InboxPage', () => ({ InboxPage: function TestEditor() {
   const [text, setText] = useState('')
   return <label>작성 중인 본문<input value={text} onChange={event => setText(event.target.value)} /></label>
 } }))
 
-const loggedIn = { authenticated: true, auth_enabled: true, principal: { user_id: 'user-a', login_id: 'a@corp.local', role: 'user', display_name: 'A', auth_method: 'oidc' }, login_url: '/ui/login' }
+const loggedIn = { authenticated: true, auth_enabled: true, principal: { user_id: 'user-a', login_id: 'a@corp.local', role: 'user', display_name: 'A', auth_method: 'oidc' }, login_url: '/app/login' }
 const mockAPI = vi.mocked(api)
 beforeEach(() => mockAPI.mockReset())
 afterEach(cleanup)
@@ -45,9 +46,9 @@ describe('session background refresh recovery', () => {
     await act(async () => { await client.getQueryCache().find({ queryKey: ['session'] })?.promise })
     expect(screen.getByRole('textbox', { name: '작성 중인 본문' })).toHaveValue('아직 저장하지 않은 중요한 메일')
 
-    mockAPI.mockResolvedValueOnce({ authenticated: false, auth_enabled: true, login_url: '/ui/login' })
+    mockAPI.mockResolvedValueOnce({ authenticated: false, auth_enabled: true, login_url: '/app/login' })
     await act(async () => { await client.invalidateQueries({ queryKey: ['session'] }) })
-    await screen.findByRole('link', { name: '계정으로 로그인' })
+    await screen.findByRole('button', { name: '계정으로 로그인' })
     expect(screen.queryByRole('textbox', { name: '작성 중인 본문' })).not.toBeInTheDocument()
     expect(screen.queryByDisplayValue('아직 저장하지 않은 중요한 메일')).not.toBeInTheDocument()
   })

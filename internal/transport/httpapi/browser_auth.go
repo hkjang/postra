@@ -22,7 +22,9 @@ func forwardedFirst(value string) string {
 }
 
 func requestScheme(r *http.Request) string {
-	if r.TLS != nil || strings.EqualFold(forwardedFirst(r.Header.Get("X-Forwarded-Proto")), "https") {
+	if r.TLS != nil || strings.EqualFold(forwardedFirst(r.Header.Get("X-Forwarded-Proto")), "https") ||
+		strings.EqualFold(forwardedFirst(r.Header.Get("X-Forwarded-Scheme")), "https") ||
+		strings.EqualFold(r.Header.Get("Front-End-Https"), "on") || strings.EqualFold(r.Header.Get("X-Url-Scheme"), "https") {
 		return "https"
 	}
 	return "http"
@@ -84,18 +86,23 @@ func (s *Server) browserMutationAllowed(r *http.Request) bool {
 
 func (s *Server) browserSession(w http.ResponseWriter, r *http.Request) {
 	response := map[string]any{
-		"authenticated": false,
-		"auth_enabled":  s.app.Cfg.Auth.Enabled || s.apiToken != "",
-		"login_url":     "/ui/login?return_to=%2Fapp%2F",
+		"authenticated":  false,
+		"auth_enabled":   s.app.Cfg.Auth.Enabled || s.apiToken != "",
+		"login_url":      "/app/login",
+		"local_auth":     s.app.Cfg.Auth.Enabled,
+		"token_required": !s.app.Cfg.Auth.Enabled && s.apiToken != "",
 	}
 	if s.app.Cfg.Auth.Enabled {
 		if needs, err := s.app.NeedsAdminSetup(r.Context()); err == nil && needs {
-			response["setup_url"] = "/ui/setup"
+			response["setup_url"] = "/app/setup"
 		}
 		if s.app.OIDCConfigured(r.Context()) {
-			response["oidc_url"] = "/ui/auth/oidc/start?return_to=%2Fapp%2F"
+			response["oidc_url"] = "/auth/oidc/start?return_to=%2Fapp%2F"
 			response["oidc_auto_login"] = s.app.OIDCAutoLoginEnabled(r.Context())
 		}
+	}
+	if r.URL.Query().Get("sso") == "error" {
+		response["sso_error"] = s.consumeBrowserOIDCError(w, r)
 	}
 	p, ok := s.authenticate(r)
 	if !s.app.Cfg.Auth.Enabled && s.apiToken == "" {
@@ -130,5 +137,5 @@ func (s *Server) browserLogout(w http.ResponseWriter, r *http.Request) {
 	for _, name := range []string{"postra_session", "postra_csrf"} {
 		http.SetCookie(w, &http.Cookie{Name: name, Value: "", Path: "/", MaxAge: -1, HttpOnly: name == "postra_session", Secure: requestScheme(r) == "https", SameSite: http.SameSiteLaxMode}) // #nosec G124 -- deletion mirrors dynamically secure shared cookies
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"login_url": "/ui/login?sso=signed_out&return_to=%2Fapp%2F"})
+	writeJSON(w, http.StatusOK, map[string]string{"login_url": "/app/login?sso=signed_out"})
 }

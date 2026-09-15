@@ -13,15 +13,14 @@ import (
 	"mime/multipart"
 	"mime/quotedprintable"
 	"net/mail"
-	"net/url"
 	"regexp"
 	"strings"
 	"time"
 
-	"github.com/microcosm-cc/bluemonday"
 	"golang.org/x/net/html/charset"
 
 	"postra/internal/domain"
+	"postra/internal/platform/receivedhtml"
 )
 
 type AttachmentPart struct {
@@ -59,30 +58,6 @@ var wordDecoder = &mime.WordDecoder{
 	CharsetReader: func(label string, input io.Reader) (io.Reader, error) {
 		return charset.NewReaderLabel(label, input)
 	},
-}
-
-// htmlPolicy strips scripts/event handlers and blocks external resources:
-// only cid:/data: image sources survive (MIME-008/009).
-var htmlPolicy = buildPolicy()
-
-func buildPolicy() *bluemonday.Policy {
-	p := bluemonday.NewPolicy()
-	p.AllowElements("a", "b", "i", "u", "em", "strong", "p", "br", "hr", "div", "span",
-		"ul", "ol", "li", "blockquote", "pre", "code",
-		"table", "thead", "tbody", "tr", "td", "th",
-		"h1", "h2", "h3", "h4", "h5", "h6", "img", "font")
-	p.AllowAttrs("href").OnElements("a")
-	p.AllowStandardURLs()
-	p.RequireNoFollowOnLinks(true)
-	// Only embedded images survive: cid: references and data: image URIs.
-	// External http(s) sources are dropped so nothing auto-loads (MIME-009).
-	p.AllowURLSchemeWithCustomPolicy("cid", func(*url.URL) bool { return true })
-	p.AllowURLSchemeWithCustomPolicy("data", func(u *url.URL) bool {
-		return strings.HasPrefix(u.Opaque, "image/")
-	})
-	p.AllowAttrs("src").Matching(regexp.MustCompile(`^(cid:|data:image/)`)).OnElements("img")
-	p.AllowAttrs("alt", "width", "height").OnElements("img")
-	return p
 }
 
 func Parse(raw []byte) *Parsed {
@@ -192,7 +167,7 @@ func walkPart(r io.Reader, contentType, cte, disposition string, out *Parsed, de
 		}
 	case "text/html":
 		if out.HTMLSafe == "" {
-			out.HTMLSafe = htmlPolicy.Sanitize(text)
+			out.HTMLSafe = receivedhtml.Sanitize(text)
 			if out.TextBody == "" {
 				out.TextBody = htmlToText(text)
 			}

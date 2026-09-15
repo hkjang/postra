@@ -258,6 +258,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			name TEXT NOT NULL, key_hash TEXT UNIQUE NOT NULL, key_prefix TEXT NOT NULL,
 			status TEXT NOT NULL DEFAULT 'active', created_at BIGINT NOT NULL, last_used_at BIGINT DEFAULT 0)`,
 		`CREATE INDEX IF NOT EXISTS idx_mcp_keys_user ON mcp_keys(user_id)`,
+		`ALTER TABLE mcp_keys ADD COLUMN IF NOT EXISTS scopes_json TEXT NOT NULL DEFAULT ''`,
 		`CREATE TABLE IF NOT EXISTS mail_accounts (
 			id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL, email TEXT NOT NULL, status TEXT NOT NULL,
 			inbound_protocol TEXT NOT NULL DEFAULT 'pop3',
@@ -301,6 +302,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			legal_hold BOOL NOT NULL DEFAULT false)`,
 		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_archived BOOL NOT NULL DEFAULT false`,
 		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_important BOOL NOT NULL DEFAULT false`,
+		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_read BOOL NOT NULL DEFAULT false`,
 		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS snoozed_until BIGINT NOT NULL DEFAULT 0`,
 		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS labels_json TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS legal_hold BOOL NOT NULL DEFAULT false`,
@@ -336,6 +338,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			draft_id TEXT NOT NULL REFERENCES drafts(id) ON DELETE CASCADE, version INT NOT NULL,
 			subject TEXT, body_text TEXT, body_html TEXT, to_json TEXT, cc_json TEXT, bcc_json TEXT,
 			author TEXT NOT NULL, created_at BIGINT NOT NULL, PRIMARY KEY (draft_id, version))`,
+		`ALTER TABLE draft_versions ADD COLUMN IF NOT EXISTS attachments_json TEXT NOT NULL DEFAULT '[]'`,
 		`CREATE TABLE IF NOT EXISTS approvals (
 			id TEXT PRIMARY KEY, user_id TEXT NOT NULL, action_type TEXT NOT NULL, draft_id TEXT, draft_version INT,
 			payload_hash TEXT NOT NULL, token_hash TEXT NOT NULL, approver TEXT, expires_at BIGINT NOT NULL,
@@ -1078,7 +1081,7 @@ const msgCols = `id,user_id,account_id,uidl,message_id_hdr,subject,from_name,fro
 // msgSelectCols extends the immutable ingest set (msgCols, used by
 // InsertMessage's fixed placeholder list) with the mutable UX-state columns
 // used by every SELECT + scanMessage.
-const msgSelectCols = msgCols + `,is_archived,is_important,snoozed_until,labels_json,legal_hold`
+const msgSelectCols = msgCols + `,is_archived,is_important,snoozed_until,labels_json,legal_hold,is_read`
 
 func labelsFromJSON(s string) []string {
 	if s == "" {
@@ -1158,7 +1161,7 @@ func scanMessage(row pgx.Row) (*domain.Message, error) {
 	err := row.Scan(&m.ID, &m.UserID, &m.AccountID, &m.UIDL, &m.MessageID, &m.Subject, &m.From.Name, &m.From.Email,
 		&toJ, &ccJ, &rtJ, &m.Date, &m.Size, &m.RawHash, &m.RawURI, &threadID,
 		&m.HasAttachments, &inReplyTo, &refs, &authRes, &parseErr, &m.CreatedAt,
-		&m.IsArchived, &m.IsImportant, &m.SnoozedUntil, &labelsJSON, &m.LegalHold)
+		&m.IsArchived, &m.IsImportant, &m.SnoozedUntil, &labelsJSON, &m.LegalHold, &m.IsRead)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -1335,8 +1338,8 @@ func (s *Store) UpdateMessage(ctx context.Context, m *domain.Message) error {
 	if err != nil {
 		return err
 	}
-	ct, err := s.pool.Exec(ctx, `UPDATE messages SET is_archived=$1, is_important=$2, snoozed_until=$3, labels_json=$4, legal_hold=$5 WHERE id=$6 AND user_id=$7`,
-		m.IsArchived, m.IsImportant, m.SnoozedUntil, string(labelsJSON), m.LegalHold, m.ID, m.UserID)
+	ct, err := s.pool.Exec(ctx, `UPDATE messages SET is_archived=$1, is_important=$2, snoozed_until=$3, labels_json=$4, legal_hold=$5, is_read=$6 WHERE id=$7 AND user_id=$8`,
+		m.IsArchived, m.IsImportant, m.SnoozedUntil, string(labelsJSON), m.LegalHold, m.IsRead, m.ID, m.UserID)
 	if err != nil {
 		return err
 	}
@@ -1386,6 +1389,9 @@ func (s *Store) Search(ctx context.Context, q domain.SearchQuery) (*domain.Searc
 	}
 	if q.IsArchived != nil {
 		add("m.is_archived = $%d", *q.IsArchived)
+	}
+	if q.IsRead != nil {
+		add("m.is_read = $%d", *q.IsRead)
 	}
 	if q.Label != "" {
 		add("m.labels_json LIKE $%d", `%"`+q.Label+`"%`)
@@ -1688,8 +1694,12 @@ func (s *Store) ListMessageCollab(ctx context.Context, userID, status, assignee 
 	 FROM message_collab WHERE user_id=$1`
 	args := []any{userID}
 	if status != "" {
-		args = append(args, status)
-		q += ` AND status=$` + strconv.Itoa(len(args))
+		var placeholders []string
+		for _, alias := range domain.CollabStatusAliases(status) {
+			args = append(args, alias)
+			placeholders = append(placeholders, "$"+strconv.Itoa(len(args)))
+		}
+		q += ` AND status IN (` + strings.Join(placeholders, ",") + `)`
 	}
 	if assignee != "" {
 		args = append(args, assignee)
@@ -1785,9 +1795,13 @@ func (s *Store) CreateDraft(ctx context.Context, d *domain.Draft, v *domain.Draf
 }
 
 func insertDraftVersionTx(ctx context.Context, tx pgx.Tx, draftID string, v *domain.DraftVersion) error {
-	_, err := tx.Exec(ctx, `INSERT INTO draft_versions (draft_id,version,subject,body_text,body_html,to_json,cc_json,bcc_json,author,created_at)
-	 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-		draftID, v.Version, v.Subject, v.BodyText, v.BodyHTML, addrJSON(v.To), addrJSON(v.Cc), addrJSON(v.Bcc), v.Author, v.CreatedAt)
+	attachments, err := json.Marshal(v.Attachments)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO draft_versions (draft_id,version,subject,body_text,body_html,to_json,cc_json,bcc_json,author,created_at,attachments_json)
+	 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+		draftID, v.Version, v.Subject, v.BodyText, v.BodyHTML, addrJSON(v.To), addrJSON(v.Cc), addrJSON(v.Bcc), v.Author, v.CreatedAt, string(attachments))
 	return err
 }
 
@@ -1837,10 +1851,11 @@ func (s *Store) GetDraft(ctx context.Context, userID, id string) (*domain.Draft,
 
 func (s *Store) GetDraftVersion(ctx context.Context, userID, draftID string, version int) (*domain.DraftVersion, error) {
 	var v domain.DraftVersion
+	var attachments string
 	var toJ, ccJ, bccJ, html *string
-	err := s.pool.QueryRow(ctx, `SELECT v.draft_id,v.version,v.subject,v.body_text,v.body_html,v.to_json,v.cc_json,v.bcc_json,v.author,v.created_at
+	err := s.pool.QueryRow(ctx, `SELECT v.draft_id,v.version,v.subject,v.body_text,v.body_html,v.to_json,v.cc_json,v.bcc_json,v.author,v.created_at,v.attachments_json
 	 FROM draft_versions v JOIN drafts d ON d.id=v.draft_id WHERE v.draft_id=$1 AND v.version=$2 AND d.user_id=$3`, draftID, version, userID).
-		Scan(&v.DraftID, &v.Version, &v.Subject, &v.BodyText, &html, &toJ, &ccJ, &bccJ, &v.Author, &v.CreatedAt)
+		Scan(&v.DraftID, &v.Version, &v.Subject, &v.BodyText, &html, &toJ, &ccJ, &bccJ, &v.Author, &v.CreatedAt, &attachments)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -1849,6 +1864,9 @@ func (s *Store) GetDraftVersion(ctx context.Context, userID, draftID string, ver
 	}
 	v.BodyHTML = deref(html)
 	v.To, v.Cc, v.Bcc = addrFromJSON(deref(toJ)), addrFromJSON(deref(ccJ)), addrFromJSON(deref(bccJ))
+	if err := json.Unmarshal([]byte(attachments), &v.Attachments); err != nil {
+		return nil, fmt.Errorf("invalid persisted draft attachment metadata")
+	}
 	return &v, nil
 }
 
@@ -2344,19 +2362,24 @@ func (s *Store) SemanticSearch(ctx context.Context, userID, accountID string, qu
 
 func (s *Store) CreateMCPKey(ctx context.Context, key *domain.MCPKey) error {
 	key.CreatedAt = now()
-	_, err := s.pool.Exec(ctx, `INSERT INTO mcp_keys (id, user_id, name, key_hash, key_prefix, status, created_at, last_used_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-		key.ID, key.UserID, key.Name, key.KeyHash, key.KeyPrefix, key.Status, key.CreatedAt, key.LastUsedAt)
+	scopes, err := json.Marshal(key.Scopes)
+	if err != nil {
+		return err
+	}
+	_, err = s.pool.Exec(ctx, `INSERT INTO mcp_keys (id, user_id, name, key_hash, key_prefix, status, created_at, last_used_at, scopes_json)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		key.ID, key.UserID, key.Name, key.KeyHash, key.KeyPrefix, key.Status, key.CreatedAt, key.LastUsedAt, string(scopes))
 	return err
 }
 
 func (s *Store) GetMCPKeyByHash(ctx context.Context, keyHash string) (*domain.MCPKey, *domain.User, error) {
 	var k domain.MCPKey
 	var u domain.User
-	err := s.pool.QueryRow(ctx, `SELECT k.id, k.user_id, k.name, k.key_hash, k.key_prefix, k.status, k.created_at, k.last_used_at,
+	var scopes string
+	err := s.pool.QueryRow(ctx, `SELECT k.id, k.user_id, k.name, k.key_hash, k.key_prefix, k.status, k.created_at, k.last_used_at, k.scopes_json,
 		u.id, u.login_id, u.display_name, u.email, u.role, u.status, u.auth_provider, u.created_at, u.updated_at, u.last_login_at
 		FROM mcp_keys k JOIN users u ON u.id = k.user_id WHERE k.key_hash = $1 AND k.status = 'active'`, keyHash).
-		Scan(&k.ID, &k.UserID, &k.Name, &k.KeyHash, &k.KeyPrefix, &k.Status, &k.CreatedAt, &k.LastUsedAt,
+		Scan(&k.ID, &k.UserID, &k.Name, &k.KeyHash, &k.KeyPrefix, &k.Status, &k.CreatedAt, &k.LastUsedAt, &scopes,
 			&u.ID, &u.LoginID, &u.DisplayName, &u.Email, &u.Role, &u.Status, &u.AuthProvider, &u.CreatedAt, &u.UpdatedAt, &u.LastLoginAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil, ErrNotFound
@@ -2364,11 +2387,15 @@ func (s *Store) GetMCPKeyByHash(ctx context.Context, keyHash string) (*domain.MC
 	if err != nil {
 		return nil, nil, err
 	}
+	k.Scopes, k.LegacyScopes, err = domain.DecodeMCPKeyScopes(scopes)
+	if err != nil {
+		return nil, nil, err
+	}
 	return &k, &u, nil
 }
 
 func (s *Store) ListMCPKeys(ctx context.Context, userID string) ([]domain.MCPKey, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id, user_id, name, key_hash, key_prefix, status, created_at, last_used_at
+	rows, err := s.pool.Query(ctx, `SELECT id, user_id, name, key_hash, key_prefix, status, created_at, last_used_at, scopes_json
 		FROM mcp_keys WHERE user_id = $1 ORDER BY created_at DESC`, userID)
 	if err != nil {
 		return nil, err
@@ -2377,7 +2404,12 @@ func (s *Store) ListMCPKeys(ctx context.Context, userID string) ([]domain.MCPKey
 	var out []domain.MCPKey
 	for rows.Next() {
 		var k domain.MCPKey
-		if err := rows.Scan(&k.ID, &k.UserID, &k.Name, &k.KeyHash, &k.KeyPrefix, &k.Status, &k.CreatedAt, &k.LastUsedAt); err != nil {
+		var scopes string
+		if err := rows.Scan(&k.ID, &k.UserID, &k.Name, &k.KeyHash, &k.KeyPrefix, &k.Status, &k.CreatedAt, &k.LastUsedAt, &scopes); err != nil {
+			return nil, err
+		}
+		k.Scopes, k.LegacyScopes, err = domain.DecodeMCPKeyScopes(scopes)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, k)
@@ -2386,7 +2418,7 @@ func (s *Store) ListMCPKeys(ctx context.Context, userID string) ([]domain.MCPKey
 }
 
 func (s *Store) ListAllMCPKeys(ctx context.Context) ([]domain.MCPKey, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id, user_id, name, key_hash, key_prefix, status, created_at, last_used_at
+	rows, err := s.pool.Query(ctx, `SELECT id, user_id, name, key_hash, key_prefix, status, created_at, last_used_at, scopes_json
 		FROM mcp_keys ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
@@ -2395,7 +2427,12 @@ func (s *Store) ListAllMCPKeys(ctx context.Context) ([]domain.MCPKey, error) {
 	var out []domain.MCPKey
 	for rows.Next() {
 		var k domain.MCPKey
-		if err := rows.Scan(&k.ID, &k.UserID, &k.Name, &k.KeyHash, &k.KeyPrefix, &k.Status, &k.CreatedAt, &k.LastUsedAt); err != nil {
+		var scopes string
+		if err := rows.Scan(&k.ID, &k.UserID, &k.Name, &k.KeyHash, &k.KeyPrefix, &k.Status, &k.CreatedAt, &k.LastUsedAt, &scopes); err != nil {
+			return nil, err
+		}
+		k.Scopes, k.LegacyScopes, err = domain.DecodeMCPKeyScopes(scopes)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, k)
@@ -2427,6 +2464,21 @@ func (s *Store) RevokeMCPKey(ctx context.Context, userID, keyID string) error {
 func (s *Store) TouchMCPKey(ctx context.Context, keyID string, lastUsedAt int64) error {
 	_, err := s.pool.Exec(ctx, `UPDATE mcp_keys SET last_used_at = $1 WHERE id = $2`, lastUsedAt, keyID)
 	return err
+}
+
+func (s *Store) UpdateMCPKeyScopes(ctx context.Context, userID, keyID string, scopes []string) error {
+	raw, err := json.Marshal(scopes)
+	if err != nil {
+		return err
+	}
+	result, err := s.pool.Exec(ctx, `UPDATE mcp_keys SET scopes_json = $1 WHERE id = $2 AND ($3 = '' OR user_id = $3) AND status = 'active'`, string(raw), keyID, userID)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (s *Store) NotifySettingsChange(ctx context.Context) {

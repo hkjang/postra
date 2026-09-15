@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { claimSilentSSO, markSignedOut, notifyAuthChange, receiveAuthChange, resetSSOFlags } from './auth-events'
+import { authReturnTo, claimSilentSSO, markSignedOut, notifyAuthChange, receiveAuthChange, resetSSOFlags } from './auth-events'
 
 beforeEach(() => { resetSSOFlags(); window.localStorage.removeItem('postra-auth-change') })
 afterEach(() => { vi.restoreAllMocks(); resetSSOFlags() })
@@ -34,7 +34,7 @@ describe('silent SSO tab guards shared with legacy UI', () => {
   it('claims one prompt=none attempt and preserves the current SPA return path', () => {
     const path = '/app/mail?message=m1&q=%ED%9A%8C%EC%9D%98'
     const first = claimSilentSSO(path, '?message=m1&q=%ED%9A%8C%EC%9D%98')
-    expect(first).toBe('/ui/auth/oidc/start?prompt=none&return_to=' + encodeURIComponent(path))
+    expect(first).toBe('/auth/oidc/start?prompt=none&return_to=' + encodeURIComponent(path))
     expect(window.sessionStorage.getItem('postra.sso.silentAttempted')).toBe('true')
     expect(claimSilentSSO(path, '')).toBeUndefined()
   })
@@ -96,5 +96,15 @@ describe('silent SSO tab guards shared with legacy UI', () => {
   it('ignores unrelated storage events', () => {
     expect(receiveAuthChange(new StorageEvent('storage', { key: 'unrelated', newValue: '123:signed_out' }))).toBe(false)
     expect(claimSilentSSO('/app/', '')).toBeDefined()
+  })
+})
+
+describe('standalone auth deep links', () => {
+  it('retains the requested SPA route through the login screen', () => {
+    expect(authReturnTo('/login', '?return_to=%2Fapp%2Fmessages%2Fm1%3Fbody%3Dtrue')).toBe('/app/messages/m1?body=true')
+    expect(authReturnTo('/mail', '?folder=important')).toBe('/app/mail?folder=important')
+  })
+  it.each(['https://evil.example', '//evil.example/app/', '/ui/', '/app/../../outside', '/app/login', '/app/setup'])('rejects an external or recursive return destination %s', returnTo => {
+    expect(authReturnTo('/login', '?return_to=' + encodeURIComponent(returnTo))).toBe('/app/')
   })
 })

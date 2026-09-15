@@ -8,6 +8,7 @@ package telemetry
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"go.opentelemetry.io/otel"
@@ -66,8 +67,17 @@ func Attr(key, value string) attribute.KeyValue { return attribute.String(key, v
 // End finishes a span, recording an error status when err is non-nil.
 func End(span trace.Span, err error) {
 	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
+		// Provider errors can contain echoed credentials or message data. OTLP
+		// is another disclosure boundary, not a trusted place for raw errors.
+		message, kind := "operation failed; inspect the correlated operation status", "operation_failed"
+		if errors.Is(err, context.DeadlineExceeded) {
+			message, kind = "operation timed out; inspect status before retrying", "timeout"
+		} else if errors.Is(err, context.Canceled) {
+			message, kind = "operation canceled", "canceled"
+		}
+		span.RecordError(errors.New(message))
+		span.SetAttributes(attribute.String("error.type", kind))
+		span.SetStatus(codes.Error, message)
 	}
 	span.End()
 }
@@ -77,6 +87,9 @@ type statusRecorder struct {
 	http.ResponseWriter
 	status int
 }
+
+// Preserve streaming and cancellation controls through the tracing wrapper.
+func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
 
 func (r *statusRecorder) WriteHeader(code int) {
 	r.status = code

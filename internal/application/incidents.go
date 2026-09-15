@@ -15,7 +15,7 @@ import (
 type incidentOpt func(*domain.Incident)
 
 func withIncidentAccount(id string) incidentOpt { return func(i *domain.Incident) { i.AccountID = id } }
-func withIncidentJob(id string) incidentOpt      { return func(i *domain.Incident) { i.JobID = id } }
+func withIncidentJob(id string) incidentOpt     { return func(i *domain.Incident) { i.JobID = id } }
 
 // recordIncident persists a major system error for admin reporting. It is
 // strictly best-effort: it never returns an error and never panics into the
@@ -99,7 +99,11 @@ func (a *App) AdminListIncidents(ctx context.Context, f domain.IncidentFilter) (
 	if _, err := requireAdmin(ctx); err != nil {
 		return nil, err
 	}
-	return a.Store.ListIncidents(ctx, f)
+	incidents, err := a.Store.ListIncidents(ctx, f)
+	for i := range incidents {
+		incidents[i] = *safeIncidentDiagnostic(&incidents[i])
+	}
+	return incidents, err
 }
 
 func (a *App) AdminIncidentStats(ctx context.Context) (domain.IncidentStats, error) {
@@ -113,7 +117,8 @@ func (a *App) AdminGetIncident(ctx context.Context, id string) (*domain.Incident
 	if _, err := requireAdmin(ctx); err != nil {
 		return nil, err
 	}
-	return a.Store.GetIncident(ctx, id)
+	incident, err := a.Store.GetIncident(ctx, id)
+	return safeIncidentDiagnostic(incident), err
 }
 
 func (a *App) AdminResolveIncident(ctx context.Context, id string) error {

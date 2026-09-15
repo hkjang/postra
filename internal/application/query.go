@@ -42,7 +42,25 @@ func (a *App) loadBody(ctx context.Context, userID, messageID string) *domain.Me
 
 func (a *App) Search(ctx context.Context, q domain.SearchQuery) (*domain.SearchResult, error) {
 	q.UserID = userIDFrom(ctx)
-	return a.Store.Search(ctx, q)
+	result, err := a.Store.Search(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(result.Messages))
+	for _, message := range result.Messages {
+		ids = append(ids, message.ID)
+	}
+	if bodies, err := a.Store.BodyTextBatch(ctx, q.UserID, ids); err == nil {
+		result.Snippets = make(map[string]string, len(bodies))
+		for id, body := range bodies {
+			text := []rune(strings.Join(strings.Fields(body), " "))
+			if len(text) > 200 {
+				text = append(text[:200], '…')
+			}
+			result.Snippets[id] = string(text)
+		}
+	}
+	return result, nil
 }
 
 type MessageView struct {
@@ -55,16 +73,16 @@ type MessageView struct {
 }
 
 func (a *App) GetMessage(ctx context.Context, id string, includeBody bool) (*MessageView, error) {
-	return a.getMessage(ctx, id, includeBody, false)
+	return a.getMessage(ctx, id, includeBody, false, false)
 }
 
 // GetMessageMasked returns a message with sensitive patterns redacted in the
 // body and subject (§7 보안 검색).
 func (a *App) GetMessageMasked(ctx context.Context, id string, includeBody bool) (*MessageView, error) {
-	return a.getMessage(ctx, id, includeBody, true)
+	return a.getMessage(ctx, id, includeBody, true, false)
 }
 
-func (a *App) getMessage(ctx context.Context, id string, includeBody, doMask bool) (*MessageView, error) {
+func (a *App) getMessage(ctx context.Context, id string, includeBody, doMask, allowImagesOnce bool) (*MessageView, error) {
 	userID := userIDFrom(ctx)
 	m, err := a.Store.GetMessage(ctx, userID, id)
 	if err != nil {
@@ -76,6 +94,7 @@ func (a *App) getMessage(ctx context.Context, id string, includeBody, doMask boo
 	v := &MessageView{Message: *m}
 	if includeBody {
 		if b := a.loadBody(ctx, userID, id); b != nil {
+			a.prepareReceivedBody(ctx, *m, b, allowImagesOnce)
 			if doMask {
 				b.TextBody, _ = mask.Mask(b.TextBody)
 				b.HTMLSanitized, _ = mask.Mask(b.HTMLSanitized)
@@ -119,6 +138,7 @@ func (a *App) GetThread(ctx context.Context, threadID string, includeBodies bool
 		mv := MessageView{Message: m}
 		if includeBodies {
 			mv.Body = a.loadBody(ctx, userID, m.ID)
+			a.prepareReceivedBody(ctx, m, mv.Body, false)
 		}
 		tv.Messages = append(tv.Messages, mv)
 	}
@@ -165,7 +185,11 @@ func (a *App) GetAttachment(ctx context.Context, messageID, attachmentID string,
 }
 
 func (a *App) SearchAudit(ctx context.Context, limit int) ([]domain.AuditEvent, error) {
-	return a.Store.SearchAudit(ctx, userIDFrom(ctx), limit)
+	events, err := a.Store.SearchAudit(ctx, userIDFrom(ctx), limit)
+	for i := range events {
+		events[i] = safeAuditDiagnostic(events[i])
+	}
+	return events, err
 }
 
 // PolicySnapshot returns the currently applied, non-sensitive policy for the
@@ -173,15 +197,15 @@ func (a *App) SearchAudit(ctx context.Context, limit int) ([]domain.AuditEvent, 
 func (a *App) PolicySnapshot() map[string]any {
 	aiCfg := a.currentAIConfig()
 	return map[string]any{
-		"allow_insecure_mail":    a.Cfg.AllowInsecureMail,
-		"allow_private_hosts":    a.Cfg.AllowPrivateHosts,
+		"allow_insecure_mail":    a.EffectiveConfig().AllowInsecureMail,
+		"allow_private_hosts":    a.EffectiveConfig().AllowPrivateHosts,
 		"encrypt_at_rest":        a.Cfg.EncryptAtRest,
 		"ai_allow_external":      aiCfg.AllowExternal,
 		"ai_model":               aiCfg.Model,
 		"send_requires_approval": true,
 		"server_delete_default":  "retain",
-		"max_message_bytes":      a.Cfg.Sync.MaxMessageBytes,
-		"max_per_sync":           a.Cfg.Sync.MaxPerSync,
+		"max_message_bytes":      a.EffectiveConfig().Sync.MaxMessageBytes,
+		"max_per_sync":           a.EffectiveConfig().Sync.MaxPerSync,
 	}
 }
 
@@ -193,6 +217,8 @@ const (
 	BatchActionUnarchive       BatchAction = "unarchive"
 	BatchActionMarkImportant   BatchAction = "mark_important"
 	BatchActionUnmarkImportant BatchAction = "unmark_important"
+	BatchActionMarkRead        BatchAction = "mark_read"
+	BatchActionMarkUnread      BatchAction = "mark_unread"
 	BatchActionSnooze          BatchAction = "snooze"
 	BatchActionUnsnooze        BatchAction = "unsnooze"
 	BatchActionAddLabel        BatchAction = "add_label"
@@ -234,11 +260,20 @@ type BatchResult struct {
 // per-message result set (§P2 메일 UX 확장). Actions are explicit and
 // idempotent (mark_important vs unmark_important) so retries converge.
 func (a *App) BatchUpdateMessages(ctx context.Context, opts BatchUpdateOptions) (*BatchResult, error) {
+	if p, ok := PrincipalFrom(ctx); ok && p.AuthMethod == "mcp_key" && (opts.Action == BatchActionLegalHold || opts.Action == BatchActionLegalUnhold) {
+		if !p.IsAdmin() {
+			return nil, &domain.PublicError{Code: "forbidden", Message: "법적 보존 정책 변경에는 관리자 권한이 필요합니다.", Status: 403}
+		}
+		if err := a.CheckMCPPermissionScopes(ctx, "admin.write"); err != nil {
+			return nil, err
+		}
+	}
 	if len(opts.MessageIDs) == 0 {
 		return nil, userErrf("no message IDs provided")
 	}
 	switch opts.Action {
 	case BatchActionDelete, BatchActionArchive, BatchActionUnarchive,
+		BatchActionMarkRead, BatchActionMarkUnread,
 		BatchActionMarkImportant, BatchActionUnmarkImportant, BatchActionImportant,
 		BatchActionSnooze, BatchActionUnsnooze, BatchActionAddLabel, BatchActionRemoveLabel,
 		BatchActionLegalHold, BatchActionLegalUnhold:
@@ -257,7 +292,8 @@ func (a *App) BatchUpdateMessages(ctx context.Context, opts BatchUpdateOptions) 
 		err := a.applyBatchAction(ctx, id, opts)
 		item := BatchItemResult{MessageID: id, OK: err == nil}
 		if err != nil {
-			item.Error = err.Error()
+			_, public := PublicError(ctx, err)
+			item.Error = public.Message
 			res.Failed++
 		} else {
 			res.Succeeded++
@@ -292,6 +328,10 @@ func (a *App) applyBatchAction(ctx context.Context, id string, opts BatchUpdateO
 		m.IsArchived = true
 	case BatchActionUnarchive:
 		m.IsArchived = false
+	case BatchActionMarkRead:
+		m.IsRead = true
+	case BatchActionMarkUnread:
+		m.IsRead = false
 	case BatchActionMarkImportant:
 		m.IsImportant = true
 	case BatchActionUnmarkImportant:
@@ -355,6 +395,7 @@ func (a *App) GetThreadTimeline(ctx context.Context, threadID string) ([]Message
 		m := msgs[i]
 		mv := MessageView{Message: m}
 		mv.Body = a.loadBody(ctx, userID, m.ID)
+		a.prepareReceivedBody(ctx, m, mv.Body, false)
 		if atts, err := a.Store.ListAttachments(ctx, userID, m.ID); err == nil {
 			mv.Attachments = atts
 		}

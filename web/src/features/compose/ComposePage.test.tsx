@@ -26,6 +26,16 @@ beforeEach(() => {
   mockAPI.mockReset()
   mockAPI.mockImplementation(async (path, options) => {
     if (path === '/api/accounts') return [{ id: 'a1', email: 'me@corp.local', name: '회사 메일', status: 'active' }]
+    if (path === '/api/signatures') return []
+    if (path === '/api/preferences') return { fields: [], revision: '' }
+    if (path === '/api/mail/templates') return [{ id: 'clean', name: '기본', description: '' }, { id: 'notice', name: '공지', description: '' }]
+    if (path === '/api/accounts/a1/preferences') return { fields: [], revision: '' }
+    if (path === '/api/mail/render') return { body_html: '<div data-postra-template="notice"><p>공통 렌더 결과</p></div>', body_text: '공통 렌더 결과', format: 'html', template: 'notice' }
+    if (path === '/api/drafts/d1/attachments' && options?.method === 'POST') {
+      const body = options.body as { name: string }
+      version = { ...version, version: { ...version.version, version: version.version.version + 1, attachments: [{ id: 'att1', name: body.name, mime_type: 'text/plain', size: 4, scan_status: 'clean', inline: false }] } }
+      return version
+    }
     if (path === '/api/drafts/d1' && options?.method === 'PATCH') {
       const body = options.body as { subject: string; body_html: string; body: string; bcc: string[] }
       version = { ...version, version: { ...version.version, version: version.version.version + 1, subject: body.subject, body_html: body.body_html, body_text: body.body } }
@@ -42,6 +52,24 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.restoreAllMocks() })
 
 describe('explicit draft approval workflow', () => {
+  it('uses the shared local renderer without approving or sending, then leaves the result dirty', async () => {
+    setup(); await screen.findByDisplayValue('공지')
+    fireEvent.change(screen.getByRole('combobox', { name: '메일 템플릿' }), { target: { value: 'notice' } })
+    fireEvent.click(screen.getByRole('button', { name: '서식 적용' }))
+    await waitFor(() => expect(screen.getByRole('textbox', { name: '메일 본문 서식 편집기' })).toHaveValue('<div data-postra-template="notice"><p>공통 렌더 결과</p></div>'))
+    expect(screen.getByText('저장하지 않은 변경')).toBeInTheDocument()
+    expect(mockAPI.mock.calls.some(([path]) => path.endsWith('/request-approval') || path.endsWith('/send'))).toBe(false)
+  })
+
+  it('uploads a file into a new server version without issuing approval or sending', async () => {
+    setup(); await screen.findByDisplayValue('공지')
+    fireEvent.change(screen.getByLabelText('첨부파일 선택'), { target: { files: [new File(['test'], 'report.txt', { type: 'text/plain' })] } })
+    await screen.findByRole('link', { name: 'report.txt' })
+    expect(mockAPI).toHaveBeenCalledWith('/api/drafts/d1/attachments', { method: 'POST', body: { name: 'report.txt', data_base64: 'dGVzdA==', inline: false } })
+    expect(screen.getByText('버전 2 · 저장됨')).toBeInTheDocument()
+    expect(mockAPI.mock.calls.some(([path]) => path.endsWith('/request-approval') || path.endsWith('/send'))).toBe(false)
+  })
+
   it('does not issue approval or send when showing preview, then sends only after two explicit actions', async () => {
     setup()
     await screen.findByDisplayValue('공지')
