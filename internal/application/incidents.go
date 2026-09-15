@@ -9,6 +9,7 @@ import (
 
 	"postra/internal/adapters/persistence"
 	"postra/internal/domain"
+	"postra/internal/platform/notifymail"
 )
 
 // incidentOpt attaches optional correlation context to a recorded incident.
@@ -41,7 +42,33 @@ func (a *App) recordIncident(severity domain.Severity, component, message, detai
 	inc.Fingerprint = incidentFingerprint(component, severity, inc.Message)
 	if err := a.Store.RecordIncident(context.Background(), inc); err != nil {
 		slog.Warn("failed to record system incident", "component", component, "err", err)
+		return
 	}
+	if severity == domain.SeverityCritical {
+		a.notifyNewIncident(inc)
+	}
+}
+
+// notifyNewIncident mails administrators about a critical incident, but only
+// the first time: RecordIncident folds a recurring fault into the existing
+// row, so our own id is present only when a fresh row was inserted. That is
+// the same dedupe the admin screen relies on, and it holds across replicas.
+func (a *App) notifyNewIncident(inc *domain.Incident) {
+	ctx := context.Background()
+	if _, err := a.Store.GetIncident(ctx, inc.ID); err != nil {
+		return
+	}
+	users, err := a.Store.ListUsers(ctx)
+	if err != nil {
+		return
+	}
+	var admins []string
+	for _, u := range users {
+		if u.Role == domain.RoleAdmin && u.Status == domain.UserActive {
+			admins = append(admins, u.ID)
+		}
+	}
+	a.NotifyMail(ctx, notifymail.Incident(inc.Component, inc.Message), "", admins)
 }
 
 // incidentFingerprint groups recurring occurrences of the same fault so they

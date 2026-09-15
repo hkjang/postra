@@ -218,6 +218,13 @@ CREATE TABLE IF NOT EXISTS system_incidents (
 CREATE INDEX IF NOT EXISTS idx_incidents_list ON system_incidents(resolved, last_seen DESC);
 CREATE INDEX IF NOT EXISTS idx_incidents_fp ON system_incidents(fingerprint, resolved);
 
+CREATE TABLE IF NOT EXISTS mail_deliveries (
+  id TEXT PRIMARY KEY, event TEXT NOT NULL, recipient TEXT NOT NULL,
+  subject TEXT NOT NULL, user_id TEXT, actor_id TEXT,
+  status TEXT NOT NULL DEFAULT 'queued', attempts INTEGER NOT NULL DEFAULT 0,
+  error TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_mail_deliveries_created ON mail_deliveries(created_at DESC);
+
 CREATE TABLE IF NOT EXISTS sync_checkpoints (
   account_id TEXT NOT NULL, uidl TEXT NOT NULL, message_id TEXT,
   synced_at INTEGER NOT NULL, PRIMARY KEY (account_id, uidl));
@@ -978,6 +985,73 @@ func scanIncidents(rows *sql.Rows) ([]domain.Incident, error) {
 		inc.Severity = domain.Severity(sev)
 		inc.Resolved = resolved != 0
 		out = append(out, inc)
+	}
+	return out, rows.Err()
+}
+
+// ---------- mail deliveries (relay notification log) ----------
+
+func (s *Store) RecordMailDelivery(ctx context.Context, d *domain.MailDelivery) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO mail_deliveries (id,event,recipient,subject,user_id,actor_id,status,attempts,error,created_at,updated_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		d.ID, d.Event, d.Recipient, d.Subject, d.UserID, d.ActorID, string(d.Status), d.Attempts, d.Error, d.CreatedAt, d.UpdatedAt)
+	return err
+}
+
+func (s *Store) CompleteMailDelivery(ctx context.Context, id string, status domain.MailDeliveryStatus, attempts int, errMessage string, updatedAt int64) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE mail_deliveries SET status=?, attempts=MAX(attempts,?), error=?, updated_at=? WHERE id=?`,
+		string(status), attempts, errMessage, updatedAt, id)
+	return err
+}
+
+func (s *Store) ListMailDeliveries(ctx context.Context, f domain.MailDeliveryFilter) ([]domain.MailDelivery, error) {
+	q := `SELECT id,event,recipient,subject,COALESCE(user_id,''),COALESCE(actor_id,''),status,attempts,COALESCE(error,''),created_at,updated_at
+	 FROM mail_deliveries`
+	var args []any
+	if f.Status != "" {
+		q += " WHERE status=?"
+		args = append(args, string(f.Status))
+	}
+	limit := f.Limit
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	q += fmt.Sprintf(" ORDER BY created_at DESC, id DESC LIMIT %d", limit) // #nosec G202 -- 고정 문구 + 범위 제한된 정수
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []domain.MailDelivery{}
+	for rows.Next() {
+		var d domain.MailDelivery
+		var status string
+		if err := rows.Scan(&d.ID, &d.Event, &d.Recipient, &d.Subject, &d.UserID, &d.ActorID, &status,
+			&d.Attempts, &d.Error, &d.CreatedAt, &d.UpdatedAt); err != nil {
+			return nil, err
+		}
+		d.Status = domain.MailDeliveryStatus(status)
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) MailDeliveryCounts(ctx context.Context) (map[domain.MailDeliveryStatus]int64, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT status, COUNT(*) FROM mail_deliveries GROUP BY status`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[domain.MailDeliveryStatus]int64{}
+	for rows.Next() {
+		var status string
+		var n int64
+		if err := rows.Scan(&status, &n); err != nil {
+			return nil, err
+		}
+		out[domain.MailDeliveryStatus(status)] = n
 	}
 	return out, rows.Err()
 }
