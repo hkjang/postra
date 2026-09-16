@@ -16,6 +16,8 @@ type Storage interface {
 
 	// System incident tracking (major errors captured for admin reporting).
 	domain.IncidentStore
+	// Relay notification log (what left the building, and whether it did).
+	domain.MailDeliveryStore
 
 	EnsureUser(ctx context.Context, id, loginID string) error
 	CreateUser(ctx context.Context, user *domain.User, passwordHash string) error

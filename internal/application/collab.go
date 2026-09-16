@@ -7,6 +7,7 @@ import (
 
 	"postra/internal/adapters/persistence"
 	"postra/internal/domain"
+	"postra/internal/platform/notifymail"
 )
 
 // MessageCollabView is a message's collaboration state plus its internal notes.
@@ -67,6 +68,14 @@ func (a *App) AssignMessage(ctx context.Context, messageID, assignee string) (*d
 		return nil, err
 	}
 	a.audit(ctx, "collab_assign", "message:"+messageID, "ok", assignee)
+	if mc.Assignee != "" {
+		// "It is your turn" is worth a mail; clearing an assignment is not.
+		subject := "(제목 없음)"
+		if m, err := a.Store.GetMessage(ctx, userIDFrom(ctx), messageID); err == nil && strings.TrimSpace(m.Subject) != "" {
+			subject = m.Subject
+		}
+		a.NotifyMail(ctx, notifymail.Assigned(collabActor(ctx), subject, messageID), userIDFrom(ctx), []string{mc.Assignee})
+	}
 	return mc, nil
 }
 

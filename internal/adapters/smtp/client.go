@@ -59,12 +59,14 @@ func (Client) connect(ctx context.Context, opts domain.SMTPSendOptions) (*smtp.C
 		c.Close()
 		return nil, err
 	}
-	if opts.Security == domain.SecurityStartTLS {
+	if opts.Security == domain.SecurityStartTLS || (opts.Security == domain.SecurityNone && opts.OpportunisticTLS) {
 		if ok, _ := c.Extension("STARTTLS"); !ok {
-			c.Close()
-			return nil, errors.New("server does not offer STARTTLS")
-		}
-		if err := c.StartTLS(dialTLSConfig(opts)); err != nil {
+			if opts.Security == domain.SecurityStartTLS {
+				c.Close()
+				return nil, errors.New("server does not offer STARTTLS")
+			}
+			// opportunistic: the relay speaks plaintext only; carry on as asked
+		} else if err := c.StartTLS(dialTLSConfig(opts)); err != nil {
 			c.Close()
 			return nil, fmt.Errorf("STARTTLS: %w", err)
 		}
