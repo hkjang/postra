@@ -379,7 +379,8 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS message_collab (
 			message_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, assignee TEXT,
 			status TEXT NOT NULL DEFAULT 'open', sla_due BIGINT NOT NULL DEFAULT 0,
-			updated_by TEXT, updated_at BIGINT NOT NULL)`,
+			updated_by TEXT, updated_at BIGINT NOT NULL, sla_notified_at BIGINT NOT NULL DEFAULT 0)`,
+		`ALTER TABLE message_collab ADD COLUMN IF NOT EXISTS sla_notified_at BIGINT NOT NULL DEFAULT 0`,
 		`CREATE INDEX IF NOT EXISTS idx_message_collab_user ON message_collab(user_id, status)`,
 		`CREATE TABLE IF NOT EXISTS message_notes (
 			id TEXT PRIMARY KEY, message_id TEXT NOT NULL, user_id TEXT NOT NULL,
@@ -1736,19 +1737,20 @@ func (s *Store) ListActionCards(ctx context.Context, userID, status string, limi
 func (s *Store) UpsertMessageCollab(ctx context.Context, mc *domain.MessageCollab) error {
 	mc.UpdatedAt = now()
 	_, err := s.pool.Exec(ctx, `INSERT INTO message_collab
-	 (message_id,user_id,assignee,status,sla_due,updated_by,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7)
+	 (message_id,user_id,assignee,status,sla_due,updated_by,updated_at,sla_notified_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
 	 ON CONFLICT(message_id) DO UPDATE SET assignee=excluded.assignee, status=excluded.status,
-	   sla_due=excluded.sla_due, updated_by=excluded.updated_by, updated_at=excluded.updated_at`,
-		mc.MessageID, mc.UserID, mc.Assignee, mc.Status, mc.SLADue, mc.UpdatedBy, mc.UpdatedAt)
+	   sla_due=excluded.sla_due, updated_by=excluded.updated_by, updated_at=excluded.updated_at,
+	   sla_notified_at=excluded.sla_notified_at`,
+		mc.MessageID, mc.UserID, mc.Assignee, mc.Status, mc.SLADue, mc.UpdatedBy, mc.UpdatedAt, mc.SLANotifiedAt)
 	return err
 }
 
 func (s *Store) GetMessageCollab(ctx context.Context, userID, messageID string) (*domain.MessageCollab, error) {
 	var mc domain.MessageCollab
 	var assignee, updatedBy *string
-	err := s.pool.QueryRow(ctx, `SELECT message_id,user_id,assignee,status,sla_due,updated_by,updated_at
+	err := s.pool.QueryRow(ctx, `SELECT message_id,user_id,assignee,status,sla_due,updated_by,updated_at,sla_notified_at
 	 FROM message_collab WHERE message_id=$1 AND user_id=$2`, messageID, userID).
-		Scan(&mc.MessageID, &mc.UserID, &assignee, &mc.Status, &mc.SLADue, &updatedBy, &mc.UpdatedAt)
+		Scan(&mc.MessageID, &mc.UserID, &assignee, &mc.Status, &mc.SLADue, &updatedBy, &mc.UpdatedAt, &mc.SLANotifiedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -1763,7 +1765,7 @@ func (s *Store) ListMessageCollab(ctx context.Context, userID, status, assignee 
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	q := `SELECT message_id,user_id,COALESCE(assignee,''),status,sla_due,COALESCE(updated_by,''),updated_at
+	q := `SELECT message_id,user_id,COALESCE(assignee,''),status,sla_due,COALESCE(updated_by,''),updated_at,sla_notified_at
 	 FROM message_collab WHERE user_id=$1`
 	args := []any{userID}
 	if status != "" {
@@ -1788,12 +1790,40 @@ func (s *Store) ListMessageCollab(ctx context.Context, userID, status, assignee 
 	var out []domain.MessageCollab
 	for rows.Next() {
 		var mc domain.MessageCollab
-		if err := rows.Scan(&mc.MessageID, &mc.UserID, &mc.Assignee, &mc.Status, &mc.SLADue, &mc.UpdatedBy, &mc.UpdatedAt); err != nil {
+		if err := rows.Scan(&mc.MessageID, &mc.UserID, &mc.Assignee, &mc.Status, &mc.SLADue, &mc.UpdatedBy, &mc.UpdatedAt, &mc.SLANotifiedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, mc)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) ListSLADueCollab(ctx context.Context, before int64, limit int) ([]domain.MessageCollab, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	rows, err := s.pool.Query(ctx, `SELECT message_id,user_id,COALESCE(assignee,''),status,sla_due,COALESCE(updated_by,''),updated_at,sla_notified_at
+	 FROM message_collab
+	 WHERE sla_due>0 AND sla_due<=$1 AND sla_notified_at<sla_due AND COALESCE(assignee,'')<>'' AND status NOT IN ($2,$3)
+	 ORDER BY sla_due ASC, message_id ASC LIMIT $4`, before, domain.CollabDone, domain.CollabResolved, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.MessageCollab
+	for rows.Next() {
+		var mc domain.MessageCollab
+		if err := rows.Scan(&mc.MessageID, &mc.UserID, &mc.Assignee, &mc.Status, &mc.SLADue, &mc.UpdatedBy, &mc.UpdatedAt, &mc.SLANotifiedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, mc)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) MarkSLANotified(ctx context.Context, messageID string, at int64) error {
+	_, err := s.pool.Exec(ctx, `UPDATE message_collab SET sla_notified_at=$1 WHERE message_id=$2`, at, messageID)
+	return err
 }
 
 func (s *Store) AddMessageNote(ctx context.Context, n *domain.MessageNote) error {

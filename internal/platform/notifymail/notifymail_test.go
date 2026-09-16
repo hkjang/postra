@@ -73,3 +73,37 @@ func TestComposeEncodesKoreanAndUsesCRLF(t *testing.T) {
 		t.Fatalf("body text unexpected:\n%s", body)
 	}
 }
+
+func TestSLADueBundlesOverdueAndImminentIntoOneMail(t *testing.T) {
+	now := time.Date(2026, 9, 16, 9, 0, 0, 0, time.UTC)
+	single := SLADue([]SLAItem{{MessageID: "m1", Subject: "견적 요청", Due: now.Add(2 * time.Hour)}}, now)
+	if single.Event != EventSLADue || !strings.Contains(single.Subject, "임박했습니다: 견적 요청") || single.Path != "/app/team?message=m1" {
+		t.Fatalf("single imminent: %+v", single)
+	}
+	if body := strings.Join(single.Lines, "\n"); !strings.Contains(body, "24시간 안에 기한이 되는 담당 메일 (1건)") || !strings.Contains(body, "기한 2026-09-16 11:00") || strings.Contains(body, "지난") {
+		t.Fatalf("single imminent body:\n%s", body)
+	}
+	missed := SLADue([]SLAItem{{MessageID: "m1", Subject: "", Due: now.Add(-time.Minute)}}, now)
+	if !strings.Contains(missed.Subject, "지났습니다: (제목 없음)") {
+		t.Fatalf("single missed: %+v", missed)
+	}
+
+	var items []SLAItem
+	for i := 0; i < 23; i++ {
+		items = append(items, SLAItem{MessageID: "o" + string(rune('a'+i)), Subject: "late " + string(rune('a'+i)), Due: now.Add(-time.Duration(i+1) * time.Hour)})
+	}
+	items = append(items, SLAItem{MessageID: "s1", Subject: "soon", Due: now.Add(time.Hour)})
+	mixed := SLADue(items, now)
+	if mixed.Subject != "[Postra] 담당 메일 기한: 지남 23건, 임박 1건" || mixed.Path != "/app/team" {
+		t.Fatalf("mixed: %+v", mixed)
+	}
+	body := strings.Join(mixed.Lines, "\n")
+	for _, want := range []string{"기한이 지난 담당 메일 (23건)", "… 외 3건", "24시간 안에 기한이 되는 담당 메일 (1건)", "- soon —"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("mixed body lacks %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "late v") || !strings.Contains(body, "late t") {
+		t.Fatalf("only the first 20 overdue items are listed:\n%s", body)
+	}
+}

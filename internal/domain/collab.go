@@ -12,6 +12,10 @@ type MessageCollab struct {
 	SLADue    int64  `json:"sla_due,omitempty"`
 	UpdatedBy string `json:"updated_by,omitempty"`
 	UpdatedAt int64  `json:"updated_at"`
+	// SLANotifiedAt is when the assignee was last mailed about SLADue (unix
+	// seconds, 0 = never). Bookkeeping for the deadline notifier, not API
+	// surface; it resets whenever the deadline changes.
+	SLANotifiedAt int64 `json:"-"`
 }
 
 // MessageNote is an internal team note attached to a message (not sent).

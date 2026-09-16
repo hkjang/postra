@@ -286,6 +286,7 @@ func notifyMailDefinitions() []SettingDefinition {
 		def(notifymail.NotifyKey(notifymail.EventAssigned), "알림: 담당 배정", "bool"),
 		def(notifymail.NotifyKey(notifymail.EventSyncCredentialError), "알림: 수집 인증 실패", "bool"),
 		def(notifymail.NotifyKey(notifymail.EventIncident), "알림: 심각 장애 (관리자)", "bool"),
+		def(notifymail.NotifyKey(notifymail.EventSLADue), "알림: 담당 메일 기한 임박·초과", "bool"),
 	}
 	for i := range out {
 		switch out[i].Key {
@@ -301,6 +302,8 @@ func notifyMailDefinitions() []SettingDefinition {
 			out[i].Help = "메일 속 '바로 열기' 링크가 가리킬 이 앱의 공개 주소입니다. 비우면 링크를 넣지 않습니다."
 		case notifymail.KeySkipTLSVerify:
 			out[i].Help = "사내 인증서가 사설일 때만 켭니다."
+		case notifymail.NotifyKey(notifymail.EventSLADue):
+			out[i].Help = "담당자에게 기한 24시간 전과 기한이 지난 뒤 각각 한 번, 여러 건이면 한 통으로 묶어 보냅니다."
 		}
 	}
 	return out

@@ -65,7 +65,7 @@ export function AuditPanel() {
 
 interface MailDelivery { id: string; event: string; recipient: string; subject: string; status: string; attempts: number; error?: string; created_at: number; updated_at: number }
 interface MailDeliveryPage { items: MailDelivery[]; summary: { total: number; status: Record<string, number> } }
-const deliveryEvents: Record<string, string> = { send_failed: '발송 실패로 멈춤', assigned: '담당 배정', sync_credential_error: '수집 인증 실패', incident: '심각 장애', test: '시험 발송' };
+const deliveryEvents: Record<string, string> = { send_failed: '발송 실패로 멈춤', assigned: '담당 배정', sync_credential_error: '수집 인증 실패', incident: '심각 장애', sla_due: '담당 기한 임박·초과', test: '시험 발송' };
 const deliveryStates: Record<string, string> = { queued: '대기', sent: '보냄', failed: '실패' };
 // The relay notification log and the test button (MAIL-STANDARD). A test sends
 // one real message with the *saved* settings and shows the outcome here,

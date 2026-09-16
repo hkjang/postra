@@ -30,6 +30,7 @@ var notifyMailPreference = map[string]string{
 	notifymail.EventAssigned:            "notifications.action",
 	notifymail.EventSyncCredentialError: "notifications.sync",
 	notifymail.EventIncident:            "notifications.security",
+	notifymail.EventSLADue:              "notifications.action",
 }
 
 // NotifyMailConfig reads the relay configuration from the live settings. The

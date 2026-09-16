@@ -26,11 +26,12 @@ const (
 	EventAssigned            = "assigned"              // a team-inbox message was assigned to me
 	EventSyncCredentialError = "sync_credential_error" // mail collection stopped because the mailbox rejected the credentials
 	EventIncident            = "incident"              // a new critical system incident (admins)
+	EventSLADue              = "sla_due"               // a team-inbox deadline of mine is close or has passed
 	EventTest                = "test"
 )
 
 // Events lists every notification kind that has a settings switch.
-var Events = []string{EventSendFailed, EventAssigned, EventSyncCredentialError, EventIncident}
+var Events = []string{EventSendFailed, EventAssigned, EventSyncCredentialError, EventIncident, EventSLADue}
 
 const (
 	KeyEnabled       = "mail.enabled"
@@ -296,6 +297,74 @@ func Incident(component, message string) Notification {
 		},
 		Path: "/app/admin?category=system",
 	}
+}
+
+// SLAItem is one deadline in a bundled deadline mail.
+type SLAItem struct {
+	MessageID string
+	Subject   string
+	Due       time.Time
+}
+
+// SLADue bundles every deadline one assignee needs to hear about into a
+// single mail: overdue first, then the ones coming up. A person with five
+// late items gets one message, not five.
+func SLADue(items []SLAItem, now time.Time) Notification {
+	var overdue, soon []SLAItem
+	for _, it := range items {
+		if it.Due.After(now) {
+			soon = append(soon, it)
+		} else {
+			overdue = append(overdue, it)
+		}
+	}
+	const shown = 20
+	var lines []string
+	section := func(title string, list []SLAItem) {
+		if len(list) == 0 {
+			return
+		}
+		if len(lines) > 0 {
+			lines = append(lines, "")
+		}
+		lines = append(lines, fmt.Sprintf("%s (%d건)", title, len(list)))
+		for i, it := range list {
+			if i == shown {
+				lines = append(lines, fmt.Sprintf("  … 외 %d건", len(list)-shown))
+				break
+			}
+			lines = append(lines, fmt.Sprintf("  - %s — 기한 %s", trim(subjectOrBlank(it.Subject), 80), it.Due.In(now.Location()).Format("2006-01-02 15:04")))
+		}
+	}
+	section("기한이 지난 담당 메일", overdue)
+	section("24시간 안에 기한이 되는 담당 메일", soon)
+	lines = append(lines, "", "팀 메일함에서 상태를 갱신하거나 기한을 조정하세요. 완료로 표시하면 더 이상 알리지 않습니다.")
+
+	subject := "[Postra] 담당 메일 기한 알림"
+	switch {
+	case len(overdue) > 0 && len(soon) > 0:
+		subject = fmt.Sprintf("[Postra] 담당 메일 기한: 지남 %d건, 임박 %d건", len(overdue), len(soon))
+	case len(overdue) == 1 && len(soon) == 0:
+		subject = "[Postra] 담당 메일 기한이 지났습니다: " + trim(subjectOrBlank(overdue[0].Subject), 80)
+	case len(overdue) > 1:
+		subject = fmt.Sprintf("[Postra] 담당 메일 기한이 지났습니다: %d건", len(overdue))
+	case len(soon) == 1:
+		subject = "[Postra] 담당 메일 기한이 임박했습니다: " + trim(subjectOrBlank(soon[0].Subject), 80)
+	case len(soon) > 1:
+		subject = fmt.Sprintf("[Postra] 담당 메일 기한이 임박했습니다: %d건", len(soon))
+	}
+	path := "/app/team"
+	if len(items) == 1 {
+		path = "/app/team?message=" + items[0].MessageID
+	}
+	return Notification{Event: EventSLADue, Subject: subject, Lines: lines, Path: path}
+}
+
+func subjectOrBlank(subject string) string {
+	if strings.TrimSpace(subject) == "" {
+		return "(제목 없음)"
+	}
+	return subject
 }
 
 // TestMessage proves the relay works from the settings screen.

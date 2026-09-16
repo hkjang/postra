@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"postra/internal/adapters/persistence"
 	"postra/internal/domain"
@@ -377,5 +378,134 @@ func TestCriticalIncidentMailsAdminsOnce(t *testing.T) {
 	}
 	if list[0].UserID == hong.ID {
 		t.Fatal("plain users must not receive incident mail")
+	}
+}
+
+func TestSLADeadlinesMailTheAssigneeOnceWhenImminentAndOnceWhenMissed(t *testing.T) {
+	app, smtp, adminCtx, hong := notifyMailHarness(t)
+	pop := app.POP3.(*fakePOP3)
+	acc := mustAccount(t, app)
+	pop.messages["u1"] = testMail("u1", "견적 요청", "body")
+	pop.messages["u2"] = testMail("u2", "계약서 검토", "body")
+	syncAndWait(t, app, acc.ID)
+	res, err := app.Store.Search(context.Background(), domain.SearchQuery{UserID: DefaultUserID, Limit: 5})
+	if err != nil || len(res.Messages) != 2 {
+		t.Fatalf("search: %v %+v", err, res)
+	}
+	ids := map[string]string{}
+	for _, m := range res.Messages {
+		ids[m.Subject] = m.ID
+	}
+	quote, contract := ids["견적 요청"], ids["계약서 검토"]
+	for _, id := range []string{quote, contract} {
+		if _, err := app.AssignMessage(adminCtx, id, hong.LoginID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitNotifyMail(t, app) // drain the two assignment mails
+	smtp.sent = nil
+	slaMails := func() []domain.MailDelivery {
+		var out []domain.MailDelivery
+		for _, d := range waitNotifyMail(t, app) {
+			if d.Event == notifymail.EventSLADue {
+				out = append(out, d)
+			}
+		}
+		return out
+	}
+	now := time.Now().Truncate(time.Second)
+
+	// Nothing is due within a day: silence.
+	if _, err := app.SetMessageSLA(adminCtx, quote, now.Add(3*24*time.Hour).Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if n := app.NotifySLADeadlines(adminCtx, now); n != 0 || len(slaMails()) != 0 {
+		t.Fatalf("a deadline three days out is not imminent: %d %+v", n, slaMails())
+	}
+
+	// Imminent: one mail, deep-linked, and not repeated on the next pass.
+	if _, err := app.SetMessageSLA(adminCtx, quote, now.Add(2*time.Hour).Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if n := app.NotifySLADeadlines(adminCtx, now); n != 1 {
+		t.Fatalf("expected one assignee mailed, got %d", n)
+	}
+	list := slaMails()
+	if len(list) != 1 || list[0].Recipient != hong.Email || list[0].ActorID != "" || !strings.Contains(list[0].Subject, "임박") || !strings.Contains(list[0].Subject, "견적 요청") {
+		t.Fatalf("imminent mail wrong: %+v", list)
+	}
+	if raw := string(smtp.sent[0].raw); !strings.Contains(raw, "/app/team?message="+quote) || !strings.Contains(raw, "24시간 안에") {
+		t.Fatalf("imminent mail body wrong:\n%s", raw)
+	}
+	if n := app.NotifySLADeadlines(adminCtx, now.Add(time.Hour)); n != 0 || len(slaMails()) != 1 {
+		t.Fatal("an imminent deadline is announced once")
+	}
+
+	// Missed: both deadlines have now passed, so hong gets one bundled mail.
+	if _, err := app.SetMessageSLA(adminCtx, contract, now.Add(2*time.Hour).Unix()); err != nil {
+		t.Fatal(err)
+	}
+	later := now.Add(3 * time.Hour)
+	if n := app.NotifySLADeadlines(adminCtx, later); n != 1 {
+		t.Fatalf("expected one bundled mail, got %d", n)
+	}
+	list = slaMails()
+	if len(list) != 2 || list[0].Subject == list[1].Subject {
+		t.Fatalf("expected a second, different mail: %+v", list)
+	}
+	overdue := findDelivery(list, "지났습니다")
+	if overdue == nil || !strings.Contains(overdue.Subject, "2건") {
+		t.Fatalf("missed-deadline mail wrong: %+v", list)
+	}
+	raw := string(smtp.sent[len(smtp.sent)-1].raw)
+	for _, want := range []string{"기한이 지난 담당 메일 (2건)", "견적 요청", "계약서 검토", "/app/team\r\n"} {
+		if !strings.Contains(raw, want) {
+			t.Fatalf("bundled mail lacks %q:\n%s", want, raw)
+		}
+	}
+	if strings.Contains(raw, "/app/team?message=") {
+		t.Fatal("a bundle links to the team inbox, not one message")
+	}
+	if n := app.NotifySLADeadlines(adminCtx, later.Add(time.Hour)); n != 0 || len(slaMails()) != 2 {
+		t.Fatal("a missed deadline is announced once")
+	}
+
+	// Done messages are left alone even when the deadline changes; the
+	// system is the actor, so assigning yourself still gets the mail.
+	if _, err := app.SetMessageWorkStatus(adminCtx, quote, domain.CollabDone); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.SetMessageSLA(adminCtx, quote, later.Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.AssignMessage(adminCtx, contract, "admin"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.SetMessageSLA(adminCtx, contract, later.Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if n := app.NotifySLADeadlines(adminCtx, later.Add(time.Hour)); n != 1 {
+		t.Fatalf("expected the admin's own deadline mail, got %d", n)
+	}
+	list = slaMails()
+	if own := findDelivery(list, "지났습니다: 계약서 검토"); len(list) != 3 || own == nil || own.Recipient != "admin@corp.local" {
+		t.Fatalf("self-set deadline should still be mailed by the system: %+v", list)
+	}
+
+	// The per-event switch stops only this kind.
+	if _, err := app.AdminPatchSettings(adminCtx, SettingsPatch{Values: map[string]string{notifymail.NotifyKey(notifymail.EventSLADue): "false"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.SetMessageSLA(adminCtx, contract, later.Add(2*time.Hour).Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if n := app.NotifySLADeadlines(adminCtx, later.Add(3*time.Hour)); n != 0 || len(slaMails()) != 3 {
+		t.Fatal("switching sla_due off must silence it")
+	}
+	if _, err := app.AssignMessage(adminCtx, quote, hong.LoginID); err != nil {
+		t.Fatal(err)
+	}
+	if all := waitNotifyMail(t, app); findDelivery(all, "배정") == nil {
+		t.Fatal("other events keep flowing")
 	}
 }
