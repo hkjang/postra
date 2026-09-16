@@ -134,7 +134,7 @@ func (p *OpenAICompat) Generate(ctx context.Context, req domain.GenerationReques
 	route := cfg.RouteForTask(req.Task)
 	text, usage, err := p.generateOnce(ctx, cfg, client, route, req, msgs)
 	var policyErr *domain.PublicError
-	if err != nil && ctx.Err() == nil && req.Task != "" && !errors.As(err, &policyErr) {
+	if err != nil && ctx.Err() == nil && !errors.Is(err, context.Canceled) && req.Task != "" && !errors.As(err, &policyErr) {
 		// Automatic fallback to the default endpoint when a per-task model
 		// fails (§AI 작업별 모델 라우팅 "실패 시 대체 모델").
 		def := cfg.RouteForTask("")
@@ -197,7 +197,6 @@ func (p *OpenAICompat) generateOnce(ctx context.Context, cfg config.AIConfig, cl
 	if req.JSONMode {
 		body.ResponseFormat = &respFormat{Type: "json_object"}
 	}
-	cleanError := func(message string) string { return sanitizeHeaderError(message, sensitiveKey, extra) }
 	var resp *http.Response
 	for attempt := 0; attempt < 2; attempt++ {
 		encoded, marshalErr := json.Marshal(body)
@@ -215,7 +214,7 @@ func (p *OpenAICompat) generateOnce(ctx context.Context, cfg config.AIConfig, cl
 		injectExtraHeaders(httpReq.Header, extra)
 		resp, err = client.Do(httpReq)
 		if err != nil {
-			return "", domain.TokenUsage{}, fmt.Errorf("AI request: %s", cleanError(err.Error()))
+			return "", domain.TokenUsage{}, providerNetworkError(ctx, err)
 		}
 		if resp.StatusCode == http.StatusOK {
 			break
@@ -231,7 +230,7 @@ func (p *OpenAICompat) generateOnce(ctx context.Context, cfg config.AIConfig, cl
 				return "", domain.TokenUsage{}, contextLimitError()
 			}
 		}
-		return "", domain.TokenUsage{}, fmt.Errorf("AI API %d: %s", resp.StatusCode, truncate(cleanError(string(respBody)), 300))
+		return "", domain.TokenUsage{}, providerHTTPError(resp.StatusCode, respBody)
 	}
 	defer resp.Body.Close()
 
@@ -242,7 +241,7 @@ func (p *OpenAICompat) generateOnce(ctx context.Context, cfg config.AIConfig, cl
 			if errors.As(err, &policyErr) {
 				return "", domain.TokenUsage{}, err
 			}
-			return "", domain.TokenUsage{}, fmt.Errorf("%s", cleanError(err.Error()))
+			return "", domain.TokenUsage{}, invalidResponseError()
 		}
 		if strings.TrimSpace(text) == "" {
 			return "", domain.TokenUsage{}, emptyResponseError()
@@ -404,27 +403,25 @@ func (p *OpenAICompat) Embed(ctx context.Context, req domain.EmbeddingRequest) (
 		httpReq.Header.Set("Authorization", "Bearer "+sensitiveKey)
 	}
 	injectExtraHeaders(httpReq.Header, extra)
-	cleanError := func(message string) string { return sanitizeHeaderError(message, sensitiveKey, extra) }
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return domain.EmbeddingResult{}, fmt.Errorf("embed request: %s", cleanError(err.Error()))
+		return domain.EmbeddingResult{}, providerNetworkError(ctx, err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return domain.EmbeddingResult{}, providerHTTPError(resp.StatusCode, body)
+	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 50<<20))
 	if err != nil {
-		return domain.EmbeddingResult{}, err
-	}
-	if resp.StatusCode != http.StatusOK {
-		return domain.EmbeddingResult{}, fmt.Errorf("embed API %d: %s", resp.StatusCode,
-			truncate(cleanError(string(body)), 300))
+		return domain.EmbeddingResult{}, invalidEmbeddingError()
 	}
 	var er embedResponse
 	if err := json.Unmarshal(body, &er); err != nil {
 		return domain.EmbeddingResult{}, invalidEmbeddingError()
 	}
 	if er.Error != nil {
-		return domain.EmbeddingResult{}, fmt.Errorf("embed API error: %s",
-			cleanError(er.Error.Message))
+		return domain.EmbeddingResult{}, invalidEmbeddingError()
 	}
 	if len(er.Data) != len(inputs) {
 		return domain.EmbeddingResult{}, invalidEmbeddingError()
@@ -469,7 +466,7 @@ func checkAIEndpoint(ctx context.Context, raw string, allowExternal bool) error 
 	}
 	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", u.Hostname())
 	if err != nil {
-		return fmt.Errorf("AI endpoint DNS lookup failed")
+		return providerNetworkError(ctx, err)
 	}
 	for _, ip := range ips {
 		if ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() {
@@ -496,11 +493,11 @@ func (p *OpenAICompat) extraHeaders(ctx context.Context, cfg config.AIConfig) (s
 		return cfg.ExtraHeaders, nil
 	}
 	if p.secrets == nil {
-		return "", fmt.Errorf("AI header credential store unavailable")
+		return "", credentialError(ctx, nil)
 	}
 	handle, err := p.secrets.Acquire(ctx, domain.SecretRef(cfg.ExtraHeadersRef), domain.PurposeAIKey)
 	if err != nil {
-		return "", fmt.Errorf("AI header credential unavailable")
+		return "", credentialError(ctx, err)
 	}
 	defer handle.Zero()
 	return string(handle.Reveal()), nil

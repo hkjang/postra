@@ -34,11 +34,13 @@ export function messageResponse(value: unknown): Message {
   const row = responseObject(value)
   const id = responseString(row.id), account_id = responseString(row.account_id)
   if (!id || !account_id) throw invalid()
+  const snoozed_until = optionalNumber(row.snoozed_until)
+  if (snoozed_until !== undefined && (!Number.isInteger(snoozed_until) || snoozed_until < 0 || snoozed_until > 253402300799)) throw invalid()
   return {id, account_id, subject: optionalString(row.subject) ?? '', from: address(row.from),
     to: responseList(row.to ?? null, address), cc: responseList(row.cc ?? null, address),
     date: optionalNumber(row.date) ?? 0, created_at: optionalNumber(row.created_at) ?? 0,
     has_attachments: optionalBoolean(row.has_attachments) ?? false,
-    is_read: optionalBoolean(row.is_read), is_important: optionalBoolean(row.is_important), is_archived: optionalBoolean(row.is_archived),
+    is_read: optionalBoolean(row.is_read), is_important: optionalBoolean(row.is_important), is_archived: optionalBoolean(row.is_archived), snoozed_until,
     labels: responseList(row.labels ?? null, responseString), thread_id: optionalString(row.thread_id), auth_results: optionalString(row.auth_results), parse_error: optionalString(row.parse_error)}
 }
 export function messageViewResponse(value: unknown): MessageView {
@@ -73,7 +75,7 @@ export function repliesResponse(value: unknown) { return {suggestions: responseL
 export function calendarResponse(value: unknown) {
   return {events: responseList(responseObject(value).events, value => { const item = responseObject(value); return {title: responseString(item.title), start: responseString(item.start), location: optionalString(item.location)} })}
 }
-export function batchResponse(value: unknown) {
+export function batchResponse(value: unknown, expectedIDs?: readonly string[]) {
   const row = responseObject(value)
   const failed = optionalNumber(row.failed), succeeded = optionalNumber(row.succeeded)
   if (failed === undefined || failed < 0 || !Number.isInteger(failed) || (succeeded !== undefined && (succeeded < 0 || !Number.isInteger(succeeded)))) throw invalid()
@@ -81,6 +83,10 @@ export function batchResponse(value: unknown) {
   // Missing item outcomes must never clear the user's selected mail or claim
   // success after a malformed partial result. A zero-count response is valid.
   if ((failed > 0 || (succeeded ?? 0) > 0) && !results.length) throw invalid()
+  if (expectedIDs) {
+    const expected = new Set(expectedIDs), actual = new Set(results.map(item => item.message_id))
+    if (actual.size !== expected.size || actual.size !== results.length || results.some(item => !expected.has(item.message_id)) || results.filter(item => item.ok).length !== succeeded || results.filter(item => !item.ok).length !== failed) throw invalid()
+  }
   return {failed, succeeded: succeeded ?? 0, results}
 }
 

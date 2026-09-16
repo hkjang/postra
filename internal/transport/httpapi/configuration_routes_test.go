@@ -54,6 +54,37 @@ func TestAIModelLimitProbeAliasesEnforceAdminAndCSRF(t *testing.T) {
 	}
 }
 
+func TestAIAuthenticationDiagnosticsDoNotExpireBrowserSession(t *testing.T) {
+	app := browserTestApp(t, true)
+	admin, csrf := browserIdentity(t, app, "ai-diagnostic-admin", domain.RoleAdmin)
+	const privateResponse = "private-upstream-credential-echo"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(privateResponse))
+	}))
+	defer server.Close()
+	h := New(app, "").Handler()
+	for _, prefix := range []string{"/api", "/api/v1"} {
+		for _, target := range []string{"ai_models", "ai"} {
+			body, _ := json.Marshal(application.SettingsProbe{Target: target, Values: map[string]string{"ai.base_url": server.URL}})
+			w := browserRequest(h, "POST", prefix+"/admin/configuration/test", admin, csrf, "https://postra.test", string(body))
+			var result application.AIConnectionResult
+			if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil || w.Code != 200 || result.OK || !strings.Contains(result.Message, "인증에 실패") {
+				t.Fatalf("upstream authentication misclassified as browser auth: %d %s", w.Code, w.Body.String())
+			}
+			if target == "ai_models" && (result.Limits == nil || result.Limits.Reason != "auth_failed") {
+				t.Fatal("model metadata failure reason missing")
+			}
+			if strings.Contains(w.Body.String(), privateResponse) {
+				t.Fatal("upstream error body disclosed")
+			}
+			if session := browserRequest(h, "GET", "/auth/session", admin, "", "", ""); session.Code != 200 {
+				t.Fatal("AI authentication failure expired the Postra session")
+			}
+		}
+	}
+}
+
 func TestConfigurationAPIUsesSameVersionedContractAndCSRF(t *testing.T) {
 	app := browserTestApp(t, true)
 	admin, csrf := browserIdentity(t, app, "settings-admin", domain.RoleAdmin)

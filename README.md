@@ -11,7 +11,7 @@ Go로 작성한 개인/사내 구축형 메일 서비스입니다. 사용자의 
 
 v0.20.0의 검색 가능한 운영 콘솔은 환경변수 초기값 위에 관리자 설정과 강제 정책을 적용합니다. 개인·계정 설정과 복수 서명도 웹에서 관리합니다. [설정 관리](docs/SETTINGS.md) · [HTML 메일](docs/MAIL_RENDERING.md) · [Ask Postra](docs/ASK_POSTRA.md) · [MCP 계약](docs/MCP_CONVERGENCE.md) · [API 스키마](docs/API_CONTRACTS.md) · [릴리즈 및 이전 주의사항](docs/releases/v0.20.0.md)
 
-최신 패치 [v0.20.2](docs/releases/v0.20.2.md)는 AI 모델의 Context 한도 자동 감지와 출력 토큰 조정, 관리자 한도 진단, 불완전한 AI·임베딩 응답 처리를 개선합니다.
+최신 릴리즈 [v0.21.0](docs/releases/v0.21.0.md)는 메일별 다시 보기 예약, 메일 검색·선택 기반 액션 생성, 기한 중심 업무함과 모바일 UI를 제공합니다. AI 오류 진단과 관리자 설정 저장·이동 보호도 강화했습니다. v0.20.2의 모델 Context 한도 자동 감지와 승인 기반 발송은 그대로 유지합니다.
 
 ## 설계 핵심
 

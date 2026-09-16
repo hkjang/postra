@@ -18,6 +18,12 @@ type MailPage = { messages: Message[]; next_cursor?: string; snippets?:Record<st
 type SearchMode = 'keyword' | 'semantic' | 'hybrid'
 const filters = [{ id: 'inbox', label: '전체' },{id:'unread',label:'안읽음'}, { id: 'important', label: '중요' }, { id: 'attachment', label: '첨부' }, { id: 'today', label: '오늘' }, { id: 'archive', label: '보관함' }, {id: 'snoozed', label: '다시 알림'}]
 
+export function mailRefreshInterval(query: string, mode: SearchMode, folder: string): number | false {
+  // A mode without a search term still uses GET /messages. Never poll the
+  // embedding-backed semantic/hybrid POST search just to refresh reminders.
+  return (!query || mode === 'keyword') && ['inbox', 'snoozed'].includes(folder) ? 60_000 : false
+}
+
 export function InboxPage() {
   const preferences = usePreferenceBridge()
   const [params, setParams] = useSearchParams()
@@ -47,6 +53,8 @@ export function InboxPage() {
   }
   const mail = useInfiniteQuery({
     queryKey: ['messages', { query, mode, folder, account, filterKey }],
+    refetchInterval: mailRefreshInterval(query, mode, folder),
+    refetchIntervalInBackground: false,
     initialPageParam: '',
     queryFn: async ({ pageParam, signal }): Promise<MailPage> => {
       if (query && mode !== 'keyword') {

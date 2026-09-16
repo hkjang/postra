@@ -1,4 +1,4 @@
-import {useState} from 'react'
+import {useEffect, useState} from 'react'
 import {Link, useSearchParams} from 'react-router-dom'
 import {useQuery} from '@tanstack/react-query'
 import {Activity, Search} from 'lucide-react'
@@ -27,13 +27,18 @@ export function OperationsConsole() {
   const requested = params.get('category') || aliases[params.get('tab') || ''] || params.get('tab') || 'general'
   const category = categories.some(([key]) => key === requested) ? requested : 'general'
   const [query, setQuery] = useState('')
+  const [settingsPending, setSettingsPending] = useState(false)
+  // Clear filters only after navigation is accepted. Clearing them before the
+  // router guard runs can hide the editor while the user chooses to stay.
+  useEffect(() => {setQuery('')}, [category])
+  const showSettings = !!query || settingsPending || !['users', 'audit'].includes(category)
   const operations = useQuery({queryKey: ['operations'], queryFn: () => api<Record<string, string>>('/api/admin/operations'), refetchInterval: 30000})
   return <div className="page stack"><PageHeader title="운영 콘솔" description="조직 정책과 실제 적용 상태를 한 곳에서 관리합니다. 환경변수는 최초 기본값이며, 저장된 관리자 설정이 우선합니다."/>
     <label className="settings-search"><Search size={18}/><Input aria-label="관리자 설정 검색" placeholder="설정 이름, 기능 또는 POSTRA_AI_BASE_URL 검색" value={query} onChange={event => setQuery(event.target.value)}/></label>
     <section className="operations-status" aria-label="운영 상태">{[['ai', 'AI'], ['mail', 'Mail'], ['mcp', 'MCP'], ['database', 'Database'], ['oidc', 'OIDC']].map(([key, label]) => <div key={key}><strong>{label}</strong><span className="muted">{operations.isPending ? '확인 중' : operations.error ? '확인 불가' : states[operations.data?.[key] || ''] || '미확인'}</span></div>)}</section>
-    <div className="operations-layout"><nav className="operations-nav" aria-label="관리자 설정 카테고리">{categories.map(([key, label]) => <Button key={key} variant={category === key && !query ? 'secondary' : 'ghost'} aria-current={category === key && !query ? 'page' : undefined} onClick={() => {setQuery(''); setParams({category: key})}}>{label}</Button>)}</nav>
+    <div className="operations-layout"><nav className="operations-nav" aria-label="관리자 설정 카테고리">{categories.map(([key, label]) => <Button key={key} variant={category === key && !query ? 'secondary' : 'ghost'} aria-current={category === key && !query ? 'page' : undefined} onClick={() => {if (key === category) setQuery(''); else setParams({category: key})}}>{label}</Button>)}</nav>
       <div className="operations-content stack">{!query && <h2>{categories.find(([key]) => key === category)?.[1]}</h2>}
-        {(query || !['users', 'audit'].includes(category)) && <><ConnectionTests key={category} category={category}/><SettingsEditor admin category={category} query={query}/></>}
+        <div hidden={!showSettings}><ConnectionTests key={category} category={category}/><SettingsEditor admin category={category} query={query} onPendingChange={setSettingsPending}/></div>
         {!query && <>{category === 'users' && <UsersPanel/>}{category === 'auth' && <ProvisioningPanel/>}{category === 'mcp' && <MCPAdminPage/>}{category === 'audit' && <AuditPanel/>}{category === 'storage' && <PurgePanel/>}{category === 'system' && <IncidentsPanel/>}{category === 'security' && <Button asChild variant="outline"><Link to="/admin/tracking">방문 추적 · CSP 허용 및 위반 관리</Link></Button>}</>}
       </div>
     </div>

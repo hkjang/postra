@@ -65,11 +65,11 @@ jobs:
         run: |
           go run scripts/mkimage.go \
             dist/postra-${{ steps.v.outputs.num }}-linux-amd64 \
-            dist/postra-${{ steps.v.outputs.num }}-linux-amd64-image.tar \
+            dist/postra-${{ steps.v.outputs.num }}.tar \
             postra:${{ steps.v.outputs.num }} \
             ${{ steps.v.outputs.tag }} \
             ${{ github.sha }}
-          gzip -9 -f dist/postra-${{ steps.v.outputs.num }}-linux-amd64-image.tar
+          gzip -9 -f dist/postra-${{ steps.v.outputs.num }}.tar
 
       - name: Generate SBOM
         run: |
@@ -85,7 +85,7 @@ jobs:
         run: |
           sha256sum \
             postra-${{ steps.v.outputs.num }}-linux-amd64 \
-            postra-${{ steps.v.outputs.num }}-linux-amd64-image.tar.gz \
+            postra-${{ steps.v.outputs.num }}.tar.gz \
             postra-${{ steps.v.outputs.num }}-sbom.cdx.json \
             postra-${{ steps.v.outputs.num }}-frontend-sbom.cdx.json > SHA256SUMS.txt
 
@@ -103,7 +103,7 @@ jobs:
             --title "Postra ${{ steps.v.outputs.tag }}" \
             "${notes_args[@]}" \
             dist/postra-${{ steps.v.outputs.num }}-linux-amd64 \
-            dist/postra-${{ steps.v.outputs.num }}-linux-amd64-image.tar.gz \
+            dist/postra-${{ steps.v.outputs.num }}.tar.gz \
             dist/postra-${{ steps.v.outputs.num }}-sbom.cdx.json \
             dist/postra-${{ steps.v.outputs.num }}-frontend-sbom.cdx.json \
             dist/SHA256SUMS.txt

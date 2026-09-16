@@ -7,6 +7,7 @@ import type {ReactNode} from 'react'
 import {api} from '@/api/client'
 import {OperationsConsole} from '@/features/admin/OperationsConsole'
 import {SettingsEditor} from './SettingsEditor'
+import {ConnectionDiagnostic, parseConnectionResult} from './ConnectionDiagnostic'
 import type {SettingField, SettingsView} from './preferences'
 
 vi.mock('@/api/client', () => ({api: vi.fn()}))
@@ -52,6 +53,31 @@ function deferred() {
 }
 
 describe('candidate model limit discovery', () => {
+  it.each([
+    ['not_supported', '조회 미지원 또는 경로 없음'], ['no_metadata', 'Context 한도를 제공하지 않습니다'],
+    ['auth_failed', '모델 목록 인증 실패'], ['forbidden', '모델 목록 접근 권한 없음'],
+    ['rate_limited', '모델 목록 요청 제한'], ['timeout', '모델 목록 응답 시간 초과'],
+    ['unreachable', '모델 목록 서버 연결 실패'], ['invalid_response', '모델 목록 응답 형식 오류'],
+    ['server_error', '모델 목록 조회 중 서버 오류'], ['request_rejected', '모델 목록 요청 거부'],
+  ])('explains metadata reason %s without declaring Chat connection failure', (reason, guidance) => {
+    const result = parseConnectionResult({...diagnostic({...detected, status: 'unavailable', source: 'config', reason}), ok: false})
+    render(<ConnectionDiagnostic result={result} metadataOnly/>)
+    expect(screen.getByRole('status')).toHaveTextContent(guidance)
+    expect(screen.getByRole('status')).toHaveTextContent('설정값 대체')
+    expect(screen.getByRole('status')).not.toHaveTextContent('연결 확인 필요')
+  })
+
+  it('keeps a successful Chat probe distinct from a denied model-list permission', () => {
+    const result = parseConnectionResult(diagnostic({...detected, status: 'unavailable', source: 'config', reason: 'forbidden'}))
+    render(<ConnectionDiagnostic result={result}/>)
+    expect(screen.getByRole('status')).toHaveTextContent('연결 성공')
+    expect(screen.getByRole('status')).toHaveTextContent('모델 목록 접근 권한 없음')
+  })
+
+  it('rejects arbitrary provider content in the machine-readable reason', () => {
+    expect(() => parseConnectionResult(diagnostic({...detected, reason: 'private-provider-response'}))).toThrow('서버 응답 형식을 확인할 수 없습니다')
+  })
+
   it('queries only metadata with unsaved endpoint, model, credentials and task routing', async () => {
     const user = userEvent.setup(); show()
     const model = await screen.findByLabelText('Chat Model')

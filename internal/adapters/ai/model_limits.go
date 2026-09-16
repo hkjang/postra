@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -27,6 +26,7 @@ type discoveredModelLimits struct {
 	context int
 	output  int
 	status  string
+	reason  string
 }
 
 type cachedModelLimits struct {
@@ -81,7 +81,7 @@ func embeddingRoute(cfg config.AIConfig) config.AITaskRoute {
 }
 
 func effectiveModelLimits(cfg config.AIConfig, route config.AITaskRoute, meta discoveredModelLimits, embedding bool) domain.AIModelLimits {
-	out := domain.AIModelLimits{Model: route.Model, ContextLength: cfg.ContextLength, Source: "config", Status: meta.status}
+	out := domain.AIModelLimits{Model: route.Model, ContextLength: cfg.ContextLength, Source: "config", Status: meta.status, Reason: meta.reason}
 	if embedding {
 		out.ContextLength = 0
 	} // A chat setting is not an embedding-model limit.
@@ -110,11 +110,11 @@ func minPositive(values ...int) int {
 func (p *OpenAICompat) credentials(ctx context.Context, cfg config.AIConfig, ref string) (key, extra string, err error) {
 	if ref != "" {
 		if p.secrets == nil {
-			return "", "", fmt.Errorf("AI credential store unavailable")
+			return "", "", credentialError(ctx, nil)
 		}
 		h, acquireErr := p.secrets.Acquire(ctx, domain.SecretRef(ref), domain.PurposeAIKey)
 		if acquireErr != nil {
-			return "", "", fmt.Errorf("AI credential unavailable")
+			return "", "", credentialError(ctx, acquireErr)
 		}
 		key = string(h.Reveal())
 		h.Zero()
@@ -192,7 +192,7 @@ func (p *OpenAICompat) cacheModelLimitsLocked(key [32]byte, value discoveredMode
 }
 
 func fetchModelLimits(ctx context.Context, cfg config.AIConfig, client *http.Client, route config.AITaskRoute, key, extra string) discoveredModelLimits {
-	fallback := discoveredModelLimits{status: "unavailable"}
+	fallback := discoveredModelLimits{status: "unavailable", reason: "request_rejected"}
 	if checkAIEndpoint(ctx, route.BaseURL, cfg.AllowExternal) != nil {
 		return fallback
 	}
@@ -207,12 +207,15 @@ func fetchModelLimits(ctx context.Context, cfg config.AIConfig, client *http.Cli
 	injectExtraHeaders(req.Header, extra)
 	response, err := client.Do(req)
 	if err != nil {
+		fallback.reason = providerNetworkReason(err)
 		return fallback
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
+		fallback.reason = metadataHTTPReason(response.StatusCode)
 		return fallback
 	}
+	fallback.reason = "invalid_response"
 	const maxMetadataBytes = 2 << 20
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxMetadataBytes+1))
 	if err != nil || len(body) > maxMetadataBytes {
@@ -232,10 +235,11 @@ func fetchModelLimits(ctx context.Context, cfg config.AIConfig, client *http.Cli
 		if json.Unmarshal(model["id"], &id) != nil || id != route.Model {
 			continue
 		}
-		result := discoveredModelLimits{status: "unavailable"}
+		result := discoveredModelLimits{status: "unavailable", reason: "no_metadata"}
 		readModelLimits(model, &result)
 		if result.context > 0 {
 			result.status = "detected"
+			result.reason = ""
 		}
 		return result
 	}

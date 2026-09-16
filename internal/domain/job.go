@@ -117,6 +117,9 @@ type AIModelLimits struct {
 	MaxOutputTokens int    `json:"max_output_tokens"`
 	Source          string `json:"source"`
 	Status          string `json:"status"`
+	// Reason is an optional, application-owned classification of an unavailable
+	// metadata lookup. It never contains provider messages, URLs or credentials.
+	Reason string `json:"reason,omitempty"`
 }
 
 // AIModelLimitsProvider is optional so local mocks and non-HTTP providers can

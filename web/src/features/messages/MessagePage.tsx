@@ -8,6 +8,7 @@ import { AIContext } from './AIContext'
 import { MailBody } from './MailBody'
 import { ReceivedImages } from './ReceivedImages'
 import { CopyMCPContext } from './CopyMCPContext'
+import { SnoozeMessage } from './SnoozeMessage'
 import { registerMailCommands } from '@/lib/mail-commands'
 import {usePersonalPreferences} from '@/features/settings/preferences'
 import { addresses, mailDate } from './types'
@@ -76,6 +77,7 @@ export function MessagePane({ id, onClose }: { id: string; onClose?: () => void 
         <CopyMCPContext key={id} message={m} open={contextOpen} onOpenChange={setContextOpen}/>
       </div>
       {update.error && <ErrorState error={update.error} />}{reply.error && <ErrorState error={reply.error} />}
+      <div className="message-attachments row"><SnoozeMessage key={id} messageID={id} snoozedUntil={m.snoozed_until} disabled={update.isPending || reply.isPending}/><Button variant="ghost" size="sm" asChild><Link to={`/actions?message=${encodeURIComponent(id)}&create=1`}>이 메일에서 액션 만들기</Link></Button></div>
       {m.thread_id && <Button variant="ghost" size="sm" asChild><Link to={`/threads/${encodeURIComponent(m.thread_id)}`}>대화 전체 보기</Link></Button>}
       {m.auth_results&&<p className="message-attachments small muted">메일 인증: {m.auth_results}</p>}{m.parse_error&&<ErrorState error={new Error('부분 파싱: '+m.parse_error)}/>}
       <header className="message-header"><h1>{m.subject || '(제목 없음)'}</h1><div className="sender-line"><span className="sender-avatar">{(m.from.name || m.from.email).charAt(0).toUpperCase()}</span><div><strong>{m.from.name || m.from.email}</strong><p className="muted">{m.from.email}</p></div><time>{mailDate(m.date)}</time></div><dl className="recipient-details"><dt>받는 사람</dt><dd>{addresses(m.to)}</dd>{!!m.cc?.length && <><dt>참조</dt><dd>{addresses(m.cc)}</dd></>}</dl><div className="row">{m.labels?.map(label => <Badge key={label} variant="outline">{label}</Badge>)}</div></header>

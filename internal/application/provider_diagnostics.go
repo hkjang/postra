@@ -29,6 +29,13 @@ const (
 	providerAIDisabled  = "관리자가 비활성화한 AI 모델입니다. 사용할 모델을 확인하세요."
 	providerAIEmbedding = "임베딩 응답의 개수·순서·벡터 형식이 올바르지 않아 저장하지 않았습니다. 모델과 임베딩 서버를 확인하세요."
 	providerAIResponse  = "AI 응답이 중간에 끊기거나 형식이 올바르지 않아 사용하지 않았습니다. 서버 상태를 확인한 뒤 다시 시도하세요."
+	providerAIAuth      = "AI 서버 인증에 실패했습니다. API Key 또는 게이트웨이 인증 설정을 확인하세요. Postra 로그인 세션 문제는 아닙니다."
+	providerAIForbidden = "AI 서버에서 모델 접근을 허용하지 않았습니다. 모델 권한과 게이트웨이 정책을 확인하세요."
+	providerAIRate      = "AI 서버의 요청 제한에 도달했습니다. 자동으로 다른 모델을 호출하지 않았습니다. 잠시 후 다시 시도하세요."
+	providerAIQuota     = "AI 계정의 사용 한도에 도달했습니다. 관리자에게 할당량을 확인하세요. 자동으로 다른 모델을 호출하지 않았습니다."
+	providerAITimeout   = "AI 서버 응답 시간이 초과되었습니다. 중복 처리를 피하기 위해 자동으로 다시 호출하지 않았습니다. 서버 상태와 Timeout 설정을 확인하세요."
+	providerAINetwork   = "AI 서버에 연결할 수 없습니다. Endpoint·내부 DNS·네트워크·인증서를 확인하세요."
+	providerAIRejected  = "AI 서버가 요청을 거부했습니다. 모델 이름·요청 형식·API 호환성을 확인하세요."
 )
 
 func providerDiagnostic(err error) string {
@@ -54,6 +61,20 @@ func providerDiagnostic(err error) string {
 			return providerAIEmbedding
 		case "invalid_response":
 			return providerAIResponse
+		case "ai_auth_failed":
+			return providerAIAuth
+		case "ai_forbidden":
+			return providerAIForbidden
+		case "ai_rate_limited":
+			return providerAIRate
+		case "ai_quota_exceeded":
+			return providerAIQuota
+		case "ai_timeout":
+			return providerAITimeout
+		case "ai_unreachable":
+			return providerAINetwork
+		case "ai_request_rejected":
+			return providerAIRejected
 		}
 	}
 	switch {
@@ -111,7 +132,8 @@ func jobDiagnostic(kind string, status domain.JobStatus, message string) string 
 	switch message {
 	case providerFailed, providerAuthFailed, providerTimeout, providerCancelled,
 		providerUnexpected, providerListFailed, providerSyncFailed, providerEmbedFailed, providerHidden,
-		providerAIContext, providerAIOutput, providerAIEmpty, providerAIDisabled, providerAIEmbedding, providerAIResponse:
+		providerAIContext, providerAIOutput, providerAIEmpty, providerAIDisabled, providerAIEmbedding, providerAIResponse,
+		providerAIAuth, providerAIForbidden, providerAIRate, providerAIQuota, providerAITimeout, providerAINetwork, providerAIRejected:
 		return message
 	}
 	if status == domain.JobCancelled {

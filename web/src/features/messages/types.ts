@@ -2,7 +2,7 @@ export interface Address { name?: string; email: string }
 export interface Message {
   id: string; account_id: string; subject: string; from: Address; to?: Address[]; cc?: Address[];
   date: number; created_at: number; has_attachments: boolean; is_important?: boolean;
-  is_archived?: boolean; is_read?: boolean; labels?: string[]; thread_id?: string; auth_results?: string; parse_error?: string;
+  is_archived?: boolean; is_read?: boolean; snoozed_until?: number; labels?: string[]; thread_id?: string; auth_results?: string; parse_error?: string;
 }
 export interface Attachment { id: string; name: string; size: number; scan_status: string; scan_detail?: string }
 export interface MessageView {

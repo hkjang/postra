@@ -263,12 +263,21 @@ func TestProviderDiagnosticsClassificationsAreFixed(t *testing.T) {
 	for _, err := range []error{errors.New(diagnosticSecret), context.DeadlineExceeded, context.Canceled, &domain.AuthError{Err: errors.New(diagnosticSecret)}} {
 		assertNoProviderEcho(t, providerDiagnostic(err))
 	}
-	for code, expected := range map[string]string{"context_limit": providerAIContext, "output_limit": providerAIOutput, "empty_response": providerAIEmpty, "model_disabled": providerAIDisabled, "invalid_embedding": providerAIEmbedding, "invalid_response": providerAIResponse, "upstream_untrusted": providerFailed} {
+	for code, expected := range map[string]string{
+		"context_limit": providerAIContext, "output_limit": providerAIOutput, "empty_response": providerAIEmpty,
+		"model_disabled": providerAIDisabled, "invalid_embedding": providerAIEmbedding, "invalid_response": providerAIResponse,
+		"ai_auth_failed": providerAIAuth, "ai_forbidden": providerAIForbidden, "ai_rate_limited": providerAIRate,
+		"ai_quota_exceeded": providerAIQuota, "ai_timeout": providerAITimeout, "ai_unreachable": providerAINetwork,
+		"ai_request_rejected": providerAIRejected, "upstream_untrusted": providerFailed,
+	} {
 		err := &domain.PublicError{Code: code, Message: diagnosticSecret, Status: 400}
 		if got := providerDiagnostic(err); got != expected {
 			t.Fatalf("unsafe or unhelpful diagnostic for %s", code)
 		}
 		assertNoProviderEcho(t, providerDiagnostic(err))
+		if got := jobDiagnostic("embed", domain.JobFailed, expected); got != expected {
+			t.Fatalf("fixed diagnostic lost in job history: %s", code)
+		}
 	}
 	// Fixed legacy recovery messages must not be accepted by prefix.
 	job := &domain.Job{Type: "embed", Status: domain.JobFailed, Error: providerEmbedFailed + diagnosticSecret, UpdatedAt: time.Now().Unix()}

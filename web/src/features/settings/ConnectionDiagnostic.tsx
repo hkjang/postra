@@ -10,6 +10,7 @@ const modelLimitsSchema = z.object({
   max_output_tokens: z.number().int().nonnegative(),
   source: z.enum(['models', 'config']),
   status: z.enum(['detected', 'unavailable', 'manual', 'model_not_found']),
+  reason: z.enum(['not_supported', 'no_metadata', 'auth_failed', 'forbidden', 'rate_limited', 'timeout', 'unreachable', 'invalid_response', 'server_error', 'request_rejected']).optional(),
 })
 const diagnosticSchema = z.object({
   ok: z.boolean(),
@@ -30,6 +31,18 @@ const limitHelp = {
   model_not_found: '서버 모델 목록에 선택한 모델이 없어 설정한 한도를 사용합니다.',
 }
 const tokens = (value: number) => value > 0 ? `${value.toLocaleString('ko-KR')} 토큰` : '미제공'
+const metadataReasonHelp = {
+  not_supported: '모델 목록 조회 미지원 또는 경로 없음 · Base URL을 확인하세요.',
+  no_metadata: '모델 목록은 확인했지만 서버가 Context 한도를 제공하지 않습니다.',
+  auth_failed: '모델 목록 인증 실패 · API Key 또는 게이트웨이 인증을 확인하세요.',
+  forbidden: '모델 목록 접근 권한 없음 · 서버의 접근 정책을 확인하세요.',
+  rate_limited: '모델 목록 요청 제한 · 요청 빈도와 계정 할당량을 확인하세요.',
+  timeout: '모델 목록 응답 시간 초과 · 서버의 응답 상태를 확인하세요.',
+  unreachable: '모델 목록 서버 연결 실패 · 주소·DNS·네트워크·인증서를 확인하세요.',
+  invalid_response: '모델 목록 응답 형식 오류 · API 호환성과 프록시 설정을 확인하세요.',
+  server_error: '모델 목록 조회 중 서버 오류 · AI 서버 상태를 확인하세요.',
+  request_rejected: '모델 목록 요청 거부 · Endpoint와 게이트웨이 정책을 확인하세요.',
+}
 
 export function ConnectionDiagnostic({result, metadataOnly = false, showModelLimits = true}: {result: ConnectionResult; metadataOnly?: boolean; showModelLimits?: boolean}) {
   return <section className="connection-diagnostic stack" role="status">
@@ -38,6 +51,7 @@ export function ConnectionDiagnostic({result, metadataOnly = false, showModelLim
       <div className="row"><Badge variant="outline">{result.limits.context_length > 0 ? limitLabels[result.limits.status] : result.limits.status === 'manual' ? '수동 설정 · 컨텍스트 미제공' : result.limits.status === 'model_not_found' ? '모델 미발견 · 컨텍스트 미제공' : '컨텍스트 미제공'}</Badge><span>{result.limits.model || result.model || '모델 미지정'}</span></div>
       <div>컨텍스트: {tokens(result.limits.context_length)} · 최대 출력: {tokens(result.limits.max_output_tokens)}</div>
       <small className="muted">{result.limits.context_length > 0 ? limitHelp[result.limits.status] : '모델 컨텍스트 한도가 제공되지 않았습니다.'} 컨텍스트 출처: {result.limits.context_length <= 0 ? '미제공' : result.limits.source === 'models' ? '서버 /models' : '설정값'}.</small>
+      {result.limits.reason && <small className="muted">조회 진단: {metadataReasonHelp[result.limits.reason]}</small>}
       {result.limits.max_output_tokens > 0 && <small className="muted">최대 출력은 설정·작업별 한도와 서버 한도 중 작은 값을 적용합니다.</small>}
     </div> : result.model ? <small className="muted">모델: {result.model} · 모델 한도 정보 미제공</small> : null)}
   </section>
