@@ -4,13 +4,17 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/url"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -245,9 +249,9 @@ func (a *App) BeginOIDC(ctx context.Context, opts OIDCStartOptions) (string, OID
 	if !rt.configured() {
 		return "", OIDCFlow{}, userErrf("OIDC is not fully configured")
 	}
-	provider, err := oidc.NewProvider(ctx, rt.Issuer)
+	provider, err := a.oidcDiscover(ctx, rt)
 	if err != nil {
-		return "", OIDCFlow{}, userErrf("OIDC Discovery 실패: Issuer URL, 인증 서버 연결과 TLS 인증서를 확인하세요")
+		return "", OIDCFlow{}, err
 	}
 	// A silent attempt is only ever what the administrator allowed. Anyone can
 	// append ?prompt=none to the start URL; without auto_login it is quietly
@@ -364,9 +368,9 @@ func (a *App) CompleteOIDC(ctx context.Context, code string, flow OIDCFlow) (*do
 	if err != nil {
 		return nil, err
 	}
-	provider, err := oidc.NewProvider(ctx, rt.Issuer)
+	provider, err := a.oidcDiscover(ctx, rt)
 	if err != nil {
-		return nil, userErrf("OIDC Discovery 실패: Issuer URL, 인증 서버 연결과 TLS 인증서를 확인하세요")
+		return nil, err
 	}
 	cfg := oauth2.Config{ClientID: rt.ClientID, ClientSecret: rt.ClientSecret, Endpoint: provider.Endpoint(),
 		RedirectURL: rt.RedirectURL, Scopes: []string{oidc.ScopeOpenID, "profile", "email", "groups"}}
@@ -465,6 +469,93 @@ func (a *App) CompleteOIDC(ctx context.Context, code string, flow OIDCFlow) (*do
 		a.tryAutoProvisionOIDCMail(ctx, u)
 	}
 	return u, nil
+}
+
+// oidcDiscover fetches the provider metadata for both the start and the
+// callback leg. Discovery is the first thing that breaks after an issuer,
+// proxy or certificate change, so a failure is classified into one of a few
+// fixed causes and recorded as an incident instead of vanishing into the
+// browser of whoever tried to sign in. The raw error never crosses the
+// diagnostic boundary: go-oidc echoes the body of a non-200 answer, which for
+// a misrouted issuer is a login page or proxy error we don't control.
+func (a *App) oidcDiscover(ctx context.Context, rt oidcRuntime) (*oidc.Provider, error) {
+	provider, err := oidc.NewProvider(ctx, rt.Issuer)
+	if err != nil {
+		detail := oidcDiscoveryGuidance(err)
+		slog.Warn("OIDC discovery failed", "detail", detail, "issuer", rt.Issuer)
+		a.recordIncident(domain.SeverityError, "oidc", "OIDC Discovery 실패", detail+" (issuer: "+rt.Issuer+")")
+		return nil, userErrf("OIDC Discovery 실패: %s", detail)
+	}
+	return provider, nil
+}
+
+// oidcDiscoveryGuidance maps a discovery failure to fixed, actionable text.
+// Only error types and the HTTP status code are inspected; provider-controlled
+// strings (response bodies, discovered issuer values) are never copied.
+func oidcDiscoveryGuidance(err error) string {
+	var mismatch *oidc.IssuerMismatchError
+	var certErr *tls.CertificateVerificationError
+	var dnsErr *net.DNSError
+	var netErr net.Error
+	var urlErr *url.Error
+	switch {
+	case errors.As(err, &mismatch):
+		return "Discovery 문서의 issuer 가 설정된 Issuer URL 과 다릅니다: 끝 슬래시, 스킴(http/https)과 호스트를 인증 서버가 알리는 값과 맞추세요"
+	case errors.As(err, &certErr):
+		return "인증 서버의 TLS 인증서를 검증하지 못했습니다: 인증서 체인, 호스트 이름과 이 서버의 신뢰 저장소를 확인하세요"
+	case errors.As(err, &dnsErr):
+		return "Issuer URL 의 호스트 이름을 찾을 수 없습니다: Issuer URL 과 DNS 를 확인하세요"
+	case errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &netErr) && netErr.Timeout()):
+		return "인증 서버 연결이 시간 안에 끝나지 않았습니다: 네트워크 경로와 방화벽을 확인하세요"
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return "인증 서버가 연결을 거부했습니다: Issuer URL 의 호스트·포트와 인증 서버 상태를 확인하세요"
+	case errors.As(err, &urlErr):
+		return "인증 서버에 연결하지 못했습니다: Issuer URL, 네트워크 경로와 프록시 설정을 확인하세요"
+	}
+	if status, ok := oidcDiscoveryStatus(err); ok {
+		return fmt.Sprintf("Discovery 문서 요청이 HTTP %d 로 실패했습니다: Issuer URL 과 인증 서버·프록시 상태를 확인하세요", status)
+	}
+	if strings.HasPrefix(err.Error(), "oidc: failed to decode provider discovery object") {
+		return "Discovery 응답이 OpenID 설정 JSON 이 아닙니다: Issuer URL 이 로그인 페이지나 프록시 응답을 가리키고 있지 않은지 확인하세요"
+	}
+	return "Issuer URL, 인증 서버 연결과 TLS 인증서를 확인하세요"
+}
+
+// oidcDiscoveryStatus recovers the HTTP status go-oidc formats as
+// "<code> <text>: <body>" for a non-200 discovery answer. The three-digit code
+// is the only part of that message safe to repeat.
+func oidcDiscoveryStatus(err error) (int, bool) {
+	msg := err.Error()
+	if len(msg) < 4 || msg[3] != ' ' {
+		return 0, false
+	}
+	status, convErr := strconv.Atoi(msg[:3])
+	if convErr != nil || status < 100 || status > 599 {
+		return 0, false
+	}
+	return status, true
+}
+
+// RecordOIDCProviderError files an authorization error the provider sent back
+// on the callback (?error=...) so it reaches the incidents screen and not only
+// the browser of the user who happened to hit it. Refusals of a silent attempt
+// are expected traffic and are the caller's business. Returns the sanitized
+// guidance the caller may show.
+func (a *App) RecordOIDCProviderError(code string) string {
+	detail := OIDCProviderErrorGuidance(code)
+	message := "OIDC 인증 서버가 로그인 요청을 거절했습니다"
+	severity := domain.SeverityError
+	if strings.HasPrefix(detail, code+": ") {
+		// Known codes get their own row so a client misconfiguration is not
+		// folded into an individual user's denied consent.
+		message += " (" + code + ")"
+		if code == "access_denied" || OIDCLoginRequired(code) || code == "account_selection_required" {
+			severity = domain.SeverityWarning
+		}
+	}
+	slog.Warn("OIDC authorization callback returned an error", "detail", detail)
+	a.recordIncident(severity, "oidc", message, detail)
+	return detail
 }
 
 func oidcExchangeGuidance(err error) string {

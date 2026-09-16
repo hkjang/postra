@@ -15,6 +15,7 @@ import (
 
 	"github.com/go-jose/go-jose/v4"
 	"postra/internal/application"
+	"postra/internal/domain"
 )
 
 func authJSON(h http.Handler, path, body string, cookies ...*http.Cookie) *httptest.ResponseRecorder {
@@ -276,9 +277,24 @@ func TestStandaloneOIDCFlowErrorAndLegacyRedirectURI(t *testing.T) {
 	if !strings.HasPrefix(refused.Header().Get("Location"), "/app/login?") || !strings.Contains(refused.Header().Get("Location"), "sso=none") {
 		t.Fatal("silent refusal did not terminate at SPA login")
 	}
+	if incidents, err := app.Store.ListIncidents(context.Background(), domain.IncidentFilter{}); err != nil || len(incidents) != 0 {
+		t.Fatalf("a routine silent refusal must not become an incident: %+v %v", incidents, err)
+	}
 	failed := callback(url.Values{"state": {flow.State}, "error": {"invalid_scope"}, "error_description": {"groups scope unavailable"}}.Encode())
 	if strings.Contains(failed.Header().Get("Location"), flow.State) || !strings.Contains(failed.Header().Get("Location"), "sso=error") {
 		t.Fatal("callback code/state leaked or error retry marker missing")
+	}
+	// The administrator sees the provider's refusal on the incidents screen,
+	// with the allowlisted code but never the IdP's free text.
+	incidents, err := app.Store.ListIncidents(context.Background(), domain.IncidentFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(incidents) != 1 || incidents[0].Component != "oidc" || !strings.Contains(incidents[0].Message, "invalid_scope") || !strings.Contains(incidents[0].Detail, "groups") {
+		t.Fatalf("provider authorization error was not recorded as an oidc incident: %+v", incidents)
+	}
+	if strings.Contains(incidents[0].Detail, "groups scope unavailable") {
+		t.Fatal("IdP free text leaked into the incident")
 	}
 	var note *http.Cookie
 	for _, c := range failed.Result().Cookies() {

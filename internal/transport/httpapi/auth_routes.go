@@ -251,7 +251,7 @@ func (s *Server) authOIDCCallback(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, authLoginMarker("none", flow.ReturnTo), http.StatusFound)
 			return
 		}
-		message := "Keycloak 로그인이 실패했습니다: " + application.OIDCProviderErrorGuidance(providerError)
+		message := "Keycloak 로그인이 실패했습니다: " + s.app.RecordOIDCProviderError(providerError)
 		s.failBrowserOIDC(w, r, flow.ReturnTo, message)
 		return
 	}
