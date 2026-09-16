@@ -219,6 +219,66 @@ func TestNotifyMailPasswordIsWriteOnly(t *testing.T) {
 	}
 }
 
+func TestNotifyMailPasswordRotationRevokesOldReference(t *testing.T) {
+	app, _, adminCtx, _ := notifyMailHarness(t)
+	ctx := context.Background()
+	refOf := func() domain.SecretRef {
+		t.Helper()
+		stored, _ := app.Store.GetSettings(ctx)
+		ref := domain.SecretRef(stored[notifymail.KeyPassword])
+		if !strings.HasPrefix(string(ref), "sec_") {
+			t.Fatalf("expected a secret reference, got %q", ref)
+		}
+		return ref
+	}
+	usable := func(ref domain.SecretRef) bool {
+		t.Helper()
+		handle, err := app.Secrets.Acquire(ctx, ref, domain.PurposeTest)
+		if err != nil {
+			return false
+		}
+		handle.Zero()
+		return true
+	}
+	if _, err := app.AdminPatchSettings(adminCtx, SettingsPatch{Secrets: map[string]string{notifymail.KeyPassword: "first"}}); err != nil {
+		t.Fatal(err)
+	}
+	first := refOf()
+	// An empty secret preserves the stored password and its reference.
+	if _, err := app.AdminPatchSettings(adminCtx, SettingsPatch{Values: map[string]string{notifymail.KeyUsername: "relayuser"}, Secrets: map[string]string{notifymail.KeyPassword: ""}}); err != nil {
+		t.Fatal(err)
+	}
+	if refOf() != first || !usable(first) {
+		t.Fatal("an empty secret must keep the existing password")
+	}
+	// Rotating through the REST patch revokes the superseded reference only.
+	if _, err := app.AdminPatchSettings(adminCtx, SettingsPatch{Secrets: map[string]string{notifymail.KeyPassword: "second"}}); err != nil {
+		t.Fatal(err)
+	}
+	second := refOf()
+	if second == first || usable(first) || !usable(second) {
+		t.Fatalf("rotation must revoke %s and keep %s usable", first, second)
+	}
+	// The legacy endpoint rotates the same way.
+	if err := app.AdminSaveSettings(adminCtx, map[string]string{notifymail.KeyPassword: "third"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	third := refOf()
+	if third == second || usable(second) || !usable(third) {
+		t.Fatalf("legacy rotation must revoke %s and keep %s usable", second, third)
+	}
+	// Clearing the password through the legacy endpoint revokes the last reference.
+	if err := app.AdminSaveSettings(adminCtx, map[string]string{notifymail.KeyPassword: ""}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if stored, _ := app.Store.GetSettings(ctx); stored[notifymail.KeyPassword] != "" {
+		t.Fatalf("password should be cleared, got %q", stored[notifymail.KeyPassword])
+	}
+	if usable(third) {
+		t.Fatal("clearing the password must revoke its reference")
+	}
+}
+
 func TestAdminSendTestMailReportsOutcome(t *testing.T) {
 	app, smtp, adminCtx, hong := notifyMailHarness(t)
 	if _, err := app.AdminSendTestMail(WithPrincipal(context.Background(), domain.Principal{UserID: hong.ID, Role: domain.RoleUser}), ""); err == nil {
