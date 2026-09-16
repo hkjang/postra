@@ -21,6 +21,7 @@ import (
 	"postra/internal/domain"
 	"postra/internal/platform/mailhtml"
 	"postra/internal/platform/metrics"
+	"postra/internal/platform/notifymail"
 )
 
 // ---------- payload hash & approval (§9.2) ----------
@@ -455,16 +456,19 @@ func (a *App) applySendResult(ctx context.Context, out *domain.OutboundMessage, 
 		_ = a.Store.UpdateOutbound(ctx, out.ID, domain.OutboundFailed, message, attempts)
 		out.Status, out.SMTPResponse = domain.OutboundFailed, message
 		a.audit(ctx, "mail_send", "draft:"+draftID, "failed", "retries exhausted")
+		a.notifySendStopped(ctx, out, draftID, message)
 	case sendErr != nil:
 		message := outboundDiagnostic(domain.OutboundFailed)
 		_ = a.Store.UpdateOutbound(ctx, out.ID, domain.OutboundFailed, message, attempts)
 		out.Status, out.SMTPResponse = domain.OutboundFailed, message
 		a.audit(ctx, "mail_send", "draft:"+draftID, "error", message)
+		a.notifySendStopped(ctx, out, draftID, message)
 	case receipt.Uncertain:
 		message := outboundDiagnostic(domain.OutboundUncertain)
 		_ = a.Store.UpdateOutbound(ctx, out.ID, domain.OutboundUncertain, message, attempts)
 		out.Status, out.SMTPResponse = domain.OutboundUncertain, message
 		a.audit(ctx, "mail_send", "draft:"+draftID, "uncertain", "response lost after DATA")
+		a.notifySendStopped(ctx, out, draftID, message)
 	default:
 		message := outboundDiagnostic(domain.OutboundSent)
 		_ = a.Store.UpdateOutbound(ctx, out.ID, domain.OutboundSent, message, attempts)
@@ -474,6 +478,22 @@ func (a *App) applySendResult(ctx context.Context, out *domain.OutboundMessage, 
 	}
 	metrics.SMTPSend.WithLabelValues(sendResultLabel(out.Status)).Inc()
 	return out
+}
+
+// notifySendStopped mails the sender when an outbound message will not be
+// retried any more. Retries run in the background, so the person who pressed
+// send may have stopped watching; the mail carries the same safe diagnostic
+// the outbox shows, never the SMTP transcript.
+func (a *App) notifySendStopped(ctx context.Context, out *domain.OutboundMessage, draftID, why string) {
+	userID := out.UserID
+	if userID == "" {
+		userID = userIDFrom(ctx)
+	}
+	subject := "(제목 없음)"
+	if v, err := a.Store.GetDraftVersion(ctx, userID, draftID, out.DraftVersion); err == nil && strings.TrimSpace(v.Subject) != "" {
+		subject = v.Subject
+	}
+	a.NotifyMail(ctx, notifymail.SendFailed(subject, why), "", []string{userID})
 }
 
 // sendResultLabel maps a terminal/interim outbound status to a stable,

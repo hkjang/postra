@@ -6,6 +6,7 @@ import { api } from '@/api/client';
 import { SessionContext } from '@/app/session';
 import { AdminPage } from './index';
 import { AISettingsPanel } from './settings';
+import { MailNotificationsPanel } from './activity';
 import { ProvisioningPanel, PurgePanel, UsersPanel } from './users';
 
 vi.mock('@/api/client', () => ({ api: vi.fn() }));
@@ -122,5 +123,23 @@ describe('email-only SSO mail provisioning', () => {
     await user.click(screen.getByRole('button', { name: '프로비저닝 설정 저장' }));
     await waitFor(() => expect(mockAPI).toHaveBeenCalled());
     expect(mockAPI.mock.calls[0][1]?.body).toMatchObject({ email: 'hong@corp.local', apply_to_all_users: false });
+  });
+});
+
+describe('relay notification mail', () => {
+  it('lists deliveries without a body and sends a test mail with the saved settings', async () => {
+    const user = userEvent.setup();
+    mockAPI.mockImplementation(async (path: string, options?: { method?: string }) => {
+      if (options?.method === 'POST') return { ok: false, message: '테스트 메일을 보내지 못했습니다: dial tcp: connection refused', delivery: {} };
+      return { items: [{ id: 'mdl_1', event: 'assigned', recipient: 'hong@corp.local', subject: '[Postra] 담당 메일이 배정되었습니다', status: 'sent', attempts: 1, created_at: 1789473182, updated_at: 1789473182 }], summary: { total: 1, status: { sent: 1 } } };
+    });
+    render(<MailNotificationsPanel />);
+    await screen.findByText('hong@corp.local');
+    expect(screen.getByText('담당 배정')).toBeInTheDocument();
+    expect(mockAPI).toHaveBeenCalledWith('/api/admin/mail/deliveries?limit=100&status=', expect.anything());
+    await user.type(screen.getByLabelText('시험 발송 받는 주소'), 'ops@corp.local');
+    await user.click(screen.getByRole('button', { name: '시험 발송' }));
+    await waitFor(() => expect(mockAPI).toHaveBeenCalledWith('/api/admin/mail/test', { method: 'POST', body: { recipient: 'ops@corp.local' } }));
+    expect(await screen.findByRole('status')).toHaveTextContent('connection refused');
   });
 });
