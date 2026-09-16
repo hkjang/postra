@@ -40,6 +40,7 @@ func (s *Server) Handler() http.Handler {
 	s.registerEventsRoutes(mux)
 	s.registerWorkflowRoutes(mux)
 	s.registerReceivedImageRoutes(mux)
+	s.registerNotifyMailRoutes(mux)
 
 	mux.HandleFunc("GET /api/me", s.me)
 	mux.HandleFunc("GET /api/auth/session", s.browserSession)
