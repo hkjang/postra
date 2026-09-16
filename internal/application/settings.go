@@ -335,6 +335,7 @@ func (a *App) adminSaveSettingsSnapshot(ctx context.Context, values map[string]s
 	// The relay password reaches this path as a reference from AdminPatchSettings;
 	// a legacy caller sending the plaintext gets it registered the same way, so
 	// the settings table never holds it (MAIL-STANDARD: 비밀번호는 되읽히지 않는다).
+	oldMailPasswordRef := storedBefore[notifymail.KeyPassword]
 	if password, ok := clean[notifymail.KeyPassword]; ok && password != "" && !strings.HasPrefix(password, "sec_") {
 		handle := domain.NewSecretHandle([]byte(password))
 		ref, err := a.RegisterSecret(ctx, domain.SecretAPIKey, "알림 SMTP 비밀번호", handle)
@@ -364,6 +365,11 @@ func (a *App) adminSaveSettingsSnapshot(ctx context.Context, values map[string]s
 	}
 	if newRef := clean[SettingVectorMilvusTokenRef]; newRef != "" && oldMilvusRef != "" && oldMilvusRef != newRef {
 		a.revokeUnreferencedSettingSecrets([]domain.SecretRef{domain.SecretRef(oldMilvusRef)})
+	}
+	// A replaced or cleared relay password leaves its old reference orphaned in
+	// the SecretStore; revoke it like the OIDC and Milvus secrets above.
+	if newRef, provided := clean[notifymail.KeyPassword]; provided && oldMailPasswordRef != "" && oldMailPasswordRef != newRef {
+		a.revokeUnreferencedSettingSecrets([]domain.SecretRef{domain.SecretRef(oldMailPasswordRef)})
 	}
 	if stored, err := a.Store.GetSettings(ctx); err == nil {
 		a.applyAISettings(stored)
