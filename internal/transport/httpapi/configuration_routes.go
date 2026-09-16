@@ -40,6 +40,7 @@ func (s *Server) registerConfigurationRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PATCH /api/accounts/{id}/preferences", s.preferences)
 	mux.HandleFunc("GET /api/admin/operations", s.operations)
 	mux.HandleFunc("GET /api/admin/mcp", s.mcpOperations)
+	mux.HandleFunc("GET /api/mcp/connection", s.mcpConnection)
 	mux.HandleFunc("PATCH /api/mcp-keys/{id}", s.patchMCPKey)
 	mux.HandleFunc("PATCH /api/admin/mcp-keys/{id}", s.patchMCPKey)
 }
@@ -156,8 +157,13 @@ func (s *Server) mcpOperations(w http.ResponseWriter, r *http.Request) {
 
 // A key cannot evade its scope/gateway policy by switching MCP to REST.
 // Unknown REST capabilities and credential/security mutation are deny-by-default.
+func (s *Server) mcpConnection(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.app.MCPOAuthConnection())
+}
+
 func (s *Server) checkMCPRESTScope(ctx context.Context, route string) error {
 	tool := map[string]string{
+		"GET /api/mcp/connection":              "mail_identity",
 		"GET /api/messages/{id}/body/frame":    "mail_message_get",
 		"POST /api/messages/{id}/images/allow": "mail_set_work_status", "DELETE /api/messages/{id}/images/allow": "mail_set_work_status", "POST /api/action-cards": "mail_action_card_create",
 		"GET /api/events": "mail_events", "POST /api/mail/rewrite-selection": "mail_text_rewrite",
@@ -188,7 +194,7 @@ func (s *Server) checkMCPRESTScope(ctx context.Context, route string) error {
 		"POST /api/messages/{id}/action-cards": "mail_action_cards_extract", "POST /api/action-cards/{id}/status": "mail_action_card_set_status", "POST /api/action-cards/{id}/export": "mail_action_card_export",
 	}[route]
 	if tool == "" {
-		return &domain.PublicError{Code: "insufficient_scope", Message: "MCP 키로 이 REST 기능을 사용할 수 없습니다.", Status: 403}
+		return &domain.PublicError{Code: "insufficient_scope", Message: "MCP 연결로 이 REST 기능을 사용할 수 없습니다.", Status: 403}
 	}
 	return s.app.CheckMCPToolPolicy(ctx, tool)
 }

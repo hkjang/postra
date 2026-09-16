@@ -9,6 +9,7 @@ type endpoint struct {
 
 func endpoints() []endpoint {
 	return []endpoint{
+		{"get", "/mcp/connection", "mcpConnectionGet", "Authenticated user's public MCP connection instructions; no credentials or health assertion", "", "MCPOAuthConnectionInfo", "200", false},
 		{"get", "/admin/configuration", "adminConfigurationGet", "Administrator catalog with effective values and lock/source metadata", "", "SettingsView", "200", false},
 		{"patch", "/admin/configuration", "adminConfigurationPatch", "Administrator settings and write-only secret update", "SettingsPatch", "SettingsView", "200", false},
 		{"get", "/preferences", "preferencesGet", "Current user's effective preferences", "", "SettingsView", "200", false},

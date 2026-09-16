@@ -175,6 +175,7 @@ func TestOIDCCallbackErrorNoteDoesNotTrustProviderText(t *testing.T) {
 
 type browserOIDCProvider struct {
 	server   *httptest.Server
+	key      *rsa.PrivateKey
 	nonce    atomic.Value
 	redirect chan string
 }
@@ -185,7 +186,7 @@ func newBrowserOIDCProvider(t *testing.T) *browserOIDCProvider {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := &browserOIDCProvider{redirect: make(chan string, 1)}
+	p := &browserOIDCProvider{redirect: make(chan string, 1), key: key}
 	p.nonce.Store("")
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /authorize", func(w http.ResponseWriter, r *http.Request) {

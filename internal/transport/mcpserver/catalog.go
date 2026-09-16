@@ -109,7 +109,11 @@ func Capabilities(ctx context.Context, app *application.App) map[string]any {
 	result["error_contract"] = []string{"code", "message", "details", "trace_id"}
 	result["enabled"] = app.SettingBool("mcp.enabled")
 	result["http_enabled"] = app.SettingBool("mcp.http_enabled")
-	result["endpoint"] = app.Setting("mcp.endpoint")
+	connection := app.MCPOAuthConnection()
+	result["endpoint"] = connection.ActiveEndpoint
+	result["configured_endpoint"] = connection.ConfiguredEndpoint
+	result["pending_restart"] = connection.PendingRestart
+	result["oauth"] = connection.OAuth
 	permissions := map[string]bool{}
 	for _, scope := range application.MCPScopes {
 		key := strings.ReplaceAll(strings.TrimPrefix(scope, "mail."), ".", "_")

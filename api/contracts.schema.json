@@ -763,6 +763,125 @@
         "trace_id"
       ]
     },
+    "MCPOAuthConnectionInfo": {
+      "type": "object",
+      "properties": {
+        "active_endpoint": {
+          "type": "string"
+        },
+        "configured_endpoint": {
+          "type": "string"
+        },
+        "pending_restart": {
+          "type": "boolean"
+        },
+        "oauth": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "configured": {
+              "type": "boolean"
+            },
+            "issuer": {
+              "type": "string"
+            },
+            "resource_url": {
+              "type": "string"
+            },
+            "metadata_url": {
+              "type": "string"
+            },
+            "allowed_client_ids": {
+              "type": [
+                "null",
+                "array"
+              ],
+              "items": {
+                "type": "string"
+              }
+            },
+            "scopes_supported": {
+              "type": [
+                "null",
+                "array"
+              ],
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "enabled",
+            "configured",
+            "issuer",
+            "resource_url",
+            "metadata_url",
+            "allowed_client_ids",
+            "scopes_supported"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "title": "MCPOAuthConnectionInfo",
+      "required": [
+        "active_endpoint",
+        "configured_endpoint",
+        "pending_restart",
+        "oauth"
+      ],
+      "additionalProperties": false
+    },
+    "MCPOAuthInfo": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "configured": {
+          "type": "boolean"
+        },
+        "issuer": {
+          "type": "string"
+        },
+        "resource_url": {
+          "type": "string"
+        },
+        "metadata_url": {
+          "type": "string"
+        },
+        "allowed_client_ids": {
+          "type": [
+            "null",
+            "array"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "scopes_supported": {
+          "type": [
+            "null",
+            "array"
+          ],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "title": "MCPOAuthInfo",
+      "required": [
+        "enabled",
+        "configured",
+        "issuer",
+        "resource_url",
+        "metadata_url",
+        "allowed_client_ids",
+        "scopes_supported"
+      ],
+      "additionalProperties": false
+    },
     "MailSignature": {
       "type": "object",
       "properties": {

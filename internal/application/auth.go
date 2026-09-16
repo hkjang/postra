@@ -448,8 +448,8 @@ func (a *App) CreateMCPKeyWithScopes(ctx context.Context, name string, scopes []
 		return nil, "", err
 	}
 	if p, ok := PrincipalFrom(ctx); ok {
-		if p.AuthMethod == "mcp_key" {
-			return nil, "", &domain.PublicError{Code: "forbidden", Message: "MCP 키로 새 자격 증명을 발급할 수 없습니다.", Status: 403}
+		if p.IsMCPScoped() {
+			return nil, "", &domain.PublicError{Code: "forbidden", Message: "MCP 연결로 새 자격 증명을 발급할 수 없습니다.", Status: 403}
 		}
 		if !p.IsAdmin() && (contains(resolved, "admin.read") || contains(resolved, "admin.write")) {
 			return nil, "", &domain.PublicError{Code: "forbidden", Message: "관리자 권한 범위는 관리자만 부여할 수 있습니다.", Status: 403}

@@ -1,5 +1,7 @@
 package domain
 
+import "time"
+
 // UserRole controls Postra management permissions. Every authenticated user
 // owns an isolated mail workspace; admins additionally manage identities.
 type UserRole string
@@ -45,16 +47,24 @@ type Session struct {
 }
 
 type Principal struct {
-	UserID      string   `json:"user_id"`
-	LoginID     string   `json:"login_id"`
-	DisplayName string   `json:"display_name"`
-	Role        UserRole `json:"role"`
-	AuthMethod  string   `json:"auth_method"` // local | oidc | api_token | mcp_key | cli
-	MCPKeyID    string   `json:"mcp_key_id,omitempty"`
-	MCPScopes   []string `json:"mcp_scopes,omitempty"`
+	UserID         string    `json:"user_id"`
+	LoginID        string    `json:"login_id"`
+	DisplayName    string    `json:"display_name"`
+	Role           UserRole  `json:"role"`
+	AuthMethod     string    `json:"auth_method"` // local | oidc | api_token | mcp_key | mcp_oauth | cli
+	MCPKeyID       string    `json:"mcp_key_id,omitempty"`
+	MCPScopes      []string  `json:"mcp_scopes,omitempty"`
+	OAuthClientID  string    `json:"-"`
+	OAuthIssuer    string    `json:"-"`
+	OAuthExpiresAt time.Time `json:"-"`
 }
 
 func (p Principal) IsAdmin() bool { return p.Role == RoleAdmin }
+
+// IsMCPScoped identifies delegated credentials, regardless of transport.
+func (p Principal) IsMCPScoped() bool {
+	return p.AuthMethod == "mcp_key" || p.AuthMethod == "mcp_oauth"
+}
 
 type MCPKey struct {
 	ID           string   `json:"id"`

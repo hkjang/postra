@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"time"
 
@@ -40,6 +41,45 @@ func resourceTool(uri string) string {
 	default:
 		return "mail_message_get"
 	}
+}
+
+// Both the HTTP OAuth step-up challenge and the SDK's authoritative gateway
+// use this policy. Transport preflight never performs application operations.
+func checkMCPRequestPolicy(ctx context.Context, app *application.App, tool string, arguments json.RawMessage) error {
+	tool = application.CanonicalMCPTool(tool)
+	var in struct {
+		Instructions string `json:"instructions"`
+		SmartFormat  bool   `json:"smart_format"`
+		Action       string `json:"action"`
+	}
+	validArguments := len(arguments) > 0 && json.Unmarshal(arguments, &in) == nil
+	needsAI := validArguments && (in.SmartFormat || (tool == "mail_draft_create" && strings.TrimSpace(in.Instructions) != ""))
+	needsDelete := validArguments && tool == "mail_batch_update" && in.Action == "delete"
+	required := append([]string{}, application.MCPToolScopes(tool)...)
+	if needsAI && !slices.Contains(required, "mail.ai") {
+		required = append(required, "mail.ai")
+	}
+	if needsDelete {
+		for _, scope := range application.MCPToolScopes("mail_local_delete") {
+			if !slices.Contains(required, scope) {
+				required = append(required, scope)
+			}
+		}
+	}
+	err := app.CheckMCPToolPolicy(ctx, tool)
+	if err == nil && needsAI {
+		err = app.CheckMCPPermissionScopes(ctx, "mail.ai")
+	}
+	if err == nil && needsDelete {
+		err = app.CheckMCPToolPolicy(ctx, "mail_local_delete")
+	}
+	var public *domain.PublicError
+	if errors.As(err, &public) && public.Code == "insufficient_scope" {
+		copy := *public
+		copy.Details = map[string]any{"required_scopes": required}
+		return &copy
+	}
+	return err
 }
 
 func gatewayMiddleware(app *application.App) mcp.Middleware {
@@ -80,26 +120,11 @@ func gatewayMiddleware(app *application.App) mcp.Middleware {
 			ctx, cancel := context.WithTimeout(ctx, time.Duration(app.SettingInt("mcp.request_timeout_sec"))*time.Second)
 			defer cancel()
 			var result mcp.Result
-			err := app.CheckMCPToolPolicy(ctx, tool)
-			if err == nil && len(arguments) != 0 {
-				var in struct {
-					Instructions string `json:"instructions"`
-					SmartFormat  bool   `json:"smart_format"`
-					Action       string `json:"action"`
-				}
-				if json.Unmarshal(arguments, &in) == nil {
-					if in.SmartFormat || (tool == "mail_draft_create" && strings.TrimSpace(in.Instructions) != "") {
-						err = app.CheckMCPPermissionScopes(ctx, "mail.ai")
-					}
-					if err == nil && tool == "mail_batch_update" && in.Action == "delete" {
-						err = app.CheckMCPToolPolicy(ctx, "mail_local_delete")
-					}
-				}
-			}
+			err := checkMCPRequestPolicy(ctx, app, tool, arguments)
 			if err == nil {
 				notifyProgress(ctx, req, 0, "처리 중")
 				result, err = next(ctx, method, req)
-				if ctr, ok := result.(*mcp.CallToolResult); ok && ctr.IsError {
+				if ctr, ok := result.(*mcp.CallToolResult); ok && ctr != nil && ctr.IsError {
 					err = ctr.GetError()
 					if err == nil {
 						err = errors.New("tool failed")
@@ -122,6 +147,7 @@ func gatewayMiddleware(app *application.App) mcp.Middleware {
 					// contract is exposed, never driver/provider error text.
 					encoded, _ := json.Marshal(public)
 					err = errors.New(string(encoded))
+					result = nil
 				}
 			}
 			if result != nil {
@@ -133,23 +159,28 @@ func gatewayMiddleware(app *application.App) mcp.Middleware {
 				result.SetMeta(metadata)
 			}
 			encoded, _ := json.Marshal(result)
-			elapsed := time.Since(started)
-			metrics.MCPRequests.WithLabelValues(label, outcome).Inc()
-			metrics.MCPLatency.WithLabelValues(label).Observe(elapsed.Seconds())
-			metrics.MCPBytes.WithLabelValues(label, "input").Add(float64(inputBytes))
-			metrics.MCPBytes.WithLabelValues(label, "output").Add(float64(len(encoded)))
-			p, ok := application.PrincipalFrom(ctx)
-			if !ok {
-				p.UserID = application.DefaultUserID
-			}
-			detail, _ := json.Marshal(map[string]any{"trace_id": application.RequestTrace(ctx), "key_id": p.MCPKeyID, "tool": label, "latency_ms": elapsed.Milliseconds(), "input_bytes": inputBytes, "output_bytes": len(encoded), "error_code": errorCode})
-			auditCtx, auditCancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
-			_ = app.Store.AppendAudit(auditCtx, domain.AuditEvent{UserID: p.UserID, Actor: "mcp", Action: "mcp_call", Resource: "tool:" + label, Result: outcome, Detail: string(detail)})
-			auditCancel()
+			recordMCPCall(ctx, app, label, outcome, errorCode, inputBytes, len(encoded), time.Since(started))
 			notifyProgress(ctx, req, 1, "처리 완료")
 			return result, err
 		}
 	}
+}
+
+// Audit transport denials and SDK calls identically, recording only bounded
+// identifiers and byte counts, never bearer tokens, arguments or mail content.
+func recordMCPCall(ctx context.Context, app *application.App, label, outcome, errorCode string, inputBytes, outputBytes int, elapsed time.Duration) {
+	metrics.MCPRequests.WithLabelValues(label, outcome).Inc()
+	metrics.MCPLatency.WithLabelValues(label).Observe(elapsed.Seconds())
+	metrics.MCPBytes.WithLabelValues(label, "input").Add(float64(inputBytes))
+	metrics.MCPBytes.WithLabelValues(label, "output").Add(float64(outputBytes))
+	p, ok := application.PrincipalFrom(ctx)
+	if !ok {
+		p.UserID = application.DefaultUserID
+	}
+	detail, _ := json.Marshal(map[string]any{"trace_id": application.RequestTrace(ctx), "key_id": p.MCPKeyID, "auth_method": p.AuthMethod, "oauth_client_id": p.OAuthClientID, "tool": label, "latency_ms": elapsed.Milliseconds(), "input_bytes": inputBytes, "output_bytes": outputBytes, "error_code": errorCode})
+	auditCtx, auditCancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer auditCancel()
+	_ = app.Store.AppendAudit(auditCtx, domain.AuditEvent{UserID: p.UserID, Actor: "mcp", Action: "mcp_call", Resource: "tool:" + label, Result: outcome, Detail: string(detail)})
 }
 
 func notifyProgress(ctx context.Context, req mcp.Request, progress float64, message string) {

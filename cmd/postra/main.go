@@ -580,6 +580,9 @@ func serve(configPath string) error {
 		mcpEndpoint = "/mcp"
 	}
 	root.Handle(mcpEndpoint, mcpserver.HTTPHandler(app, cfg.APIToken))
+	metadataHandler := mcpserver.OAuthMetadataHandler(app)
+	root.Handle(mcpserver.OAuthMetadataPath, metadataHandler)
+	root.Handle(mcpserver.OAuthMetadataPath+"/", metadataHandler)
 	if cfg.WebUIEnabled {
 		registerBrowserRedirects(root)
 		appHandler := spa.Handler()

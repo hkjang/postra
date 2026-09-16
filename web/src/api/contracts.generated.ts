@@ -198,6 +198,31 @@ export type ErrorResponse = {
   "trace_id": string
 }
 
+export type MCPOAuthConnectionInfo = {
+  "active_endpoint": string
+  "configured_endpoint": string
+  "oauth": {
+    "allowed_client_ids": null | Array<string>
+    "configured": boolean
+    "enabled": boolean
+    "issuer": string
+    "metadata_url": string
+    "resource_url": string
+    "scopes_supported": null | Array<string>
+  }
+  "pending_restart": boolean
+}
+
+export type MCPOAuthInfo = {
+  "allowed_client_ids": null | Array<string>
+  "configured": boolean
+  "enabled": boolean
+  "issuer": string
+  "metadata_url": string
+  "resource_url": string
+  "scopes_supported": null | Array<string>
+}
+
 export type MailSignature = {
   "account_id"?: string
   "body_html"?: string

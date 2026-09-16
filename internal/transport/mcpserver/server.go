@@ -184,35 +184,24 @@ func HTTPHandler(app *application.App, apiToken string) http.Handler {
 	inner := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 		return NewServer(app)
 	}, &mcp.StreamableHTTPOptions{SessionTimeout: time.Duration(app.SettingInt("mcp.session_timeout_sec")) * time.Second})
-	// The SDK binds sessions using TokenInfo, not arbitrary context values.
-	// Include the key ID so a narrower key belonging to the same user cannot
-	// resume a more privileged client's stream.
-	bound := auth.RequireBearerToken(func(ctx context.Context, _ string, _ *http.Request) (*auth.TokenInfo, error) {
-		p, ok := application.PrincipalFrom(ctx)
-		if !ok {
-			return nil, auth.ErrInvalidToken
-		}
-		// This short-lived SDK assertion is created only after the real key or
-		// OIDC token was revalidated above on THIS HTTP request. It is not a
-		// replacement expiry or an extension of the underlying credential.
-		return &auth.TokenInfo{UserID: p.UserID + ":" + p.AuthMethod + ":" + p.MCPKeyID, Scopes: p.MCPScopes, Expiration: time.Now().Add(time.Minute), Extra: map[string]any{"postra_principal": p, "postra_trace_id": application.RequestTrace(ctx)}}, nil
-	}, nil)(inner)
 	protected := http.NewCrossOriginProtection()
-	return protected.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	transport := protected.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := application.WithRequestTrace(application.WithActor(r.Context(), "mcp"), "")
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Trace-ID", application.RequestTrace(ctx))
+		oauth := app.MCPOAuthConnection().OAuth
 		if !app.SettingBool("mcp.enabled") || !app.SettingBool("mcp.http_enabled") {
 			writeMCPHTTPError(w, ctx, &domain.PublicError{Code: "capability_disabled", Message: "MCP HTTP 기능이 비활성화되어 있습니다.", Status: 503})
 			return
 		}
-		if app.Cfg.Auth.Enabled || apiToken != "" {
+		if app.Cfg.Auth.Enabled || apiToken != "" || oauth.Enabled || len(r.Header.Values("Authorization")) > 0 {
 			header := r.Header.Get("Authorization")
-			raw := strings.TrimPrefix(header, "Bearer ")
-			if !strings.HasPrefix(header, "Bearer ") || strings.TrimSpace(raw) == "" {
-				writeMCPHTTPError(w, ctx, &domain.PublicError{Code: "unauthorized", Message: "MCP 인증이 필요합니다.", Status: 401})
+			fields := strings.Fields(header)
+			if len(r.Header.Values("Authorization")) != 1 || len(fields) != 2 || !strings.EqualFold(fields[0], "Bearer") {
+				writeMCPAuthenticationError(w, ctx, oauth, header != "")
 				return
 			}
+			raw := fields[1]
 			var principal domain.Principal
 			ok := false
 			if apiToken != "" && subtle.ConstantTimeCompare([]byte(raw), []byte(apiToken)) == 1 {
@@ -228,26 +217,45 @@ func HTTPHandler(app *application.App, apiToken string) http.Handler {
 				}
 			}
 			if !ok && raw != "" {
-				if p, err := app.AuthenticateOIDCAccessToken(r.Context(), raw); err == nil {
+				if p, err := app.AuthenticateMCPOAuthToken(r.Context(), raw); err == nil {
 					principal, ok = p, true
 				}
 			}
 			if !ok {
-				writeMCPHTTPError(w, ctx, &domain.PublicError{Code: "unauthorized", Message: "MCP 인증에 실패했습니다.", Status: 401})
+				writeMCPAuthenticationError(w, ctx, oauth, true)
 				return
 			}
+			if principal.AuthMethod == "mcp_oauth" {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithDeadline(ctx, principal.OAuthExpiresAt)
+				defer cancel()
+			}
 			ctx = application.WithPrincipal(ctx, principal)
-			bound.ServeHTTP(w, r.WithContext(ctx))
+			r = r.WithContext(ctx)
+			if principal.AuthMethod == "mcp_oauth" && oauthScopePreflight(w, r, app, oauth) {
+				return
+			}
+			// Revalidate credentials before every HTTP call, then pass only a
+			// bounded SDK assertion and the freshly scoped principal onward.
+			auth.RequireBearerToken(mcpTokenInfo, oauthBearerOptions(oauth))(inner).ServeHTTP(w, r)
 			return
 		}
 		inner.ServeHTTP(w, r.WithContext(ctx))
 	}))
+	metadata := OAuthMetadataHandler(app)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == OAuthMetadataPath || strings.HasPrefix(r.URL.Path, OAuthMetadataPath+"/") {
+			metadata.ServeHTTP(w, r)
+			return
+		}
+		transport.ServeHTTP(w, r)
+	})
 }
 
 func writeMCPHTTPError(w http.ResponseWriter, ctx context.Context, err error) {
 	status, body := application.PublicError(ctx, err)
 	w.Header().Set("Content-Type", "application/json")
-	if status == http.StatusUnauthorized {
+	if status == http.StatusUnauthorized && w.Header().Get("WWW-Authenticate") == "" {
 		w.Header().Set("WWW-Authenticate", "Bearer")
 	}
 	w.WriteHeader(status)

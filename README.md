@@ -11,7 +11,7 @@ Go로 작성한 개인/사내 구축형 메일 서비스입니다. 사용자의 
 
 v0.20.0의 검색 가능한 운영 콘솔은 환경변수 초기값 위에 관리자 설정과 강제 정책을 적용합니다. 개인·계정 설정과 복수 서명도 웹에서 관리합니다. [설정 관리](docs/SETTINGS.md) · [HTML 메일](docs/MAIL_RENDERING.md) · [Ask Postra](docs/ASK_POSTRA.md) · [MCP 계약](docs/MCP_CONVERGENCE.md) · [API 스키마](docs/API_CONTRACTS.md) · [릴리즈 및 이전 주의사항](docs/releases/v0.20.0.md)
 
-최신 릴리즈 [v0.21.1](docs/releases/v0.21.1.md)는 화면별 글자 크기를 통일하고 사용자별 큰 글자 설정, 답장·전달 원문 확인 패널을 제공합니다. 모바일 작성 입력란과 업무 필터도 개선했습니다. 기존 메일 후속 업무·AI 진단·Context 한도 자동 감지·승인 기반 발송은 그대로 유지합니다.
+최신 릴리즈 [v0.22.0](docs/releases/v0.22.0.md)는 기존 API 키와 함께 Keycloak OAuth 기반 MCP 연결을 지원합니다. 관리자 화면에서 공개 URL·허용 Client·Scope를 설정하고 사용자 화면에서 연결 방법을 확인할 수 있습니다. OAuth는 기본 비활성화이며 별도 Keycloak MCP 클라이언트 등록이 필요합니다. 기존 메일·AI·개인화·승인 기반 발송은 유지합니다.
 
 ## 설계 핵심
 
@@ -70,8 +70,9 @@ Keycloak 클라이언트 설정:
 
 Postra는 OIDC Discovery, Authorization Code Flow, S256 PKCE, state/nonce 검증, 서명·issuer·
 audience 검증을 수행합니다. 최초 SSO 로그인 자동 생성 여부와 관리자 그룹 매핑도 관리
-화면에서 제어합니다. REST와 원격 MCP는 같은 Keycloak access token을
-`Authorization: Bearer <token>`으로 받을 수 있습니다.
+화면에서 제어합니다. 원격 MCP의 Keycloak OAuth는 별도 MCP client와 audience를 설정하고
+관리자가 활성화할 때 사용할 수 있습니다. 기존 API Key는 유지하며, 새 OAuth 연동은 MCP 전용입니다.
+자세한 [Keycloak MCP OAuth 설정·폐쇄망 운영 안내](docs/MCP_OAUTH.md)를 참고하세요.
 
 ```bash
 POSTRA_BOOTSTRAP_ADMIN=admin \
@@ -167,6 +168,7 @@ POSTRA_ALLOW_INSECURE_MAIL=true ./postra serve
 
 - **로컬(stdio)**: `postra mcp` — Claude Code 등 로컬 MCP 클라이언트에 연결
 - **원격(Streamable HTTP)**: `postra serve` 의 `http://127.0.0.1:8480/mcp`. REST·Web UI와 같은 포트를 사용하며 비로컬 인터페이스 바인딩 시 `POSTRA_API_TOKEN` 을 요구합니다. 기존 배포 호환용 별도 리스너가 필요할 때만 `mcp_http_addr`/`POSTRA_MCP_HTTP_ADDR`를 설정하세요.
+- **Keycloak OAuth(선택)**: 기존 API Key와 병행합니다. 관리자 MCP 설정에서 활성화하고, 웹 SSO로 먼저 연결된 사용자가 사전 등록된 MCP client로 인증합니다. [설정·클라이언트 호환·토큰 폐기 한계](docs/MCP_OAUTH.md)
 
 주요 **도구(Tools)**: `mail_account_*`, `secret_registration_begin`, `mail_sync_start`, `job_status`, `mail_search`, `mail_hybrid_search`, `mail_work_inbox`, `mail_message_get`, `mail_thread_get`, `mail_thread_timeline`, `mail_batch_update`, `mail_summarize` / `mail_classify` / `mail_action_items_extract` / `mail_phishing_inspect` / `mail_auth_inspect` / `mail_question_answer`, `mail_embeddings_build`, `mail_semantic_search`, `mail_rules_list` / `mail_rule_create` / `mail_rule_update` / `mail_rule_delete` / `mail_apply_rules`, `mail_draft_create`, `mail_draft_rewrite`, `mail_send_preview`, `mail_send_request_approval`, `mail_send`, `mail_local_delete`, `mail_server_delete_preview`, `mail_server_delete_request_approval`, `mail_server_delete`, `mail_audit_search`.
 

@@ -46,7 +46,7 @@ func (a *App) NotificationEvents(ctx context.Context) (*NotificationSnapshot, er
 	if !ok || principal.UserID == "" {
 		return nil, &domain.PublicError{Code: "authentication_required", Message: "로그인이 필요합니다.", Status: 401}
 	}
-	if principal.AuthMethod == "mcp_key" {
+	if principal.IsMCPScoped() {
 		if err := a.CheckMCPToolPolicy(ctx, "mail_events"); err != nil {
 			return nil, err
 		}

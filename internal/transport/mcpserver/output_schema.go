@@ -169,19 +169,22 @@ type capabilitiesOutput struct {
 		Other       string   `json:"other"`
 		Overridable string   `json:"overridable"`
 	} `json:"access_model"`
-	Note              string            `json:"note"`
-	Scopes            []string          `json:"scopes"`
-	Aliases           map[string]string `json:"aliases"`
-	DefaultKeyScopes  []string          `json:"default_key_scopes"`
-	ApprovalFlow      []string          `json:"approval_flow"`
-	ErrorContract     []string          `json:"error_contract"`
-	Enabled           bool              `json:"enabled"`
-	HTTPEnabled       bool              `json:"http_enabled"`
-	Endpoint          string            `json:"endpoint"`
-	Permissions       map[string]bool   `json:"permissions"`
-	RequestTimeoutSec int               `json:"request_timeout_sec"`
-	GrantedScopes     []string          `json:"granted_scopes,omitempty"`
-	Principal         *domain.Principal `json:"principal,omitempty"`
+	Note               string                   `json:"note"`
+	Scopes             []string                 `json:"scopes"`
+	Aliases            map[string]string        `json:"aliases"`
+	DefaultKeyScopes   []string                 `json:"default_key_scopes"`
+	ApprovalFlow       []string                 `json:"approval_flow"`
+	ErrorContract      []string                 `json:"error_contract"`
+	Enabled            bool                     `json:"enabled"`
+	HTTPEnabled        bool                     `json:"http_enabled"`
+	Endpoint           string                   `json:"endpoint"`
+	ConfiguredEndpoint string                   `json:"configured_endpoint"`
+	PendingRestart     bool                     `json:"pending_restart"`
+	OAuth              application.MCPOAuthInfo `json:"oauth"`
+	Permissions        map[string]bool          `json:"permissions"`
+	RequestTimeoutSec  int                      `json:"request_timeout_sec"`
+	GrantedScopes      []string                 `json:"granted_scopes,omitempty"`
+	Principal          *domain.Principal        `json:"principal,omitempty"`
 }
 
 var inferredOutputSchemas = sync.OnceValues(func() (map[string]*jsonschema.Schema, error) {

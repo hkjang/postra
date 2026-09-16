@@ -306,6 +306,9 @@ func (a *App) adminSaveSettingsSnapshot(ctx context.Context, values map[string]s
 	if err := validateTrackingSettings(storedBefore, clean); err != nil {
 		return err
 	}
+	if err := a.validateMCPOAuthSettings(storedBefore, clean); err != nil {
+		return err
+	}
 	if oidcClientSecret != "" {
 		handle := domain.NewSecretHandle([]byte(oidcClientSecret))
 		ref, err := a.RegisterSecret(ctx, domain.SecretAPIKey, "OIDC client secret", handle)

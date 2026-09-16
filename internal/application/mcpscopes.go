@@ -54,12 +54,12 @@ func NormalizeMCPScopes(scopes []string) ([]string, error) {
 
 func CheckMCPScopes(ctx context.Context, required ...string) error {
 	p, ok := PrincipalFrom(ctx)
-	if !ok || p.AuthMethod != "mcp_key" {
+	if !ok || !p.IsMCPScoped() {
 		return nil
 	}
 	for _, scope := range required {
 		if !contains(p.MCPScopes, scope) {
-			return &domain.PublicError{Code: "insufficient_scope", Message: "이 MCP 키에 필요한 권한이 없습니다.", Status: 403, Details: map[string]any{"required_scopes": required}}
+			return &domain.PublicError{Code: "insufficient_scope", Message: "이 MCP 연결에 필요한 권한이 없습니다.", Status: 403, Details: map[string]any{"required_scopes": required}}
 		}
 	}
 	return nil
@@ -85,7 +85,7 @@ func (a *App) CheckMCPPermissionScopes(ctx context.Context, required ...string) 
 }
 
 func (a *App) checkMCPRuleActions(ctx context.Context, actions []domain.RuleAction) error {
-	if p, ok := PrincipalFrom(ctx); !ok || p.AuthMethod != "mcp_key" {
+	if p, ok := PrincipalFrom(ctx); !ok || !p.IsMCPScoped() {
 		return nil
 	}
 	for _, action := range actions {
@@ -97,8 +97,8 @@ func (a *App) checkMCPRuleActions(ctx context.Context, actions []domain.RuleActi
 }
 
 func (a *App) UpdateMCPKeyScopes(ctx context.Context, keyID string, scopes []string, admin bool) (*domain.MCPKey, error) {
-	if p, ok := PrincipalFrom(ctx); ok && p.AuthMethod == "mcp_key" {
-		return nil, &domain.PublicError{Code: "forbidden", Message: "MCP 키로 자격 증명 권한을 변경할 수 없습니다.", Status: 403}
+	if p, ok := PrincipalFrom(ctx); ok && p.IsMCPScoped() {
+		return nil, &domain.PublicError{Code: "forbidden", Message: "MCP 연결로 자격 증명 권한을 변경할 수 없습니다.", Status: 403}
 	}
 	if scopes == nil {
 		return nil, &domain.PublicError{Code: "invalid_request", Message: "scopes 배열을 명시하세요. 빈 배열은 모든 도구 권한을 제거합니다.", Status: 400}

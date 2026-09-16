@@ -4,13 +4,13 @@ import {QueryClient, QueryClientProvider} from '@tanstack/react-query'
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
 import {SessionContext, type Principal} from '@/app/session'
 import {api} from '@/api/client'
-import {MCPAdminPage, MCPKeysPage} from './index'
+import {MCPAdminPage, MCPKeysPanel} from './index'
 
 vi.mock('@/api/client', () => ({api: vi.fn()}))
 vi.mock('sonner', () => ({toast: {success: vi.fn(), error: vi.fn()}}))
 const mockedAPI = vi.mocked(api)
 const user: Principal = {user_id: 'u1', login_id: 'hong', display_name: '홍길동', role: 'user', auth_method: 'local'}
-function mount(node = <MCPKeysPage/>, principal = user) {
+function mount(node = <MCPKeysPanel/>, principal = user) {
   const query = new QueryClient({defaultOptions: {queries: {retry: false}, mutations: {retry: false}}})
   return render(<QueryClientProvider client={query}><SessionContext.Provider value={principal}>{node}</SessionContext.Provider></QueryClientProvider>)
 }

@@ -60,6 +60,7 @@ type App struct {
 	settingsWriteMu    sync.Mutex
 	startedMCPEndpoint string
 	startedSettings    map[string]string
+	mcpOAuthProvider   mcpOAuthProviderCache
 }
 
 func New(cfg config.Config, store Storage, objects objectstore.Store,

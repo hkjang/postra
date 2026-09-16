@@ -6,6 +6,7 @@ import {api} from '@/api/client'
 import {nullableList, parseResponse} from '@/api/response'
 import {useSession} from '@/app/session'
 import {Badge, Button, EmptyState, ErrorState, Input, Loading, PageHeader, Panel, Textarea} from '@/components/ui'
+import {MCPConnectionPanel} from './ConnectionPanel'
 
 const keysSchema = z.object({keys: nullableList(z.object({id: z.string(), user_id: z.string(), name: z.string(), key_prefix: z.string(), status: z.string(),
   scopes: nullableList(z.string()), legacy_scopes: z.boolean().optional(), last_used_at: z.number().optional(),
@@ -14,7 +15,9 @@ type MCPKey = z.output<typeof keysSchema>['keys'][number]
 function keyList(value: unknown) {
   return parseResponse(keysSchema, value)
 }
-interface Capabilities {enabled: boolean; http_enabled: boolean; endpoint: string; permissions: Record<string, boolean>; groups: Record<string, string[]>; aliases: Record<string, string>; request_timeout_sec: number}
+const capabilitiesSchema = z.object({enabled: z.boolean(), http_enabled: z.boolean(), endpoint: z.string(),
+  permissions: z.record(z.string(), z.boolean()), groups: z.record(z.string(), nullableList(z.string())), aliases: z.record(z.string(), z.string()), request_timeout_sec: z.number().int().nonnegative(),
+})
 const scopes = [
   ['mail.read', '메일 읽기'], ['mail.search', '검색'], ['mail.ai', 'AI 분석'], ['mail.draft', '초안·서식·서명'],
   ['mail.send', '승인된 메일 발송'], ['mail.delete', '메일 삭제'], ['mail.work', '분류·규칙·업무'], ['admin.read', '관리 정보 읽기'], ['admin.write', '관리 설정 변경'],
@@ -68,12 +71,19 @@ export function MCPKeysPanel({admin = false}: {admin?: boolean}) {
   </Panel>
 }
 
-export function MCPKeysPage() { return <div className="page stack"><PageHeader title="도구 연결·MCP 키" description="외부 AI 도구가 내 메일에 접근할 수 있는 범위를 관리합니다."/><MCPKeysPanel/></div> }
+export function MCPKeysPage() { return <div className="page stack"><PageHeader title="도구 연결·MCP 키" description="외부 AI 도구가 내 메일에 접근할 수 있는 범위를 관리합니다."/><MCPConnectionPanel/><MCPKeysPanel/></div> }
 
 function MCPAdminContents() {
-  const query = useQuery({queryKey: ['mcp-capabilities'], queryFn: ({signal}) => api<Capabilities>('/api/admin/mcp', {signal})})
+  const query = useQuery({queryKey: ['mcp-capabilities'], queryFn: async ({signal}) => parseResponse(capabilitiesSchema, await api<unknown>('/api/admin/mcp', {signal}))})
   const value = query.data
-  return <div className="stack"><PageHeader title="MCP 운영·권한" description="활성화 상태는 설정값입니다. 실제 연결과 발송 성공을 의미하지 않습니다." actions={<Button variant="outline" onClick={() => query.refetch()}>새로고침</Button>}/>{query.error ? <ErrorState error={query.error} retry={() => query.refetch()}/> : !value ? <Loading/> : <><Panel><div className="row"><Badge variant={value.enabled ? 'secondary' : 'outline'}>MCP {value.enabled ? '활성' : '비활성'}</Badge><Badge variant={value.http_enabled ? 'secondary' : 'outline'}>HTTP {value.http_enabled ? '허용' : '차단'}</Badge></div><p>HTTP Endpoint: <code>{value.endpoint}</code> · 요청 제한: {value.request_timeout_sec}초</p><p className="muted">원격 클라이언트에는 Endpoint와 별도로 발급한 Bearer 키를 설정하세요. 로컬 stdio는 <code>postra mcp</code>를 사용합니다. 키 원문을 대화나 설정 예제에 붙이지 마세요.</p></Panel><Panel><h2>조직 공통 허용 범위</h2><div className="grid">{scopes.map(([scope, label]) => <div className="row" key={scope}><span>{label}</span><Badge variant={value.permissions[scope] ? 'secondary' : 'outline'}>{value.permissions[scope] ? '허용' : '차단'}</Badge></div>)}</div><p className="small muted">조직 공통 설정, 키 권한, 사용자 역할 정책을 모두 통과해야 실행됩니다. 설정 변경은 관리자 MCP 설정에서 수행합니다.</p></Panel><Panel><h2>기능·도구 목록</h2>{Object.entries(value.groups).map(([group, tools]) => <details key={group}><summary>{group} ({tools.length})</summary><ul>{tools.map(tool => <li key={tool}><code>{tool}</code></li>)}</ul></details>)}<details><summary>호환 별칭</summary>{Object.entries(value.aliases).map(([alias, name]) => <p key={alias}><code>{alias}</code> → <code>{name}</code></p>)}</details><p className="small muted">클라이언트의 tools/list에서 JSON Schema, 부작용, 승인 필요 여부, 필수 권한과 예제를 조회할 수 있습니다. 긴 작업은 반환된 작업 ID로 상태를 확인하세요.</p></Panel></>}<MCPKeysPanel admin/></div>
+  return <div className="stack"><PageHeader title="MCP 운영·권한" description="활성화 상태는 설정값입니다. 실제 연결과 발송 성공을 의미하지 않습니다." actions={<Button variant="outline" onClick={() => query.refetch()}>새로고침</Button>}/>
+    <MCPConnectionPanel/>
+    {query.error ? <ErrorState error={query.error} retry={() => query.refetch()}/> : !value ? <Loading/> : <>
+      <Panel><div className="row"><Badge variant={value.enabled ? 'secondary' : 'outline'}>MCP {value.enabled ? '활성' : '비활성'}</Badge><Badge variant={value.http_enabled ? 'secondary' : 'outline'}>HTTP {value.http_enabled ? '허용' : '차단'}</Badge></div><p>요청 제한: {value.request_timeout_sec}초</p></Panel>
+      <Panel><h2>조직 공통 허용 범위</h2><div className="grid">{scopes.map(([scope, label]) => <div className="row" key={scope}><span>{label}</span><Badge variant={value.permissions[scope] ? 'secondary' : 'outline'}>{value.permissions[scope] ? '허용' : '차단'}</Badge></div>)}</div><p className="small muted">조직 공통 설정, 클라이언트 인증 권한, 사용자 역할 정책을 모두 통과해야 실행됩니다. 설정 변경은 관리자 MCP 설정에서 수행합니다.</p></Panel>
+      <Panel><h2>기능·도구 목록</h2>{Object.entries(value.groups).map(([group, tools]) => <details key={group}><summary>{group} ({tools.length})</summary><ul>{tools.map(tool => <li key={tool}><code>{tool}</code></li>)}</ul></details>)}<details><summary>호환 별칭</summary>{Object.entries(value.aliases).map(([alias, name]) => <p key={alias}><code>{alias}</code> → <code>{name}</code></p>)}</details><p className="small muted">클라이언트의 tools/list에서 JSON Schema, 부작용, 승인 필요 여부, 필수 권한과 예제를 조회할 수 있습니다. 긴 작업은 반환된 작업 ID로 상태를 확인하세요.</p></Panel>
+    </>}<MCPKeysPanel admin/>
+  </div>
 }
 
 export function MCPAdminPage() {

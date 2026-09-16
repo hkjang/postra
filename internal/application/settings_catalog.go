@@ -199,6 +199,10 @@ func buildSettingsDefinitions() []SettingDefinition {
 		{Key: "notifications.poll_seconds", Label: "알림 갱신 간격(초)", Category: "notifications", Type: "int", Default: "15", Scope: "admin", Apply: "live", Lockable: false},
 		{Key: "mcp.enabled", Label: "MCP 활성화", Category: "mcp", Type: "bool", Default: "true", Scope: "admin", Apply: "live", Lockable: false},
 		{Key: "mcp.http_enabled", Label: "HTTP MCP 활성화", Category: "mcp", Type: "bool", Default: "true", Scope: "admin", Apply: "live", Lockable: false},
+		{Key: "mcp.oauth.enabled", Label: "Keycloak OAuth MCP 활성화", Category: "mcp", Type: "bool", Default: "false", Scope: "admin", Apply: "live", Help: "기존 API 키와 병행합니다. 인증 및 SSO의 Keycloak Issuer를 사용하며, 사용자는 먼저 Postra에 SSO 로그인해야 합니다."},
+		{Key: "mcp.oauth.resource_url", Label: "OAuth MCP 공개 URL (Audience)", Category: "mcp", Type: "url", Scope: "admin", Apply: "live", Help: "예: https://postra.corp.local/mcp. Keycloak Audience mapper에도 정확히 같은 값을 등록하세요. HTTPS 필수(로컬 개발 예외)."},
+		{Key: "mcp.oauth.allowed_client_ids", Label: "OAuth 허용 Client ID", Category: "mcp", Type: "string", Scope: "admin", Apply: "live", Help: "쉼표로 구분합니다. 웹 SSO Client와 별도로 사전 등록한 MCP 클라이언트 ID만 허용하세요. PKCE S256 및 정확한 콜백 URL을 Keycloak에서 설정해야 합니다."},
+		{Key: "mcp.oauth.allowed_scopes", Label: "OAuth 허용 Scope", Category: "mcp", Type: "string", Default: "mail.read,mail.search", Scope: "admin", Apply: "live", Help: "쉼표로 구분합니다. 토큰의 scope 및 MCP 권한 정책과 교집합으로 적용합니다. mail.read, mail.search, mail.ai, mail.draft, mail.send, mail.delete, mail.work, admin.read, admin.write"},
 		{Key: "mcp.endpoint", Label: "MCP Endpoint", Category: "mcp", Type: "string", Default: "/mcp", Scope: "admin", Apply: "restart", Lockable: false},
 		{Key: "mcp.request_timeout_sec", Label: "MCP 요청 제한 시간(초)", Category: "mcp", Type: "int", Default: "120", Scope: "admin", Apply: "live", Lockable: false},
 		{Key: "mcp.session_timeout_sec", Label: "MCP 세션 제한 시간(초)", Category: "mcp", Type: "int", Default: "1800", Scope: "admin", Apply: "restart", Help: "진행 중인 발송과 MCP 세션을 보호하기 위해 재시작 후 적용합니다."},
@@ -389,11 +393,14 @@ func validateSetting(d SettingDefinition, value string) error {
 		return fail()
 	}
 	if d.Key == "mcp.endpoint" {
-		for _, reserved := range []string{"/metrics", "/healthz", "/readyz", "/livez", "/ui", "/tracking", "/momento", "/favicon.ico", "/favicon.png", "/logo.png"} {
+		for _, reserved := range []string{"/.well-known", "/metrics", "/healthz", "/readyz", "/livez", "/ui", "/tracking", "/momento", "/favicon.ico", "/favicon.png", "/logo.png"} {
 			if value == reserved || strings.HasPrefix(value, reserved+"/") {
 				return fail()
 			}
 		}
+	}
+	if err := validateMCPOAuthSetting(d.Key, value); err != nil {
+		return err
 	}
 	return nil
 }

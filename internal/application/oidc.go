@@ -311,12 +311,28 @@ func (a *App) AuthenticateOIDCAccessToken(ctx context.Context, raw string) (doma
 	if err != nil {
 		return domain.Principal{}, err
 	}
-	idToken, err := provider.Verifier(&oidc.Config{ClientID: rt.ClientID, SkipClientIDCheck: true}).Verify(ctx, raw)
+	idToken, err := provider.Verifier(&oidc.Config{ClientID: rt.ClientID}).Verify(ctx, raw)
 	if err != nil {
 		return domain.Principal{}, domain.ErrNotFound
 	}
 	var claims oidcClaims
 	if idToken.Claims(&claims) != nil || claims.Subject == "" || !tokenForClient(claims, rt.ClientID) {
+		return domain.Principal{}, domain.ErrNotFound
+	}
+	// This legacy REST credential is distinct from delegated MCP OAuth.
+	// In particular, never fall back to unrestricted user authority when a
+	// resource token fails the MCP verifier or contains multiple audiences.
+	var access keycloakAccessClaims
+	if idToken.Claims(&access) != nil || !access.valid() {
+		return domain.Principal{}, domain.ErrNotFound
+	}
+	for _, scope := range strings.Fields(access.Scope) {
+		if contains(MCPScopes, scope) {
+			return domain.Principal{}, domain.ErrNotFound
+		}
+	}
+	oauth := a.MCPOAuthConnection().OAuth
+	if contains(oauth.AllowedClientIDs, access.ClientID) || oauth.ResourceURL != "" && contains(idToken.Audience, oauth.ResourceURL) {
 		return domain.Principal{}, domain.ErrNotFound
 	}
 	u, err := a.Store.GetUserByOIDC(ctx, rt.Issuer, claims.Subject)
@@ -327,8 +343,8 @@ func (a *App) AuthenticateOIDCAccessToken(ctx context.Context, raw string) (doma
 }
 
 func tokenForClient(claims oidcClaims, clientID string) bool {
-	if claims.AuthorizedParty == clientID {
-		return true
+	if claims.AuthorizedParty != clientID {
+		return false
 	}
 	switch aud := claims.Audience.(type) {
 	case string:

@@ -442,7 +442,7 @@ func (s *Server) middleware(mux *http.ServeMux) http.Handler {
 		start := time.Now()
 		func() {
 			ctx := application.WithActor(r.Context(), "rest")
-			if !publicPath(r.URL.Path) && (s.app.Cfg.Auth.Enabled || s.apiToken != "") {
+			if !publicPath(r.URL.Path) && (s.app.Cfg.Auth.Enabled || s.apiToken != "" || len(r.Header.Values("Authorization")) > 0) {
 				principal, ok := s.authenticate(r)
 				if !ok {
 					writeJSON(rec, http.StatusUnauthorized, map[string]string{"error": "invalid or missing bearer token"})
@@ -462,7 +462,7 @@ func (s *Server) middleware(mux *http.ServeMux) http.Handler {
 					return
 				}
 			}
-			if principal, ok := application.PrincipalFrom(ctx); ok && principal.AuthMethod == "mcp_key" {
+			if principal, ok := application.PrincipalFrom(ctx); ok && principal.IsMCPScoped() {
 				if err := s.checkMCPRESTScope(ctx, route); err != nil {
 					writeErr(rec, err)
 					return

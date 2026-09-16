@@ -47,7 +47,7 @@ func (s *convergenceSMTP) Send(_ context.Context, options domain.SMTPSendOptions
 	return domain.SendReceipt{ServerResponse: "250 local test fake"}, nil
 }
 
-func convergenceApp(t *testing.T) (*application.App, context.Context, *convergenceSMTP) {
+func convergenceApp(t *testing.T, initialSettings ...map[string]string) (*application.App, context.Context, *convergenceSMTP) {
 	t.Helper()
 	dir := t.TempDir()
 	cfg := config.Default()
@@ -61,6 +61,11 @@ func convergenceApp(t *testing.T) (*application.App, context.Context, *convergen
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
+	for _, values := range initialSettings {
+		if err := store.UpsertSettings(context.Background(), values); err != nil {
+			t.Fatal(err)
+		}
+	}
 	local, err := objectstore.NewLocal(dir)
 	if err != nil {
 		t.Fatal(err)

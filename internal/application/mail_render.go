@@ -229,7 +229,7 @@ func renderRequested(format, template, signatureID, intent, tone, length, langua
 }
 
 func (a *App) checkComposeMCPScopes(ctx context.Context, scopes ...string) error {
-	if p, ok := PrincipalFrom(ctx); ok && p.AuthMethod == "mcp_key" {
+	if p, ok := PrincipalFrom(ctx); ok && p.IsMCPScoped() {
 		return a.CheckMCPPermissionScopes(ctx, scopes...)
 	}
 	return nil

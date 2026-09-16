@@ -22,7 +22,7 @@ type CreateActionCardInput struct {
 // CreateActionCard creates an explicitly requested, pending, local action. It
 // neither spends AI tokens nor registers anything in an external system.
 func (a *App) CreateActionCard(ctx context.Context, input CreateActionCardInput) (*domain.ActionCard, error) {
-	if p, ok := PrincipalFrom(ctx); ok && p.AuthMethod == "mcp_key" {
+	if p, ok := PrincipalFrom(ctx); ok && p.IsMCPScoped() {
 		if err := a.CheckMCPToolPolicy(ctx, "mail_action_card_create"); err != nil {
 			return nil, err
 		}

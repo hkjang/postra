@@ -117,6 +117,8 @@ export function SettingsEditor({admin = false, accountID, category, query: exter
       setValues({}); setLocks({}); setReset([]); setConfirm(false); setRevision(saved.revision)
       await cache.invalidateQueries({queryKey: ['preferences']})
       await cache.invalidateQueries({queryKey: ['operations']})
+      await cache.invalidateQueries({queryKey: ['mcp-capabilities']})
+      await cache.invalidateQueries({queryKey: ['mcp-connection']})
       toast.success('설정을 저장했습니다. 즉시 적용 항목은 다음 작업부터 반영됩니다.')
     } catch (err) {setError(err); setSecretReentry(Object.values(secrets).some(Boolean))}
     finally {setSecrets({}); setBusy(false); saving.current = false}

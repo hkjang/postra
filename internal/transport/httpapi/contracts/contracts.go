@@ -26,6 +26,8 @@ const schemaDialect = "https://json-schema.org/draft/2020-12/schema"
 // route. Adding/changing a Go field updates JSON Schema, OpenAPI and TypeScript.
 func Registry() map[string]reflect.Type {
 	return map[string]reflect.Type{
+		"MCPOAuthConnectionInfo":  reflect.TypeFor[application.MCPOAuthConnectionInfo](),
+		"MCPOAuthInfo":            reflect.TypeFor[application.MCPOAuthInfo](),
 		"SettingDefinition":       reflect.TypeFor[application.SettingDefinition](),
 		"EffectiveSetting":        reflect.TypeFor[application.EffectiveSetting](),
 		"SettingsView":            reflect.TypeFor[application.SettingsView](),

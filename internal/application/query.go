@@ -261,7 +261,7 @@ type BatchResult struct {
 // per-message result set (§P2 메일 UX 확장). Actions are explicit and
 // idempotent (mark_important vs unmark_important) so retries converge.
 func (a *App) BatchUpdateMessages(ctx context.Context, opts BatchUpdateOptions) (*BatchResult, error) {
-	if p, ok := PrincipalFrom(ctx); ok && p.AuthMethod == "mcp_key" && (opts.Action == BatchActionLegalHold || opts.Action == BatchActionLegalUnhold) {
+	if p, ok := PrincipalFrom(ctx); ok && p.IsMCPScoped() && (opts.Action == BatchActionLegalHold || opts.Action == BatchActionLegalUnhold) {
 		if !p.IsAdmin() {
 			return nil, &domain.PublicError{Code: "forbidden", Message: "법적 보존 정책 변경에는 관리자 권한이 필요합니다.", Status: 403}
 		}

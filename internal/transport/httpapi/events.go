@@ -77,14 +77,14 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 			checkCtx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 			checkRequest := r.WithContext(checkCtx)
 			principal, valid := s.eventPrincipal(checkRequest)
-			if !valid || principal.UserID != initial.UserID || principal.MCPKeyID != initial.MCPKeyID {
+			if !valid || principal.UserID != initial.UserID || principal.AuthMethod != initial.AuthMethod || principal.MCPKeyID != initial.MCPKeyID || principal.OAuthClientID != initial.OAuthClientID || principal.OAuthIssuer != initial.OAuthIssuer {
 				cancel()
 				_, failure := application.PublicError(r.Context(), &domain.PublicError{Code: "authentication_required", Message: "세션이 만료되었습니다. 다시 로그인하세요.", Status: 401})
 				writeEvent("session_expired", failure)
 				return
 			}
 			checkCtx = application.WithPrincipal(checkCtx, principal)
-			if principal.AuthMethod == "mcp_key" {
+			if principal.IsMCPScoped() {
 				if err := s.app.CheckMCPToolPolicy(checkCtx, "mail_events"); err != nil {
 					cancel()
 					_, failure := application.PublicError(r.Context(), err)
