@@ -272,6 +272,47 @@ Keycloak에 새 `https://<host>/auth/oidc/callback` URI를 먼저 추가하고 P
 
 사용자·메일·초안·KEK는 그대로 보존합니다. 관리자도 다른 사람의 메일을 열 수 없고, 이전 소유자의 데이터 정리는 별도 관리자 purge 확인 흐름을 사용합니다. [전체 이전 안내](REACT_WORKSPACE.md)와 [기능/보안 회귀 기록](LEGACY_PARITY.md)을 확인하세요.
 
+### 6.5 사내 SMTP 릴레이 알림 메일 (MAIL-STANDARD)
+
+사람이 실제로 기다리는 일이 생기면 사내 SMTP 릴레이로 알림 메일을 보냅니다. **기본은 꺼짐**이라 새로 설치한 곳은 아무것도 달라지지 않습니다. 메일은 항상 **배경에서** 보내므로 릴레이가 느리거나 죽어 있어도 그 요청(배정, 발송, 동기화, 기한 확인)은 평소대로 끝나고, 시도마다 발송 기록에 성공·실패가 남습니다(본문은 남기지 않음). 받는 주소는 별도 명부 없이 **사용자 계정의 이메일**을 그대로 씁니다.
+
+보내는 이벤트(관리자가 종류별로 끌 수 있고, 받는 사람도 개인 알림 설정의 같은 범주로 끌 수 있음):
+
+| 이벤트 | 받는 사람 | 언제 | 개인 설정 범주 |
+|---|---|---|---|
+| `send_failed` | 보낸 사람 | 발송이 재시도까지 끝나 `failed`/`uncertain`으로 멈췄을 때 | `notifications.send` |
+| `assigned` | 배정된 사람(로그인 ID) | 팀 메일함에서 담당자로 배정됐을 때. 자기 자신에게 배정하면 보내지 않음 | `notifications.action` |
+| `sync_credential_error` | 계정 소유자 | 메일 서버가 로그인을 거부해 자동 수집이 멈췄을 때 | `notifications.sync` |
+| `incident` | 활성 관리자 전원 | **새** 심각(critical) 장애가 기록됐을 때. 같은 장애의 반복은 한 번만 | `notifications.security` |
+| `sla_due` | 담당자(로그인 ID) | 팀 메일함의 처리 기한이 **24시간 안**으로 들어왔을 때 한 번, **지났을 때** 한 번 더. 리더 노드가 5분마다 확인하고 한 사람의 여러 건은 한 통으로 묶음. 완료 처리하거나 기한을 바꾸면 다시 셈 | `notifications.action` |
+
+설정은 `/app/admin?category=notifications`(운영 콘솔 → 알림)에 있으며 키 이름은 사내 다른 서비스와 같습니다.
+
+| 키 | 기본값 | 뜻 |
+|---|---|---|
+| `mail.enabled` | `false` | 꺼짐이 기본. 관리자가 켭니다 |
+| `mail.smtp_host` | — | 사내 릴레이 주소. 폐쇄망이면 이 Postra 자체를 가리켜도 됩니다 |
+| `mail.smtp_port` | `25` | 사내 릴레이는 대개 25 |
+| `mail.security` | `auto` | `auto` · `none` · `starttls` · `tls`. `auto`는 서버가 STARTTLS를 알리면 쓰고 아니면 평문, 465 포트는 자동으로 `tls` |
+| `mail.skip_tls_verify` | `false` | 사내 인증서가 사설일 때만 |
+| `mail.username` · `mail.password` | 빈 값 | 인증 없는 릴레이가 흔하므로 **선택 사항**. 비밀번호는 쓰기 전용이며 SecretStore 참조로만 저장돼 화면·API·감사 로그에 "등록됨"만 보입니다 |
+| `mail.from_address` · `mail.from_name` | —, `Postra` | 보내는 사람. 주소를 비우면 `postra@<릴레이 호스트>` |
+| `mail.base_url` | — | 메일 속 "바로 열기" 링크가 가리킬 이 앱의 공개 주소. 비우면 링크를 넣지 않음 |
+| `mail.timeout_seconds` | `10` | 릴레이 연결·응답 제한 시간 |
+| `mail.notify_<이벤트>` | `true` | 위 표의 이벤트 종류별 스위치 |
+
+켰지만 호스트가 비어 있는 등 설정이 모자라면 아무것도 보내지 않고 `notify-mail` 구성 요소의 경고 장애로 이유를 남깁니다.
+
+**시험 발송:** 같은 화면의 "알림 메일 발송 기록" 패널에서 받는 주소를 넣고(비우면 내 계정 주소) **시험 발송**을 누르면 저장된 설정으로 실제 한 통을 보내고 결과를 그 자리에 보여 줍니다. 릴레이 설정은 한 번에 맞는 일이 드무니 저장 → 시험 → 수정 순으로 확인하세요. 시험 발송도 기록에 남습니다.
+
+```bash
+# 발송 기록 (관리자)
+curl -H "Authorization: Bearer $TOKEN" "https://postra.example/api/admin/mail/deliveries?status=failed&limit=50"
+# 시험 발송 (recipient 를 비우면 내 계정 주소)
+curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"recipient":"ops@corp.local"}' https://postra.example/api/admin/mail/test
+```
+
 ---
 
 ## 7. 전체 릴리즈 이력 (Release History: v0.1.0 ~ v0.10.5)

@@ -7,6 +7,7 @@ import (
 
 	"postra/internal/adapters/persistence"
 	"postra/internal/domain"
+	"postra/internal/platform/notifymail"
 )
 
 // MessageCollabView is a message's collaboration state plus its internal notes.
@@ -67,6 +68,14 @@ func (a *App) AssignMessage(ctx context.Context, messageID, assignee string) (*d
 		return nil, err
 	}
 	a.audit(ctx, "collab_assign", "message:"+messageID, "ok", assignee)
+	if mc.Assignee != "" {
+		// "It is your turn" is worth a mail; clearing an assignment is not.
+		subject := "(제목 없음)"
+		if m, err := a.Store.GetMessage(ctx, userIDFrom(ctx), messageID); err == nil && strings.TrimSpace(m.Subject) != "" {
+			subject = m.Subject
+		}
+		a.NotifyMail(ctx, notifymail.Assigned(collabActor(ctx), subject, messageID), userIDFrom(ctx), []string{mc.Assignee})
+	}
 	return mc, nil
 }
 
@@ -88,7 +97,10 @@ func (a *App) SetMessageSLA(ctx context.Context, messageID string, dueUnix int64
 	if dueUnix < 0 || dueUnix > 253402300799 {
 		return nil, userErrf("처리 기한이 올바르지 않습니다")
 	}
-	result, err := a.mutateCollab(ctx, messageID, func(mc *domain.MessageCollab) { mc.SLADue = dueUnix })
+	result, err := a.mutateCollab(ctx, messageID, func(mc *domain.MessageCollab) {
+		// A new deadline is news again; the notifier starts over for it.
+		mc.SLADue, mc.SLANotifiedAt = dueUnix, 0
+	})
 	if err == nil {
 		a.audit(ctx, "collab_sla", "message:"+messageID, "ok", "")
 	}

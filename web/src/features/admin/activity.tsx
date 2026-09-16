@@ -62,3 +62,32 @@ export function AuditPanel() {
     {data === undefined ? !error && <Loading /> : !data?.length ? <EmptyState title="감사 기록이 없습니다" /> : <div style={{ overflowX: 'auto' }}><table className="table"><thead><tr><th>시각</th><th>작업</th><th>대상</th><th>실행 주체</th><th>결과</th></tr></thead><tbody>{data.map(event => <tr key={event.id}><td>{date(event.at)}</td><td>{event.action}{event.detail && <details><summary>상세</summary><p style={{ overflowWrap: 'anywhere' }}>{event.detail}</p></details>}</td><td>{event.resource}</td><td>{event.actor}</td><td><Badge variant={event.result === 'error' || event.result === 'denied' ? 'destructive' : 'secondary'}>{({ ok: '정상', denied: '거부', error: '오류' } as Record<string, string>)[event.result] || event.result}</Badge></td></tr>)}</tbody></table></div>}
   </Panel>;
 }
+
+interface MailDelivery { id: string; event: string; recipient: string; subject: string; status: string; attempts: number; error?: string; created_at: number; updated_at: number }
+interface MailDeliveryPage { items: MailDelivery[]; summary: { total: number; status: Record<string, number> } }
+const deliveryEvents: Record<string, string> = { send_failed: '발송 실패로 멈춤', assigned: '담당 배정', sync_credential_error: '수집 인증 실패', incident: '심각 장애', sla_due: '담당 기한 임박·초과', test: '시험 발송' };
+const deliveryStates: Record<string, string> = { queued: '대기', sent: '보냄', failed: '실패' };
+// The relay notification log and the test button (MAIL-STANDARD). A test sends
+// one real message with the *saved* settings and shows the outcome here,
+// because a relay is rarely right first time.
+export function MailNotificationsPanel() {
+  const [status, setStatus] = useState('');
+  const { data, error, setError, reload } = useResource<MailDeliveryPage>(`/api/admin/mail/deliveries?limit=100&status=${status}`);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; message: string }>();
+  async function sendTest(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const recipient = String(new FormData(e.currentTarget).get('recipient') || '').trim();
+    setBusy(true); setError(undefined); setResult(undefined);
+    try { setResult(await api('/api/admin/mail/test', { method: 'POST', body: { recipient } })); reload(); }
+    catch (err) { setError(err); } finally { setBusy(false); }
+  }
+  return <div className="stack"><div className="row"><h2>알림 메일 발송 기록</h2><Button variant="outline" onClick={reload}>새로고침</Button></div>
+    <Panel><form className="row" onSubmit={sendTest}><Field label="시험 발송 받는 주소" hint="비우면 내 계정의 메일 주소로 보냅니다. 저장된 설정으로 실제 한 통을 보냅니다."><Input name="recipient" aria-label="시험 발송 받는 주소" type="email" placeholder="me@corp.local" disabled={busy} /></Field><Button type="submit" variant="outline" disabled={busy}>{busy ? '보내는 중…' : '시험 발송'}</Button></form>
+      {result && <p role="status"><Badge variant={result.ok ? 'secondary' : 'destructive'}>{result.ok ? '발송 성공' : '발송 실패'}</Badge> {result.message}</p>}</Panel>
+    {!!error && <ErrorState error={error} retry={reload} />}
+    {data && <p className="muted">전체 {data.summary.total}건 · 보냄 {data.summary.status.sent || 0} · 실패 {data.summary.status.failed || 0} · 대기 {data.summary.status.queued || 0}</p>}
+    <Field label="상태"><select className="input" value={status} onChange={e => setStatus(e.target.value)}><option value="">전체</option><option value="sent">보냄</option><option value="failed">실패</option><option value="queued">대기</option></select></Field>
+    {!data ? !error && <Loading /> : !data.items.length ? <EmptyState title="발송 기록이 없습니다" /> : <div style={{ overflowX: 'auto' }}><table className="table"><thead><tr><th>시각</th><th>이벤트</th><th>받는 사람</th><th>제목</th><th>결과</th></tr></thead><tbody>{data.items.map(item => <tr key={item.id}><td>{date(item.created_at)}</td><td>{deliveryEvents[item.event] || item.event}</td><td>{item.recipient}</td><td>{item.subject}</td><td><Badge variant={item.status === 'failed' ? 'destructive' : item.status === 'sent' ? 'secondary' : 'outline'}>{deliveryStates[item.status] || item.status}</Badge> {item.attempts > 1 && <span className="muted">{item.attempts}회 시도</span>}{item.error && <details><summary>오류</summary><p style={{ overflowWrap: 'anywhere' }}>{item.error}</p></details>}</td></tr>)}</tbody></table></div>}
+  </div>;
+}

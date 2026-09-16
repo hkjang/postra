@@ -566,6 +566,7 @@ func serve(configPath string) error {
 	go app.RunRetryWorker(schedCtx)
 	go app.RunIdleWorker(schedCtx)
 	go app.RunJobReaper(schedCtx)
+	go app.RunSLANotifier(schedCtx)
 	go app.RunEmbeddingWorker(schedCtx)
 	go app.RunTriageWorker(schedCtx)
 	go app.RunDigestWorker(schedCtx)

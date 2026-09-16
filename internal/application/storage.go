@@ -16,6 +16,8 @@ type Storage interface {
 
 	// System incident tracking (major errors captured for admin reporting).
 	domain.IncidentStore
+	// Relay notification log (what left the building, and whether it did).
+	domain.MailDeliveryStore
 
 	EnsureUser(ctx context.Context, id, loginID string) error
 	CreateUser(ctx context.Context, user *domain.User, passwordHash string) error
@@ -113,6 +115,12 @@ type Storage interface {
 	UpsertMessageCollab(ctx context.Context, mc *domain.MessageCollab) error
 	GetMessageCollab(ctx context.Context, userID, messageID string) (*domain.MessageCollab, error)
 	ListMessageCollab(ctx context.Context, userID, status, assignee string, limit int) ([]domain.MessageCollab, error)
+	// ListSLADueCollab returns assigned, unfinished messages across every
+	// scope whose deadline is at or before `before` and whose assignee has
+	// not been told since that deadline was set (sla_notified_at < sla_due).
+	ListSLADueCollab(ctx context.Context, before int64, limit int) ([]domain.MessageCollab, error)
+	// MarkSLANotified records when the assignee was mailed about the deadline.
+	MarkSLANotified(ctx context.Context, messageID string, at int64) error
 	AddMessageNote(ctx context.Context, n *domain.MessageNote) error
 	ListMessageNotes(ctx context.Context, userID, messageID string) ([]domain.MessageNote, error)
 

@@ -17,3 +17,7 @@ go test -race ./internal/application ./internal/transport/httpapi -run 'Test(Not
 cd web
 npm test -- --run src/features/notifications/notifications.test.tsx
 ```
+
+## 사내 SMTP 릴레이 메일 알림
+
+브라우저 알림과 별도로, 사람이 실제로 기다리는 다섯 가지 일(발송 실패로 멈춤, 담당 배정, 수집 인증 실패, 새 심각 장애, 담당 메일 기한 임박·초과)은 관리자가 `mail.enabled`를 켜면 사내 SMTP 릴레이로도 보냅니다. 기한 알림은 리더 노드가 5분마다 확인해 담당자마다 한 통으로 묶고, 임박 때 한 번·지난 뒤 한 번만 보냅니다. 기본은 꺼짐이며, 개인 알림 범주(`notifications.send`·`action`·`sync`·`security`)를 끈 사용자에게는 보내지 않습니다. 설정 표와 시험 발송은 [관리자 가이드 6.5](ADMIN_GUIDE.md#65-사내-smtp-릴레이-알림-메일-mail-standard)를 보세요.
