@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createMemoryRouter, Outlet, RouterProvider } from 'react-router-dom'
 import { api, APIError } from '@/api/client'
+import { InvalidResponseError } from '@/api/response'
 import { App } from './App'
 
 vi.mock('@/api/client', async importOriginal => {
@@ -30,7 +31,23 @@ function mount() {
 }
 
 describe('session background refresh recovery', () => {
-  it.each([new TypeError('Failed to fetch'), new APIError('서버가 재기동 중입니다', 503)])('preserves local editor state on transient refresh failure: %s', async error => {
+  it.each(['unauthorized', 'signed_out'])('immediately removes private content on %s even if session revalidation fails', async kind => {
+    mockAPI.mockResolvedValueOnce(loggedIn)
+    const client = mount()
+    fireEvent.change(await screen.findByRole('textbox', {name: '작성 중인 본문'}), {target: {value: '인증 만료 후 숨길 내용'}})
+    let fail!: (error: Error) => void
+    mockAPI.mockImplementationOnce(() => new Promise((_resolve, reject) => {fail = reject}))
+    act(() => {window.dispatchEvent(kind === 'unauthorized' ? new Event('postra:unauthorized') : new StorageEvent('storage', {key: 'postra-auth-change', newValue: '123:signed_out'}))})
+    await waitFor(() => expect(screen.queryByRole('textbox', {name: '작성 중인 본문'})).not.toBeInTheDocument())
+    await act(async () => {fail(new APIError('재검증 서버 장애', 503))})
+    await screen.findByText('재검증 서버 장애')
+    expect(screen.queryByText('서버 연결을 확인하지 못했습니다. 작성 중인 내용은 유지됩니다.')).not.toBeInTheDocument()
+    mockAPI.mockResolvedValueOnce(loggedIn)
+    await act(async () => {await client.invalidateQueries({queryKey: ['session']})})
+    expect(await screen.findByRole('textbox', {name: '작성 중인 본문'})).toHaveValue('')
+  })
+
+  it.each([new TypeError('Failed to fetch'), new APIError('서버가 재기동 중입니다', 503), new InvalidResponseError()])('preserves local editor state on transient refresh failure: %s', async error => {
     mockAPI.mockResolvedValueOnce(loggedIn)
     const client = mount()
     const editor = await screen.findByRole('textbox', { name: '작성 중인 본문' })
@@ -53,6 +70,23 @@ describe('session background refresh recovery', () => {
     expect(screen.queryByDisplayValue('아직 저장하지 않은 중요한 메일')).not.toBeInTheDocument()
   })
 
+  it.each([null, {}, {...loggedIn, principal: null}, {...loggedIn, authenticated: 'yes'}])('does not open the workspace on a malformed initial session: %j', async payload => {
+    mockAPI.mockResolvedValueOnce(payload)
+    mount()
+    expect(await screen.findByRole('alert')).toHaveTextContent('서버 응답 형식을 확인할 수 없습니다')
+    expect(screen.queryByRole('textbox', {name: '작성 중인 본문'})).not.toBeInTheDocument()
+  })
+
+  it('retains unsaved content if a background session response has a malformed shape', async () => {
+    mockAPI.mockResolvedValueOnce(loggedIn)
+    const client = mount()
+    fireEvent.change(await screen.findByRole('textbox', {name: '작성 중인 본문'}), {target: {value: '보존할 본문'}})
+    mockAPI.mockResolvedValueOnce(null)
+    await act(async () => {await client.invalidateQueries({queryKey: ['session']})})
+    await screen.findByText('서버 연결을 확인하지 못했습니다. 작성 중인 내용은 유지됩니다.')
+    expect(screen.getByRole('textbox', {name: '작성 중인 본문'})).toHaveValue('보존할 본문')
+  })
+
   it('removes private editor state after explicit authentication failure', async () => {
     mockAPI.mockResolvedValueOnce(loggedIn)
     const client = mount()
@@ -61,6 +95,13 @@ describe('session background refresh recovery', () => {
     await act(async () => { await client.invalidateQueries({ queryKey: ['session'] }) })
     await screen.findByText('인증이 만료되었습니다')
     expect(screen.queryByRole('textbox', { name: '작성 중인 본문' })).not.toBeInTheDocument()
+    mockAPI.mockRejectedValueOnce(new APIError('다시 확인 실패', 503))
+    await act(async () => {await client.invalidateQueries({queryKey: ['session']})})
+    await screen.findByText('다시 확인 실패')
+    expect(screen.queryByRole('textbox', {name: '작성 중인 본문'})).not.toBeInTheDocument()
+    mockAPI.mockResolvedValueOnce(loggedIn)
+    await act(async () => {await client.invalidateQueries({queryKey: ['session']})})
+    expect(await screen.findByRole('textbox', {name: '작성 중인 본문'})).toHaveValue('')
   })
 
   it('does not reuse local component state after another identity signs in', async () => {

@@ -5,7 +5,8 @@ import {CalendarDays, CheckSquare, Download, Plus, UserRound} from 'lucide-react
 import {toast} from 'sonner'
 import {api} from '@/api/client'
 import {Badge, Button, EmptyState, ErrorState, Input, Loading, PageHeader, Panel, Textarea} from '@/components/ui'
-import {actionGroup, actionGroups, type ActionCard, type ActionGroup} from './grouping'
+import {actionGroup, actionGroups, type ActionGroup} from './grouping'
+import {parseActionCards} from './response'
 
 const states: Record<string, string> = {pending: '검토 대기', approved: '승인됨', done: '완료', rejected: '제외됨', exported: '내보냄'}
 export function ActionsPage() {
@@ -14,7 +15,8 @@ export function ActionsPage() {
   const [status, setStatus] = useState('')
   const [group, setGroup] = useState<ActionGroup | ''>('')
   const cache = useQueryClient()
-  const cards = useQuery({queryKey: ['action-cards', status], queryFn: ({signal}) => api<{cards: ActionCard[]}>(`/api/action-cards?limit=200&status=${status}`, {signal})})
+  const cards = useQuery({queryKey: ['action-cards', status], queryFn: async ({signal}) => parseActionCards(await api(`/api/action-cards?limit=200&status=${status}`, {signal}))})
+  const actionCards = cards.data?.cards ?? []
   const update = useMutation({mutationFn: ({id, status}: {id: string; status: string}) => api(`/api/action-cards/${encodeURIComponent(id)}/status`, {body: {status}}), onSuccess: () => {void cache.invalidateQueries({queryKey: ['action-cards']}); toast.success('액션 상태를 저장했습니다.')}, onError: error => toast.error(error.message)})
   const exportCard = useMutation({mutationFn: (id: string) => api(`/api/action-cards/${encodeURIComponent(id)}/export`, {body: {target: 'calendar'}}), onSuccess: result => {
     const url = URL.createObjectURL(new Blob([JSON.stringify(result, null, 2)], {type: 'application/json'}))
@@ -25,9 +27,9 @@ export function ActionsPage() {
   return <div className="page"><PageHeader title="액션 센터" description="기한별 업무를 확인하고 원본 메일에 연결한 액션을 직접 만들거나 검토하세요." actions={<Button onClick={() => setCreating(value => !value)}><Plus size={16}/>액션 만들기</Button>}/>
     {creating && <CreateActionForm messageID={params.get('message') || ''} onClose={() => setCreating(false)}/>}
     <label className="field">승인·완료 상태<select className="input" value={status} onChange={event => setStatus(event.target.value)}><option value="">모든 상태</option>{Object.entries(states).map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select></label>
-    <div className="tabs" aria-label="액션 기한 분류"><button className={!group ? 'active' : ''} onClick={() => setGroup('')}>전체</button>{actionGroups.map(item => <button key={item.id} className={group === item.id ? 'active' : ''} onClick={() => setGroup(item.id)}>{item.label} ({cards.data?.cards.filter(card => actionGroup(card, now) === item.id).length || 0})</button>)}</div>
-    {cards.isPending ? <Loading/> : cards.error ? <ErrorState error={cards.error} retry={() => cards.refetch()}/> : !cards.data?.cards?.length ? <EmptyState title="아직 등록된 액션이 없습니다" description="직접 액션을 만들거나 메일의 AI Insight에서 추출하세요."/> : actionGroups.filter(item => !group || group === item.id).map(item => {
-      const selected = cards.data.cards.filter(card => actionGroup(card, now) === item.id)
+    <div className="tabs" aria-label="액션 기한 분류"><button className={!group ? 'active' : ''} onClick={() => setGroup('')}>전체</button>{actionGroups.map(item => <button key={item.id} className={group === item.id ? 'active' : ''} onClick={() => setGroup(item.id)}>{item.label} ({actionCards.filter(card => actionGroup(card, now) === item.id).length})</button>)}</div>
+    {cards.isPending ? <Loading/> : cards.error ? <ErrorState error={cards.error} retry={() => cards.refetch()}/> : !actionCards.length ? <EmptyState title="아직 등록된 액션이 없습니다" description="직접 액션을 만들거나 메일의 AI Insight에서 추출하세요."/> : actionGroups.filter(item => !group || group === item.id).map(item => {
+      const selected = actionCards.filter(card => actionGroup(card, now) === item.id)
       return <section className="stack" aria-label={item.label} key={item.id}><h2>{item.label}</h2>{!selected.length ? <p className="muted">해당 액션이 없습니다.</p> : <div className="action-grid">{selected.map(card => <article className="action-item" key={card.id}>
         <div className="row between"><Badge variant="secondary">{card.type === 'meeting' ? '일정' : card.type === 'approval' ? '승인' : '할 일'}</Badge><Badge>{states[card.status] || '상태 확인 필요'}</Badge></div><h2>{card.title}</h2>{card.detail && <p className="muted pre-wrap">{card.detail}</p>}
         <div className="stack small">{card.due && <span className="row"><CalendarDays size={14}/>{card.due}</span>}{card.assignee && <span className="row"><UserRound size={14}/>{card.assignee}</span>}<Link to={`/mail?message=${encodeURIComponent(card.message_id)}`}>원본 메일 보기 →</Link><Link to={`/team?message=${encodeURIComponent(card.message_id)}`}>SLA·담당자·메모 관리 →</Link></div>

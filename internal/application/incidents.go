@@ -103,7 +103,7 @@ func (a *App) AdminListIncidents(ctx context.Context, f domain.IncidentFilter) (
 	for i := range incidents {
 		incidents[i] = *safeIncidentDiagnostic(&incidents[i])
 	}
-	return incidents, err
+	return listResult(incidents, err)
 }
 
 func (a *App) AdminIncidentStats(ctx context.Context) (domain.IncidentStats, error) {

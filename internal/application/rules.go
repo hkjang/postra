@@ -17,7 +17,7 @@ import (
 // ---------- CRUD ----------
 
 func (a *App) ListRules(ctx context.Context) ([]domain.MailRule, error) {
-	return a.Store.ListRules(ctx, userIDFrom(ctx))
+	return listResult(a.Store.ListRules(ctx, userIDFrom(ctx)))
 }
 
 func (a *App) GetRule(ctx context.Context, id string) (*domain.MailRule, error) {

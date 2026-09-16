@@ -10,7 +10,8 @@ import { ReceivedImages } from './ReceivedImages'
 import { CopyMCPContext } from './CopyMCPContext'
 import { registerMailCommands } from '@/lib/mail-commands'
 import {usePersonalPreferences} from '@/features/settings/preferences'
-import { addresses, mailDate, type DraftView, type MessageView } from './types'
+import { addresses, mailDate } from './types'
+import {batchResponse, createdDraftID, messageViewResponse} from './responses'
 import '../inbox/mail.css'
 
 export function MessagePane({ id, onClose }: { id: string; onClose?: () => void }) {
@@ -24,19 +25,19 @@ export function MessagePane({ id, onClose }: { id: string; onClose?: () => void 
   const actionInFlight = useRef(false)
   const imagesOnce = imageMessageID === id
   useEffect(() => setShowAI(aiDefault),[aiDefault])
-  const query = useQuery({ queryKey: ['message', id, imagesOnce], queryFn: ({ signal }) => api<MessageView>(`/api/messages/${encodeURIComponent(id)}${imagesOnce ? '?external_images=once' : ''}`, { signal }) })
+  const query = useQuery({ queryKey: ['message', id, imagesOnce], queryFn: ({ signal }) => api<unknown>(`/api/messages/${encodeURIComponent(id)}${imagesOnce ? '?external_images=once' : ''}`, { signal }).then(messageViewResponse) })
   const imageChoice = useMutation({
     mutationFn: ({scope,revoke}:{scope:'sender'|'domain';revoke:boolean}) => api<void>(`/api/messages/${encodeURIComponent(id)}/images/allow`,{method:revoke?'DELETE':'POST',body:{scope}}),
     onSuccess: () => { setImageMessageID(''); client.invalidateQueries({queryKey:['message',id]}); client.invalidateQueries({queryKey:['thread']}) },
   })
   const openedRead = useRef('')
   const reply = useMutation({
-    mutationFn: (kind: 'reply' | 'reply_all' | 'forward') => api<DraftView>('/api/drafts', { method: 'POST', body: { account_id: query.data?.message.account_id, kind, reply_to_message_id: id } }),
-    onSuccess: view => { client.setQueryData(['draft', view.draft.id], view); navigate(`/drafts/${view.draft.id}`) },
+    mutationFn: (kind: 'reply' | 'reply_all' | 'forward') => api<unknown>('/api/drafts', { method: 'POST', body: { account_id: query.data?.message.account_id, kind, reply_to_message_id: id } }).then(createdDraftID),
+    onSuccess: draftID => navigate(`/drafts/${encodeURIComponent(draftID)}`),
   })
   const update = useMutation({
     mutationFn: async (action: string) => {
-      const value = await api<{ failed: number; results: { error?: string }[] }>('/api/messages/batch', { method: 'POST', body: { message_ids: [id], action } })
+      const value = batchResponse(await api<unknown>('/api/messages/batch', { method: 'POST', body: { message_ids: [id], action } }))
       if (value.failed) throw new Error(value.results.find(x => x.error)?.error || '메일 상태를 변경하지 못했습니다.')
       return value
     },

@@ -26,4 +26,4 @@ export interface SendPreview {
   attachments?: DraftAttachment[];
 }
 export function addresses(values?: Address[]): string { return (values ?? []).map(x => x.name ? `${x.name} <${x.email}>` : x.email).join(', ') }
-export function mailDate(unix: number): string { return unix ? new Intl.DateTimeFormat('ko-KR', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(unix * 1000)) : '날짜 없음' }
+export function mailDate(unix: number): string { const date = new Date(unix * 1000); return unix && Number.isFinite(date.getTime()) ? new Intl.DateTimeFormat('ko-KR', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(date) : '날짜 없음' }

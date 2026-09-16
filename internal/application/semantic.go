@@ -346,7 +346,7 @@ func (a *App) HybridSearch(ctx context.Context, opts HybridSearchOptions) ([]Mes
 		return hitList[i].score > hitList[j].score
 	})
 
-	var out []MessageView
+	out := make([]MessageView, 0, len(hitList))
 	for _, hit := range hitList {
 		out = append(out, MessageView{
 			Message: messages[hit.mID],

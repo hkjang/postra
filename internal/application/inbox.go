@@ -35,7 +35,8 @@ func (a *App) WorkInbox(ctx context.Context, accountID string, limit int) (*Work
 		return nil, err
 	}
 	now := time.Now().Unix()
-	inbox := &WorkInbox{Account: accountID, Counts: map[string]int{}, GeneratedAt: now}
+	inbox := &WorkInbox{Account: accountID, Counts: map[string]int{}, GeneratedAt: now,
+		Important: []domain.Message{}, SnoozedDue: []domain.Message{}, Attention: []domain.Message{}, Reference: []domain.Message{}}
 	for _, m := range res.Messages {
 		switch {
 		case m.SnoozedUntil > 0 && m.SnoozedUntil <= now:

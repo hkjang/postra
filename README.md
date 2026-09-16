@@ -11,6 +11,8 @@ Go로 작성한 개인/사내 구축형 메일 서비스입니다. 사용자의 
 
 v0.20.0의 검색 가능한 운영 콘솔은 환경변수 초기값 위에 관리자 설정과 강제 정책을 적용합니다. 개인·계정 설정과 복수 서명도 웹에서 관리합니다. [설정 관리](docs/SETTINGS.md) · [HTML 메일](docs/MAIL_RENDERING.md) · [Ask Postra](docs/ASK_POSTRA.md) · [MCP 계약](docs/MCP_CONVERGENCE.md) · [API 스키마](docs/API_CONTRACTS.md) · [릴리즈 및 이전 주의사항](docs/releases/v0.20.0.md)
 
+최신 패치 [v0.20.1](docs/releases/v0.20.1.md)은 액션 센터와 빈 목록의 오류 처리, 메일 본문 링크 열기, 세션 만료 후 화면 복구를 개선합니다.
+
 ## 설계 핵심
 
 - **단일 비즈니스 코어** — REST·MCP·CLI 세 전송 계층이 모두 같은 `internal/application` 유스케이스를 호출합니다. 전송 계층에는 비즈니스 로직이 없습니다.

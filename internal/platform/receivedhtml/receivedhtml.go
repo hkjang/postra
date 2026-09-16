@@ -24,6 +24,7 @@ func buildPolicy() *bluemonday.Policy {
 	p := bluemonday.NewPolicy()
 	p.AllowElements("a", "b", "i", "u", "s", "em", "strong", "p", "br", "hr", "div", "span", "ul", "ol", "li", "blockquote", "pre", "code", "table", "caption", "thead", "tbody", "tfoot", "tr", "td", "th", "h1", "h2", "h3", "h4", "h5", "h6", "img")
 	p.AllowAttrs("href", "title").OnElements("a")
+	p.AllowAttrs("target").Matching(regexp.MustCompile(`^_blank$`)).OnElements("a")
 	p.AllowStandardURLs()
 	p.RequireNoFollowOnLinks(true)
 	p.RequireNoReferrerOnLinks(true)
@@ -43,6 +44,35 @@ func attr(node *html.Node, name string) string {
 		}
 	}
 	return ""
+}
+
+// A mail is not a website: relative links must not navigate authenticated
+// application routes. Keep only explicit web/mail links, and never inherit an
+// attacker-controlled target, ping, download or referrer attribute.
+func sanitizeLink(node *html.Node) {
+	raw := strings.TrimSpace(attr(node, "href"))
+	u, err := url.Parse(raw)
+	valid := err == nil && len(raw) <= 8192 && !strings.ContainsAny(raw, "\\\x00\r\n") && u.User == nil
+	if valid {
+		switch strings.ToLower(u.Scheme) {
+		case "http", "https":
+			valid = u.Host != ""
+		case "mailto":
+			valid = u.Opaque != ""
+		default:
+			valid = false
+		}
+	}
+	var clean []html.Attribute
+	for _, a := range node.Attr {
+		if a.Key == "title" || a.Key == "style" {
+			clean = append(clean, a)
+		}
+	}
+	if valid {
+		clean = append(clean, html.Attribute{Key: "href", Val: raw}, html.Attribute{Key: "target", Val: "_blank"})
+	}
+	node.Attr = clean
 }
 func remoteURL(raw string) string {
 	if len(raw) > 4096 || strings.ContainsAny(raw, "\\\x00\r\n") {
@@ -88,6 +118,10 @@ func Sanitize(input string) string {
 		return ""
 	}
 	walk(doc, func(node *html.Node) {
+		if node.Type == html.ElementNode && node.Data == "a" {
+			sanitizeLink(node)
+			return
+		}
 		if node.Type != html.ElementNode || node.Data != "img" {
 			return
 		}

@@ -2,7 +2,9 @@ import {useEffect, useRef, useState} from 'react'
 import {useQuery, useQueryClient} from '@tanstack/react-query'
 import {Link} from 'react-router-dom'
 import {toast} from 'sonner'
+import {z} from 'zod'
 import {api} from '@/api/client'
+import {InvalidResponseError, nullableList, parseResponse} from '@/api/response'
 import {useSession} from '@/app/session'
 import {Badge, ErrorState, Loading} from '@/components/ui'
 import {formatDate} from '@/lib/utils'
@@ -17,8 +19,19 @@ const snapshotKey = (userID?: string) => ['notifications', userID] as const
 const connectionKey = (userID?: string) => ['notification-connection', userID] as const
 const label = (event: NotificationItem) => `${categories[event.category]} · ${statuses[event.status] || '확인 필요'}`
 
+const snapshotSchema = z.object({user_id: z.string(), enabled: z.boolean(), poll_seconds: z.number(), preferences_revision: z.string().optional(),
+  events: nullableList(z.object({id: z.string(), category: z.enum(['sync', 'send', 'ai', 'action', 'security']), kind: z.string(), resource_id: z.string().optional(),
+    status: z.string().refine(value => Object.hasOwn(statuses, value)), at: z.number(),
+  })).refine(events => events.length <= 250),
+})
+function snapshotOf(value: unknown, userID: string): NotificationSnapshot {
+  const snapshot = parseResponse(snapshotSchema, value)
+  if (snapshot.user_id !== userID) throw new InvalidResponseError()
+  return snapshot
+}
+
 function snapshotOptions(userID?: string) {
-  return {queryKey: snapshotKey(userID), queryFn: ({signal}: {signal: AbortSignal}) => api<NotificationSnapshot>('/api/events?once=true', {signal}), enabled: Boolean(userID), retry: false as const}
+  return {queryKey: snapshotKey(userID), queryFn: async ({signal}: {signal: AbortSignal}) => snapshotOf(await api<unknown>('/api/events?once=true', {signal}), userID || ''), enabled: Boolean(userID), retry: false as const}
 }
 
 export function notificationChanges(previous: NotificationSnapshot | undefined, next: NotificationSnapshot): NotificationItem[] {
@@ -92,9 +105,10 @@ export function NotificationEvents() {
       if (!active) return
       try {
         const value: unknown = JSON.parse((event as MessageEvent<string>).data)
-        if (!validSnapshot(value, userID)) return
-        cache.setQueryData(snapshotKey(userID), value)
-      } catch {connection('interrupted')}
+        if (value && typeof value === 'object' && 'user_id' in value && value.user_id !== userID) return
+        const normalized = snapshotOf(value, userID)
+        cache.setQueryData(snapshotKey(userID), normalized)
+      } catch {source.close(); setConnected(false); connection('interrupted')}
     })
     source.addEventListener('session_expired', () => {
       if (!active) return

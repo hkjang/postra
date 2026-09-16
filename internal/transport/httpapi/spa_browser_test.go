@@ -21,6 +21,7 @@ import (
 	"postra/internal/domain"
 	"postra/internal/platform/config"
 	"postra/internal/platform/crypto"
+	"postra/internal/platform/receivedhtml"
 	"postra/internal/transport/spa"
 )
 
@@ -166,6 +167,29 @@ func TestSPABrowser(t *testing.T) {
 	if err := store.CreateAccount(ctx, &domain.MailAccount{ID: "acc_spa_other", UserID: other.ID, Name: "비공개 계정", Email: other.Email, Status: domain.AccountActive}); err != nil {
 		t.Fatal(err)
 	}
+	// These local sites stand in for clicked web links. They are never fetched
+	// until a human-equivalent click, and have no application cookies or data.
+	linkHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/landing" {
+			t.Errorf("unexpected link fixture request: %s", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		if r.Referer() != "" {
+			t.Error("clicked mail link leaked a Referer")
+		}
+		if _, err := r.Cookie("postra_session"); err == nil {
+			t.Error("clicked mail link leaked the workspace session")
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = io.WriteString(w, `<!doctype html><title>링크 도착</title><link rel="icon" href="data:,"><p>안전한 링크 테스트</p><script>document.title='LINK_OPENED'</script>`)
+	})
+	linkHTTP := httptest.NewServer(linkHandler)
+	linkHTTPS := httptest.NewTLSServer(linkHandler)
+	t.Cleanup(linkHTTP.Close)
+	t.Cleanup(linkHTTPS.Close)
+	linkHTTPURL := strings.Replace(linkHTTP.URL, "127.0.0.1", "localhost", 1)
+	linkHTTPSURL := strings.Replace(linkHTTPS.URL, "127.0.0.1", "localhost", 1)
 	now := time.Now()
 	for i, seed := range []struct {
 		id, userID, accountID, subject, text, sender string
@@ -176,6 +200,9 @@ func TestSPABrowser(t *testing.T) {
 		{"msg_spa_archived", u.ID, accountID, "지난주 진행 현황 공유", "지난주 계획한 업무를 완료했습니다. 검토해 주셔서 감사합니다.", "박수진", false, true},
 		{otherMessageID, other.ID, "acc_spa_other", privateSubject, "다른 사용자의 인사 평가 자료입니다. 관리자에게도 노출되어서는 안 됩니다.", "인사 담당", false, false},
 	} {
+		if seed.id == "msg_spa_important" {
+			seed.text += "\n" + linkHTTPURL + "/landing\n" + linkHTTPSURL + "/landing\nhelp@corp.local"
+		}
 		recipient := email
 		if seed.userID == other.ID {
 			recipient = otherEmail
@@ -187,6 +214,11 @@ func TestSPABrowser(t *testing.T) {
 		}
 		m := &domain.Message{ID: seed.id, UserID: seed.userID, AccountID: seed.accountID, UIDL: seed.id, MessageID: "<" + seed.id + "@corp.local>", Subject: seed.subject, From: domain.Address{Name: seed.sender, Email: "sender@corp.local"}, To: []domain.Address{{Email: recipient}}, Date: now.Add(-time.Duration(i) * time.Hour).Unix(), Size: size, RawHash: hash, RawURI: uri, ThreadID: "thr_" + seed.id, IsImportant: seed.important, IsArchived: seed.archived}
 		body := &domain.MessageBody{MessageID: seed.id, TextBody: seed.text, HTMLSanitized: "<h2>" + seed.subject + "</h2><p>" + seed.text + "</p>", Charset: "utf-8"}
+		if seed.id == messageID {
+			body.HTMLSanitized = receivedhtml.Sanitize(body.HTMLSanitized + `<a href="` + linkHTTPURL + `/landing" target="_top" rel="opener">HTTP 안내</a><a href="` + linkHTTPSURL + `/landing">HTTPS 안내</a><a href="mailto:help@corp.local?subject=Hello">메일 문의</a><a href="javascript:alert('unsafe')">위험 링크</a><img src="` + linkHTTPURL + `/tracking.png"><form action="` + linkHTTPURL + `/form"><button>전송 금지</button></form><script>parent.location='/unsafe'</script>`)
+		} else if seed.id == "msg_spa_important" {
+			body.HTMLSanitized = ""
+		}
 		if err := store.InsertMessage(ctx, m, body, nil); err != nil {
 			t.Fatal(err)
 		}
@@ -223,6 +255,7 @@ func TestSPABrowser(t *testing.T) {
 		"POSTRA_TEST_EMAIL="+email, "POSTRA_TEST_ACCOUNT_ID="+accountID, "POSTRA_TEST_MESSAGE_ID="+messageID,
 		"POSTRA_TEST_OTHER_MESSAGE_ID="+otherMessageID, "POSTRA_TEST_PRIVATE_SUBJECT="+privateSubject,
 		"POSTRA_TEST_OTHER_LOGIN="+otherLogin, "POSTRA_TEST_OTHER_PASSWORD="+otherPassword, "POSTRA_TEST_OTHER_EMAIL="+otherEmail,
+		"POSTRA_TEST_LINK_HTTP="+linkHTTPURL+"/landing", "POSTRA_TEST_LINK_HTTPS="+linkHTTPSURL+"/landing",
 		"POSTRA_TEST_DRAFT_ID="+draftID, "POSTRA_TEST_ACTION_ID="+actionID)
 	output, err := cmd.CombinedOutput()
 	// Even fixture credentials should not appear in failure logs.

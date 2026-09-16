@@ -29,3 +29,16 @@ it('moves and scrolls only across loaded search results, preserving filters and 
   act(() => { expect(dispatchMailCommand('previous')).toBe(true) }); await screen.findByText('상세 own1')
   view.unmount(); expect(dispatchMailCommand('next')).toBe(false); expect(dispatchMailCommand('previous')).toBe(false)
 })
+it.each(['keyword','semantic','hybrid'])('handles a null %s search collection without registering navigation to missing mail',async mode=>{
+  vi.mocked(api).mockResolvedValue(mode==='keyword'?{messages:null}:{results:null})
+  render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><MemoryRouter initialEntries={['/mail?q=empty&mode='+mode]}><InboxPage/></MemoryRouter></QueryClientProvider>)
+  await screen.findByText('검색 결과가 없습니다')
+  expect(dispatchMailCommand('next')).toBe(false);expect(dispatchMailCommand('previous')).toBe(false)
+})
+it.each(['keyword','semantic','hybrid'])('treats malformed %s search rows as an explicit error, not an empty inbox',async mode=>{
+  vi.mocked(api).mockResolvedValue(mode==='keyword'?{messages:[null]}:{results:[{message:null,secret:'PRIVATE_TOKEN'}]})
+  render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><MemoryRouter initialEntries={['/mail?q=empty&mode='+mode]}><InboxPage/></MemoryRouter></QueryClientProvider>)
+  expect(await screen.findByRole('alert')).toHaveTextContent('서버 응답 형식')
+  expect(document.body).not.toHaveTextContent('PRIVATE_TOKEN');expect(screen.queryByText('검색 결과가 없습니다')).toBeNull()
+  expect(dispatchMailCommand('next')).toBe(false)
+})

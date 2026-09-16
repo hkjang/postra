@@ -124,7 +124,7 @@ func portOr(p int, sec domain.Security, tlsDefault, plainDefault int) int {
 }
 
 func (a *App) ListAccounts(ctx context.Context) ([]domain.MailAccount, error) {
-	return a.Store.ListAccounts(ctx, userIDFrom(ctx))
+	return listResult(a.Store.ListAccounts(ctx, userIDFrom(ctx)))
 }
 
 func (a *App) GetAccount(ctx context.Context, id string) (*domain.MailAccount, error) {

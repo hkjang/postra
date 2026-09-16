@@ -2,17 +2,28 @@ import {useState} from 'react'
 import {Link} from 'react-router-dom'
 import {useInfiniteQuery, useMutation, useQueryClient} from '@tanstack/react-query'
 import {Plus, RefreshCw, Trash2} from 'lucide-react'
+import {z} from 'zod'
 import {api} from '@/api/client'
+import {nullableList, parseResponse} from '@/api/response'
 import {Badge, Button, EmptyState, ErrorState, Loading, PageHeader} from '@/components/ui'
-import {addresses, mailDate, type Address} from '@/features/messages/types'
+import {addresses, mailDate} from '@/features/messages/types'
 
-type DraftSummary = {id: string; account_id: string; status: string; current_version: number; updated_at: number; subject: string; to: Address[]; author: string}
-type DraftPage = {drafts: DraftSummary[]; next_cursor?: string}
+// Go slices can be null on the wire. Normalize only this legitimate empty
+// representation; malformed pages/items must remain visible query failures.
+const draftPageSchema = z.object({
+  drafts: nullableList(z.object({id: z.string(), account_id: z.string(), status: z.string(), current_version: z.number(), updated_at: z.number(), subject: z.string(), author: z.string(),
+    to: nullableList(z.object({email: z.string(), name: z.string().optional()})),
+  })),
+  next_cursor: z.string().optional(),
+})
+function draftPage(value: unknown) {
+  return parseResponse(draftPageSchema, value)
+}
 
 export function DraftsPage() {
   const cache = useQueryClient()
   const [status, setStatus] = useState('open')
-  const drafts = useInfiniteQuery({queryKey: ['drafts', status], initialPageParam: '', queryFn: ({pageParam, signal}) => api<DraftPage>(`/api/drafts?status=${status}&limit=50&cursor=${encodeURIComponent(pageParam)}`, {signal}), getNextPageParam: page => page.next_cursor || undefined})
+  const drafts = useInfiniteQuery({queryKey: ['drafts', status], initialPageParam: '', queryFn: async ({pageParam, signal}) => draftPage(await api<unknown>(`/api/drafts?status=${status}&limit=50&cursor=${encodeURIComponent(pageParam)}`, {signal})), getNextPageParam: page => page.next_cursor || undefined})
   const discard = useMutation({mutationFn: (id: string) => api(`/api/drafts/${encodeURIComponent(id)}`, {method: 'DELETE'}), onSuccess: (_, id) => {cache.removeQueries({queryKey: ['draft', id]}); void cache.invalidateQueries({queryKey: ['drafts']})}})
   const rows = drafts.data?.pages.flatMap(page => page.drafts) ?? []
   return <div className="page"><PageHeader title="저장된 초안" description="서버에 저장된 내 초안입니다. 다른 브라우저에서도 이어서 작성할 수 있습니다." actions={<><Button variant="outline" onClick={() => drafts.refetch()}><RefreshCw size={16}/>새로고침</Button><Button asChild><Link to="/compose"><Plus size={16}/>새 메일 작성</Link></Button></>}/>

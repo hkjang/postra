@@ -46,6 +46,7 @@ func (a *App) Search(ctx context.Context, q domain.SearchQuery) (*domain.SearchR
 	if err != nil {
 		return nil, err
 	}
+	result.Messages = nilToEmpty(result.Messages)
 	ids := make([]string, 0, len(result.Messages))
 	for _, message := range result.Messages {
 		ids = append(ids, message.ID)
@@ -149,7 +150,7 @@ func (a *App) ListAttachments(ctx context.Context, messageID string) ([]domain.A
 	if _, err := a.Store.GetMessage(ctx, userIDFrom(ctx), messageID); err != nil {
 		return nil, err
 	}
-	return a.Store.ListAttachments(ctx, userIDFrom(ctx), messageID)
+	return listResult(a.Store.ListAttachments(ctx, userIDFrom(ctx), messageID))
 }
 
 // GetAttachment streams an attachment. ack must be true to download a
@@ -189,7 +190,7 @@ func (a *App) SearchAudit(ctx context.Context, limit int) ([]domain.AuditEvent, 
 	for i := range events {
 		events[i] = safeAuditDiagnostic(events[i])
 	}
-	return events, err
+	return listResult(events, err)
 }
 
 // PolicySnapshot returns the currently applied, non-sensitive policy for the

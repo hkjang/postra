@@ -113,7 +113,7 @@ func (a *App) ListJobs(ctx context.Context, limit int) ([]domain.Job, error) {
 	for i := range jobs {
 		jobs[i] = *safeJob(&jobs[i])
 	}
-	return jobs, err
+	return listResult(jobs, err)
 }
 
 func (a *App) runSync(ctx context.Context, job *domain.Job, acc *domain.MailAccount, opts SyncOptions) {

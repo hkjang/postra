@@ -285,7 +285,7 @@ func (a *App) AdminListUsers(ctx context.Context) ([]domain.User, error) {
 			active = append(active, users[i])
 		}
 	}
-	return active, nil
+	return nilToEmpty(active), nil
 }
 
 func (a *App) AdminUpdateUser(ctx context.Context, id string, role domain.UserRole, status domain.UserStatus) (*domain.User, error) {
@@ -492,7 +492,7 @@ func (a *App) ListMyMCPKeys(ctx context.Context) ([]domain.MCPKey, error) {
 	if userID == "" {
 		return nil, userErrf("authentication required")
 	}
-	return a.Store.ListMCPKeys(ctx, userID)
+	return listResult(a.Store.ListMCPKeys(ctx, userID))
 }
 
 func (a *App) RevokeMyMCPKey(ctx context.Context, keyID string) error {
@@ -511,7 +511,7 @@ func (a *App) AdminListMCPKeys(ctx context.Context) ([]domain.MCPKey, error) {
 	if _, err := requireAdmin(ctx); err != nil {
 		return nil, err
 	}
-	return a.Store.ListAllMCPKeys(ctx)
+	return listResult(a.Store.ListAllMCPKeys(ctx))
 }
 
 func (a *App) AdminRevokeMCPKey(ctx context.Context, keyID string) error {

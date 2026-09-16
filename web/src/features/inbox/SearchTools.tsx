@@ -2,7 +2,7 @@ import {useState, type FormEvent} from 'react'
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import {api} from '@/api/client'
 import {Button, ErrorState, Input} from '@/components/ui'
-import type {Account} from '@/features/messages/types'
+import {accountListResponse, batchResponse} from '../messages/responses'
 
 export function keywordSearchParams(params: URLSearchParams, cursor: string): URLSearchParams {
   const folder = params.get('folder') || 'inbox'
@@ -21,7 +21,7 @@ export function keywordSearchParams(params: URLSearchParams, cursor: string): UR
 }
 
 export function AdvancedSearch({params, onChange}: {params: URLSearchParams; onChange: (values: Record<string,string>) => void}) {
-  const accounts = useQuery({queryKey: ['accounts'], queryFn: ({signal}) => api<Account[]>('/api/accounts', {signal})})
+  const accounts = useQuery({queryKey: ['accounts'], queryFn: ({signal}) => api<unknown>('/api/accounts', {signal}).then(accountListResponse)})
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); const form = new FormData(event.currentTarget)
     onChange(Object.fromEntries(['account', 'from', 'to', 'subject', 'label', 'since', 'until', 'has_attachment'].map(name => [name, String(form.get(name) || '')])))
@@ -36,7 +36,6 @@ export function AdvancedSearch({params, onChange}: {params: URLSearchParams; onC
   </form></details>
 }
 
-type BatchResult = {succeeded: number; failed: number; results: {message_id: string; ok: boolean; error?: string}[]}
 export function BulkActions({ids, onSuccess}: {ids: string[]; onSuccess: (successfulIDs: string[]) => void}) {
   const cache = useQueryClient()
   const [action, setAction] = useState('archive')
@@ -44,7 +43,7 @@ export function BulkActions({ids, onSuccess}: {ids: string[]; onSuccess: (succes
   const [label, setLabel] = useState('')
   const batch = useMutation({mutationFn: () => {
     const due = new Date(); due.setDate(due.getDate() + Number(days)); due.setHours(9,0,0,0)
-    return api<BatchResult>('/api/messages/batch', {body: {message_ids: ids, action, ...(action === 'snooze' ? {snoozed_until: Math.floor(due.getTime()/1000)} : {}), ...(['add_label','remove_label'].includes(action) ? {label} : {})}})
+    return api<unknown>('/api/messages/batch', {body: {message_ids: ids, action, ...(action === 'snooze' ? {snoozed_until: Math.floor(due.getTime()/1000)} : {}), ...(['add_label','remove_label'].includes(action) ? {label} : {})}}).then(batchResponse)
   }, onSuccess: result => {
     onSuccess(result.results.filter(item => item.ok).map(item => item.message_id))
     void cache.invalidateQueries({queryKey: ['messages']}); void cache.invalidateQueries({queryKey: ['message']}); void cache.invalidateQueries({queryKey: ['work']})

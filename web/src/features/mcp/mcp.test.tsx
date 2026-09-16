@@ -18,6 +18,22 @@ beforeEach(() => {vi.clearAllMocks(); vi.spyOn(window, 'confirm').mockReturnValu
 afterEach(() => {cleanup(); vi.restoreAllMocks()})
 
 describe('MCP least-privilege credentials', () => {
+  it('accepts null key lists and edits null scopes as deny-all without granting defaults', async () => {
+    mockedAPI.mockResolvedValueOnce({keys:null})
+    const view = mount()
+    expect(await screen.findByText('등록된 MCP 키가 없습니다')).toBeInTheDocument()
+    view.unmount()
+    mockedAPI.mockResolvedValue({keys:[{id:'empty-key',user_id:'u1',name:'권한 없는 키',key_prefix:'mk_empty',status:'active',scopes:null}]})
+    mount()
+    await userEvent.setup().click(await screen.findByRole('button',{name:'권한 편집'}))
+    const editor = screen.getByRole('region',{name:'MCP 키 권한 편집'})
+    expect(within(editor).getAllByRole('checkbox').every(input => !(input as HTMLInputElement).checked)).toBe(true)
+    expect(mockedAPI.mock.calls.some(([,options])=>options?.method)).toBe(false)
+  })
+  it.each([{keys:{}},{keys:[null]},{keys:[{id:'bad',scopes:{}}]}])('shows a safe failure for malformed key metadata: %j', async response => {
+    mockedAPI.mockResolvedValue(response); mount()
+    expect(await screen.findByRole('alert')).toHaveTextContent('서버 응답 형식')
+  })
   it('does not mutate on render and creates only explicitly selected scopes; shows raw key once', async () => {
     mockedAPI.mockImplementation(async (_path, options) => options?.method === 'POST' ? {key: {id: 'new'}, raw_key: 'mk_test-secret-visible-once'} : {keys: []})
     mount()

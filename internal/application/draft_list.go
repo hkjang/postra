@@ -49,7 +49,7 @@ func (a *App) ListDrafts(ctx context.Context, status string, limit int, cursor s
 	if err != nil {
 		return nil, err
 	}
-	result := &DraftList{Drafts: rows}
+	result := &DraftList{Drafts: nilToEmpty(rows)}
 	if len(rows) > limit {
 		result.Drafts = rows[:limit]
 		last := rows[limit-1]

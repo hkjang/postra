@@ -2,13 +2,18 @@ import {useState, type FormEvent} from 'react'
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import {Plus, Sparkles, Trash2} from 'lucide-react'
 import {toast} from 'sonner'
+import {z} from 'zod'
 import {api} from '@/api/client'
+import {nullableList, parseResponse} from '@/api/response'
 import {Badge, Button, EmptyState, ErrorState, Input, Loading, PageHeader, Panel, Textarea} from '@/components/ui'
-type Rule = {id?: string; name: string; enabled: boolean; priority: number; match: string; conditions: {field: string; operator: string; value: string}[]; actions: {type: string; value: string}[]; stop_on_match: boolean}
+const ruleSchema = z.object({id:z.string().optional(),name:z.string(),enabled:z.boolean(),priority:z.number(),match:z.string(),conditions:nullableList(z.object({field:z.string(),operator:z.string(),value:z.string()})),actions:nullableList(z.object({type:z.string(),value:z.string()})),stop_on_match:z.boolean()})
+type Rule = z.output<typeof ruleSchema>
+const listedRuleSchema = ruleSchema.extend({id:z.string()})
+const rulesSchema = z.union([nullableList(listedRuleSchema),z.object({rules:nullableList(listedRuleSchema)}).transform(result=>result.rules)])
 export function RulesPage() {
   const cache = useQueryClient()
-  const rules = useQuery({queryKey: ['rules'], queryFn: () => api<Rule[] | {rules: Rule[]}>('/api/rules')})
-  const list = Array.isArray(rules.data) ? rules.data : rules.data?.rules ?? []
+  const rules = useQuery({queryKey: ['rules'], queryFn: async () => parseResponse(rulesSchema,await api<unknown>('/api/rules'))})
+  const list = rules.data ?? []
   const [open, setOpen] = useState(false)
   const [name, setName] = useState('')
   const [keyword, setKeyword] = useState('')
@@ -17,7 +22,7 @@ export function RulesPage() {
   const [draft, setDraft] = useState<Rule>()
   const save = useMutation({mutationFn: (rule: Rule) => api(rule.id ? `/api/rules/${rule.id}` : '/api/rules', {method: rule.id ? 'PUT' : 'POST', body: rule}), onSuccess: () => {void cache.invalidateQueries({queryKey: ['rules']}); setOpen(false); setDraft(undefined); toast.success('규칙을 저장했습니다.')}, onError: error => toast.error(error.message)})
   const remove = useMutation({mutationFn: (id: string) => api(`/api/rules/${id}`, {method: 'DELETE'}), onSuccess: () => {void cache.invalidateQueries({queryKey: ['rules']}); toast.success('규칙을 삭제했습니다.')}, onError: error => toast.error(error.message)})
-  const generate = useMutation({mutationFn: () => api<{rule: Rule; saved: boolean}>('/api/rules/draft', {body: {instruction}}), onSuccess: result => setDraft(result.rule), onError: error => toast.error(error.message)})
+  const generate = useMutation({mutationFn: async () => parseResponse(z.object({rule:ruleSchema,saved:z.boolean()}),await api<unknown>('/api/rules/draft', {body: {instruction}})), onSuccess: result => setDraft(result.rule), onError: error => toast.error(error.message)})
   function create(event: FormEvent) {event.preventDefault(); save.mutate({name, enabled: true, priority: 100, match: 'all', conditions: [{field: 'subject', operator: 'contains', value: keyword}], actions: [{type: action, value: ''}], stop_on_match: false})}
   return <div className="page"><PageHeader title="자동화 규칙" description="메일 분류를 자동화합니다. AI가 제안한 규칙도 직접 검토하고 저장하세요." actions={<Button onClick={() => setOpen(value => !value)}><Plus size={16}/>규칙 만들기</Button>}/>{open && <div className="grid" style={{marginBottom: 25}}><Panel><form className="stack" onSubmit={create}><h2>간단한 규칙</h2><label className="field">규칙 이름<Input required value={name} onChange={event => setName(event.target.value)}/></label><label className="field">제목에 포함할 단어<Input required value={keyword} onChange={event => setKeyword(event.target.value)}/></label><label className="field">실행할 작업<select className="input" value={action} onChange={event => setAction(event.target.value)}><option value="mark_important">중요 표시</option><option value="archive">보관함으로 이동</option></select></label><Button type="submit" disabled={save.isPending}>규칙 저장</Button></form></Panel><Panel><form className="stack" onSubmit={event => {event.preventDefault(); generate.mutate()}}><h2 className="row"><Sparkles size={17}/>AI로 규칙 초안 만들기</h2><Textarea required value={instruction} onChange={event => setInstruction(event.target.value)} aria-label="AI 규칙 작성 지시" placeholder="예: 계약 검토 요청 메일을 중요 표시해 줘"/><Button variant="outline" type="submit" disabled={generate.isPending}>{generate.isPending ? '규칙 제안 중…' : '규칙 제안 받기'}</Button></form>{draft && <div className="stack" style={{marginTop: 20}}><p className="small muted">아직 저장되지 않았습니다. 삭제·보관 등 실행 항목을 확인한 뒤 저장하세요.</p><pre className="code-preview">{JSON.stringify(draft, null, 2)}</pre><Button disabled={save.isPending} onClick={() => {if (draft.actions?.some(item => item.type === 'delete') && !window.confirm('메일을 자동 삭제하는 작업이 포함되어 있습니다. 이 규칙을 저장하시겠습니까?')) return; save.mutate(draft)}}>이 규칙으로 저장</Button></div>}</Panel></div>}{rules.isPending ? <Loading/> : rules.error ? <ErrorState error={rules.error}/> : !list.length ? <EmptyState title="저장된 규칙이 없습니다" description="반복하는 분류 작업을 규칙으로 만들어 보세요."/> : list.map(rule => <article className="rule-item" key={rule.id}><div><div className="row"><h2>{rule.name}</h2><Badge variant={rule.enabled ? 'default' : 'secondary'}>{rule.enabled ? '활성' : '중지'}</Badge></div><p className="muted">{rule.conditions?.map(condition => `${condition.field} ${condition.operator} ${condition.value}`).join(rule.match === 'all' ? ' · 모두 일치 · ' : ' · 하나 일치 · ')}</p><p>{rule.actions?.map(action => `${action.type}${action.value ? `: ${action.value}` : ''}`).join(', ')}</p></div><div className="row"><Button variant="outline" size="sm" disabled={save.isPending} onClick={() => save.mutate({...rule, enabled: !rule.enabled})}>{rule.enabled ? '중지' : '활성화'}</Button><Button variant="ghost" size="icon" aria-label={`${rule.name} 규칙 삭제`} disabled={remove.isPending} onClick={() => {if (window.confirm(`“${rule.name}” 규칙을 삭제하시겠습니까? 메일 원본은 삭제되지 않습니다.`)) remove.mutate(rule.id!)}}><Trash2 size={16}/></Button></div></article>)}</div>
 }

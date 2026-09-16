@@ -62,7 +62,7 @@ func TestReceivedImagePolicyConsentAndOwnerIsolation(t *testing.T) {
 	frameRequest.Header.Set("Sec-Fetch-Dest", "iframe")
 	frame := httptest.NewRecorder()
 	h.ServeHTTP(frame, frameRequest)
-	if frame.Code != 200 || !strings.HasPrefix(frame.Header().Get("Content-Type"), "text/html") || !strings.Contains(frame.Header().Get("Content-Security-Policy"), "sandbox; default-src 'none'; img-src https: http:") || strings.Contains(frame.Header().Get("Content-Security-Policy"), "allow-same-origin") || !strings.Contains(frame.Body.String(), `src="https://images.corp.local/photo.png"`) || frame.Header().Get("Referrer-Policy") != "no-referrer" {
+	if frame.Code != 200 || !strings.HasPrefix(frame.Header().Get("Content-Type"), "text/html") || !strings.Contains(frame.Header().Get("Content-Security-Policy"), "sandbox allow-popups allow-popups-to-escape-sandbox; default-src 'none'; img-src https: http:") || strings.Contains(frame.Header().Get("Content-Security-Policy"), "allow-same-origin") || !strings.Contains(frame.Body.String(), `src="https://images.corp.local/photo.png"`) || frame.Header().Get("Referrer-Policy") != "no-referrer" {
 		t.Fatalf("received frame unsafe: %d %s", frame.Code, frame.Body.String())
 	}
 	if response := browserRequest(h, "GET", "/api/messages/msg-images-other/body/frame", owner, "", "", ""); response.Code != 404 {

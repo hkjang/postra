@@ -3,10 +3,22 @@ import {cleanup,render,screen} from '@testing-library/react'
 import {MemoryRouter} from 'react-router-dom'
 import {QueryClient,QueryClientProvider} from '@tanstack/react-query'
 import {api} from '@/api/client'
-import {BrowserTracking,trackingPage} from './index'
+import {BrowserTracking,TrackingPage,trackingPage} from './index'
 vi.mock('@/api/client',()=>({api:vi.fn()}))
+vi.mock('@/features/settings/SettingsEditor',()=>({SettingsEditor:()=>null}))
 const mockAPI=vi.mocked(api)
 beforeEach(()=>mockAPI.mockReset());afterEach(cleanup)
+it('renders null tracking violations as an explicit empty list',async()=>{
+  mockAPI.mockResolvedValue({enabled:false,provider:'',isolated:true,violations:null})
+  render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><MemoryRouter><TrackingPage/></MemoryRouter></QueryClientProvider>)
+  expect(await screen.findByText('차단 기록이 없습니다')).toBeInTheDocument()
+})
+it.each([{},[null],'invalid'])('does not hide malformed tracking violations: %j',async violations=>{
+  mockAPI.mockResolvedValue({enabled:false,provider:'',isolated:true,violations})
+  render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><MemoryRouter><TrackingPage/></MemoryRouter></QueryClientProvider>)
+  expect(await screen.findByRole('alert')).toHaveTextContent('서버 응답 형식')
+  expect(screen.queryByText('차단 기록이 없습니다')).not.toBeInTheDocument()
+})
 it('never includes object IDs, search queries, credential or personal-setting screens',()=>{
   expect(trackingPage('/messages/private-message')).toBe('/app/messages/:id')
   expect(trackingPage('/accounts/secret-account')).toBe('/app/accounts/:id')

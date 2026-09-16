@@ -28,7 +28,7 @@ it('uses an independently sandboxed same-origin document for authorized received
   render(<MailBody html="<p>본문</p>" receivedMessageID="own/message" allowImagesOnce/>)
   expect(screen.getByTitle('메일 본문')).toHaveAttribute('src','/api/messages/own%2Fmessage/body/frame?external_images=once')
   expect(screen.getByTitle('메일 본문')).not.toHaveAttribute('srcdoc')
-  expect(screen.getByTitle('메일 본문')).toHaveAttribute('sandbox','')
+  expect(screen.getByTitle('메일 본문')).toHaveAttribute('sandbox','allow-popups allow-popups-to-escape-sandbox')
 })
 it('separates one-time display from confirmed persistent trust and permits revocation',async()=>{
   const user=userEvent.setup(),once=vi.fn(),trust=vi.fn(),confirm=vi.spyOn(window,'confirm').mockReturnValue(false)

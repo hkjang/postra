@@ -5,16 +5,44 @@ const {chromium, expect} = require('@playwright/test');
 
 (async () => {
   const browser = await chromium.launch({headless: true, ...(process.env.POSTRA_CHROME ? {executablePath: process.env.POSTRA_CHROME} : {})});
-  const context = await browser.newContext({viewport: {width: 1520, height: 1050}});
+  const context = await browser.newContext({viewport: {width: 1520, height: 1050}, ignoreHTTPSErrors: true}); // local httptest TLS certificate only
   const page = await context.newPage();
   const base = process.env.POSTRA_TEST_URL;
   const errors = [];
   const external = [];
   page.on('pageerror', error => errors.push(error.message));
-  context.on('request', request => {if (!request.url().startsWith(base) && !request.url().startsWith('about:') && !request.url().startsWith('data:')) external.push(request.url());});
+  const clickedFixtureURLs = new Set();
+  context.on('request', request => {if (!request.url().startsWith(base) && !request.url().startsWith('about:') && !request.url().startsWith('data:') && !clickedFixtureURLs.has(request.url())) external.push(request.url());});
   page.on('dialog', dialog => dialog.type() === 'beforeunload' ? dialog.accept() : dialog.dismiss());
   try {
     await page.goto(base + '/app/');
+    // A genuine user with zero stored actions used to crash at cards.filter.
+    // No API interception: prove the real backend's empty result and navigate
+    // all empty views before the seeded administrator scenario starts.
+    await page.locator('[name=login_id]').fill(process.env.POSTRA_TEST_OTHER_LOGIN);
+    await page.locator('[name=password]').fill(process.env.POSTRA_TEST_OTHER_PASSWORD);
+    await page.getByRole('button', {name: '계정으로 로그인', exact: true}).click();
+    await page.waitForURL(/\/app\/mail/);
+    const emptyActions = await page.evaluate(async () => (await fetch('/api/action-cards?limit=200')).json());
+    assert.deepEqual(emptyActions.cards, [], 'real empty action collection is []');
+    await page.keyboard.press('Control+k');
+    await page.getByRole('option', {name: '액션 센터', exact: true}).click();
+    await page.getByText('아직 등록된 액션이 없습니다', {exact:true}).waitFor();
+    for (const status of ['pending','approved','done','rejected','exported','']) {
+      await page.getByRole('combobox',{name:'승인·완료 상태'}).selectOption(status);
+      await page.getByText('아직 등록된 액션이 없습니다',{exact:true}).waitFor();
+    }
+    for (const button of await page.getByLabel('액션 기한 분류').getByRole('button').all()) await button.click();
+    await page.keyboard.press('j'); await page.keyboard.press('k');
+    await page.goto(base+'/app/mail?q=no-such-empty-fixture-term');
+    await page.getByText('검색 결과가 없습니다',{exact:true}).waitFor();
+    await page.keyboard.press('j'); await page.keyboard.press('k');
+    await page.keyboard.press('Control+k');
+    await page.getByRole('option', {name:'액션 센터',exact:true}).click();
+    await page.getByText('아직 등록된 액션이 없습니다',{exact:true}).waitFor();
+    assert.deepEqual(errors, [], 'empty action and search routes must not produce pageerror');
+    await page.getByRole('button',{name:'로그아웃',exact:true}).click();
+    await page.waitForURL(url=>url.searchParams.get('sso')==='signed_out');
     await page.locator('[name=login_id]').fill(process.env.POSTRA_TEST_LOGIN);
     await page.locator('[name=password]').fill(process.env.POSTRA_TEST_PASSWORD);
     await page.getByRole('button', {name: '계정으로 로그인', exact: true}).click();
@@ -22,6 +50,32 @@ const {chromium, expect} = require('@playwright/test');
     await page.getByRole('heading', {name: '받은메일', exact: true}).waitFor();
     await page.getByRole('button').filter({hasText: '프로젝트 킥오프 일정 공유'}).click();
     await page.getByRole('heading', {name: '프로젝트 킥오프 일정 공유'}).waitFor();
+    await page.getByRole('heading', {name: 'AI Insight'}).waitFor();
+    const receivedFrame = page.frameLocator('iframe[title="메일 본문"]');
+    await expect(receivedFrame.getByRole('link',{name:'HTTP 안내',exact:true})).toHaveAttribute('target','_blank');
+    assert.equal(await page.locator('iframe[title="메일 본문"]').getAttribute('sandbox'),'allow-popups allow-popups-to-escape-sandbox');
+    assert.equal(await receivedFrame.locator('script,form,a[href^="javascript:"]').count(),0);
+    assert.equal(await receivedFrame.locator('img[src]').count(),0,'remote images remain blocked while safe links work');
+    const parentURL=page.url();
+    async function openLink(locator,url) {
+      clickedFixtureURLs.add(url);
+      const popupPromise=page.waitForEvent('popup'); await locator.click(); const popup=await popupPromise;
+      popup.on('pageerror',error=>errors.push(error.message));
+      await popup.waitForURL(url); await expect(popup).toHaveTitle('LINK_OPENED');
+      assert.equal(await popup.evaluate(()=>window.opener),null,'clicked link cannot access the mail workspace');
+      assert.equal(await popup.evaluate(()=>document.referrer),'','clicked link has no referrer');
+      await popup.close();
+    }
+    await openLink(receivedFrame.getByRole('link',{name:'HTTP 안내',exact:true}),process.env.POSTRA_TEST_LINK_HTTP);
+    await openLink(receivedFrame.getByRole('link',{name:'HTTPS 안내',exact:true}),process.env.POSTRA_TEST_LINK_HTTPS);
+    assert.equal(page.url(),parentURL,'mail links must never replace the workspace');
+    await expect(receivedFrame.getByRole('link',{name:'메일 문의',exact:true})).toHaveAttribute('href','mailto:help@corp.local?subject=Hello');
+    await expect(receivedFrame.getByRole('link',{name:'메일 문의',exact:true})).toHaveAttribute('target','_blank');
+    await page.goto(base+'/app/messages/msg_spa_important');
+    await openLink(page.locator('.mail-body-text').getByRole('link',{name:process.env.POSTRA_TEST_LINK_HTTP,exact:true}),process.env.POSTRA_TEST_LINK_HTTP);
+    await openLink(page.locator('.mail-body-text').getByRole('link',{name:process.env.POSTRA_TEST_LINK_HTTPS,exact:true}),process.env.POSTRA_TEST_LINK_HTTPS);
+    await expect(page.locator('.mail-body-text').getByRole('link',{name:'help@corp.local'})).toHaveAttribute('href','mailto:help@corp.local');
+    await page.goto(parentURL);
     await page.getByRole('heading', {name: 'AI Insight'}).waitFor();
     await page.getByRole('button', {name: '요약하기', exact: true}).click();
     await expect(page.locator('.ai-panel')).toContainText('회의 자료 검토');

@@ -110,7 +110,7 @@ func (a *App) GetMessageCollab(ctx context.Context, messageID string) (*MessageC
 	if err != nil {
 		return nil, err
 	}
-	return &MessageCollabView{Collab: *mc, Notes: notes}, nil
+	return &MessageCollabView{Collab: *mc, Notes: nilToEmpty(notes)}, nil
 }
 
 // AddMessageNote records an internal (never-sent) team note on a message.

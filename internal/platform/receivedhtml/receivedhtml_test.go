@@ -3,6 +3,8 @@ package receivedhtml
 import (
 	"strings"
 	"testing"
+
+	"golang.org/x/net/html"
 )
 
 func TestReceivedImagesAreInertUntilAllowed(t *testing.T) {
@@ -18,6 +20,34 @@ func TestReceivedImagesAreInertUntilAllowed(t *testing.T) {
 	allowed, count := Render(stored, true)
 	if count != 1 || !strings.Contains(allowed, `src="https://images.corp.local/photo.png?a=1&amp;b=2"`) || strings.Contains(allowed, `src="cid:`) {
 		t.Fatalf("allowed render: %s", allowed)
+	}
+}
+
+func TestReceivedLinksOpenOnlyExplicitSafeDestinationsWithoutOpener(t *testing.T) {
+	input := `<a href="https://example.test/path?a=1&amp;b=2" target="_top" rel="opener" ping="https://tracker.test">HTTPS</a><a href="http://intranet.test/doc">HTTP</a><a href="mailto:help@example.test?subject=Hello">메일</a><a href="javascript:alert(1)">JS</a><a href="data:text/html,bad">data</a><a href="/api/secret">relative</a><a href="//example.test">scheme relative</a><a href="https://user:password@example.test">credentials</a><form action="https://bad.test"><button>bad</button></form><script>parent.location='https://bad.test'</script>`
+	for _, output := range []string{Sanitize(input), func() string { result, _ := Render(input, false); return result }()} {
+		doc, err := html.Parse(strings.NewReader(output))
+		if err != nil {
+			t.Fatal(err)
+		}
+		links := 0
+		walk(doc, func(node *html.Node) {
+			if node.Type != html.ElementNode || node.Data != "a" || attr(node, "href") == "" {
+				return
+			}
+			links++
+			if attr(node, "target") != "_blank" || !strings.Contains(attr(node, "rel"), "noopener") || !strings.Contains(attr(node, "rel"), "noreferrer") {
+				t.Errorf("unsafe link attributes: %s", render(node))
+			}
+		})
+		if links != 3 {
+			t.Fatalf("safe link count %d: %s", links, output)
+		}
+		for _, forbidden := range []string{"javascript:", "data:text/html", "/api/secret", "user:password", "<form", "<script", "_top", "ping="} {
+			if strings.Contains(output, forbidden) {
+				t.Errorf("unsafe content %q retained: %s", forbidden, output)
+			}
+		}
 	}
 }
 

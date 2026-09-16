@@ -14,6 +14,44 @@ afterEach(() => cleanup())
 const card: ActionCard = {id: 'act1', message_id: 'm1', type: 'todo', title: '할 일', status: 'pending'}
 
 describe('action due groups and explicit creation', () => {
+  it.each([{}, null, {cards: {}}, {cards: [null]}, {cards: [{...card, title: {private: 'secret'}}]}, {cards: [{...card, due: []}]}])('shows a recoverable error instead of crashing or hiding malformed data: %j', async payload => {
+    vi.mocked(api).mockResolvedValueOnce(payload).mockResolvedValue({cards: [card]})
+    const cache = new QueryClient({defaultOptions: {queries: {retry: false}}})
+    render(<QueryClientProvider client={cache}><MemoryRouter><ActionsPage/></MemoryRouter></QueryClientProvider>)
+    expect(await screen.findByRole('alert')).toHaveTextContent('서버 응답 형식을 확인할 수 없습니다')
+    expect(screen.queryByText('아직 등록된 액션이 없습니다')).not.toBeInTheDocument()
+    expect(screen.queryByText('secret')).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', {name: '다시 시도'}))
+    await screen.findByRole('heading', {name: '할 일'})
+    expect(screen.getByRole('button', {name: '대기·기한 확인 (1)'})).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(vi.mocked(api).mock.calls.every(([, options]) => !options?.body)).toBe(true)
+  })
+
+  it('keeps empty status filters and groups usable after existing actions', async () => {
+    vi.mocked(api).mockImplementation(async path => path.endsWith('status=done') ? {cards: null} : {cards: [card]})
+    const cache = new QueryClient({defaultOptions: {queries: {retry: false}}})
+    render(<QueryClientProvider client={cache}><MemoryRouter><ActionsPage/></MemoryRouter></QueryClientProvider>)
+    await screen.findByRole('heading', {name: '할 일'})
+    await userEvent.selectOptions(screen.getByLabelText('승인·완료 상태'), 'done')
+    await screen.findByText('아직 등록된 액션이 없습니다')
+    await userEvent.click(screen.getByRole('button', {name: '오늘 (0)'}))
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    await userEvent.selectOptions(screen.getByLabelText('승인·완료 상태'), '')
+    await userEvent.click(screen.getByRole('button', {name: '대기·기한 확인 (1)'}))
+    await screen.findByRole('heading', {name: '할 일'})
+  })
+
+  it('renders the deployed empty-list payload without crashing the due counters', async () => {
+    vi.mocked(api).mockResolvedValue({cards: null})
+    const cache = new QueryClient({defaultOptions: {queries: {retry: false}}})
+    render(<QueryClientProvider client={cache}><MemoryRouter><ActionsPage/></MemoryRouter></QueryClientProvider>)
+    await screen.findByText('아직 등록된 액션이 없습니다')
+    expect(screen.getByRole('button', {name: '오늘 (0)'})).toBeInTheDocument()
+    expect(screen.getByRole('button', {name: '기한 초과 (0)'})).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
   it('uses actual calendar dates, keeps unknown AI dates waiting, and never treats export as completion', () => {
     const now = new Date(2026, 8, 15, 12)
     for (const [due, expected] of [['2026-09-15', 'today'], ['2026-09-14', 'overdue'], ['2026-09-16', 'upcoming'], ['', 'waiting'], ['다음 주 금요일', 'waiting'], ['2026-02-30', 'waiting']]) {

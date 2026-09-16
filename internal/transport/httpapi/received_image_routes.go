@@ -34,7 +34,10 @@ func (s *Server) receivedBodyFrame(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'; img-src "+images+"; style-src 'unsafe-inline'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'")
+	// Only a deliberate click can open the sanitizer's target=_blank links.
+	// The mail itself remains opaque and cannot execute scripts, submit forms
+	// or navigate the parent; the destination opens normally without an opener.
+	w.Header().Set("Content-Security-Policy", "sandbox allow-popups allow-popups-to-escape-sandbox; default-src 'none'; img-src "+images+"; style-src 'unsafe-inline'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'")
 	_, _ = io.WriteString(w, `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><style>body{margin:0;padding:20px;background:white;color:#172033;font:15px/1.7 Arial,sans-serif;overflow-wrap:anywhere}table,img{max-width:100%}a{color:#3157d5}blockquote{border-left:3px solid #dfe5ee;margin-left:0;padding-left:16px}pre{white-space:pre-wrap}</style></head><body>`+view.Body.HTMLSanitized+`</body></html>`) // #nosec G705 -- application re-sanitizes untrusted received HTML; opaque CSP sandbox forbids script execution
 }
 

@@ -1,13 +1,15 @@
-import {lazy, Suspense, useEffect} from 'react'
+import {lazy, Suspense, useEffect, useState} from 'react'
 import {Navigate, Route, Routes, useLocation} from 'react-router-dom'
 import {useQuery, useQueryClient} from '@tanstack/react-query'
 import {api, APIError} from '@/api/client'
+import {InvalidResponseError} from '@/api/response'
 import {SessionContext} from './session'
 import {UserDataProvider} from './providers'
 import {Workspace} from '@/components/layout/Workspace'
 import {Button, EmptyState, Loading} from '@/components/ui'
 import {authReturnTo, claimSilentSSO, markSignedOut, notifyAuthChange, receiveAuthChange, resetSSOFlags} from '@/lib/auth-events'
-import {AuthErrorPage, LoginPage, SetupPage, type BrowserSession} from '@/features/auth'
+import {AuthErrorPage, LoginPage, SetupPage} from '@/features/auth'
+import {parseBrowserSession} from '@/features/auth/response'
 import {BrowserTracking} from '@/features/tracking'
 const InboxPage = lazy(() => import('@/features/inbox/InboxPage').then(m => ({default: m.InboxPage})))
 const MessagePage = lazy(() => import('@/features/messages/MessagePage').then(m => ({default: m.MessagePage})))
@@ -34,13 +36,27 @@ const MCPKeysPage = lazy(() => import('@/features/mcp').then(m => ({default: m.M
 export function App() {
   const cache = useQueryClient()
   const location = useLocation()
-  const session = useQuery({queryKey: ['session'], queryFn: () => api<BrowserSession>('/auth/session' + (new URLSearchParams(location.search).get('sso') === 'error' ? '?sso=error' : '')), retry: false, staleTime: 0, refetchOnWindowFocus: 'always', refetchInterval: 30000})
+  const [identityRevoked, setIdentityRevoked] = useState(false)
+  const session = useQuery({queryKey: ['session'], queryFn: async ({signal}) => parseBrowserSession(await api('/auth/session' + (new URLSearchParams(location.search).get('sso') === 'error' ? '?sso=error' : ''), {signal})), retry: false, staleTime: 0, refetchOnWindowFocus: 'always', refetchInterval: 30000})
   useEffect(() => {
-    const invalidate = () => {void cache.cancelQueries(); cache.removeQueries({predicate: query => query.queryKey[0] !== 'session'}); void cache.invalidateQueries({queryKey: ['session']})}
-    window.addEventListener('postra:unauthorized', invalidate)
-    const changed = (event: StorageEvent) => {if (receiveAuthChange(event)) invalidate()}
+    if (session.error instanceof APIError && session.error.status >= 400 && session.error.status < 500) setIdentityRevoked(true)
+    else if (session.isSuccess && !session.isFetching) setIdentityRevoked(false)
+  }, [session.error, session.isSuccess, session.isFetching, session.dataUpdatedAt])
+  useEffect(() => {
+    const invalidate = (revokeIdentity = false) => {
+      void cache.cancelQueries()
+      // An explicit 401/logout is not a transient connectivity failure. Drop
+      // the authenticated identity immediately, even if revalidation then
+      // fails or hangs; unmounting also discards the private provider/editor.
+      if (revokeIdentity) cache.setQueryData<ReturnType<typeof parseBrowserSession>>(['session'], current => current && ({...current, authenticated: false, principal: undefined, oidc_auto_login: false}))
+      cache.removeQueries({predicate: query => query.queryKey[0] !== 'session'})
+      void cache.invalidateQueries({queryKey: ['session']})
+    }
+    const unauthorized = () => invalidate(true)
+    window.addEventListener('postra:unauthorized', unauthorized)
+    const changed = (event: StorageEvent) => {if (receiveAuthChange(event)) invalidate(/^\d+:signed_out$/.test(event.newValue || ''))}
     window.addEventListener('storage', changed)
-    return () => {window.removeEventListener('postra:unauthorized', invalidate); window.removeEventListener('storage', changed)}
+    return () => {window.removeEventListener('postra:unauthorized', unauthorized); window.removeEventListener('storage', changed)}
   }, [cache])
   useEffect(() => {
     // Non-sensitive notification only: never put credentials or mail in storage.
@@ -61,10 +77,11 @@ export function App() {
   // mounted editor on transport/5xx errors; unmounting it would silently lose
   // unsaved mail. Explicit unauthenticated data and 4xx failures still remove
   // the private workspace immediately.
-  const transientFailure = session.error instanceof TypeError ||
+  const transientFailure = session.error instanceof TypeError || session.error instanceof InvalidResponseError ||
     (session.error instanceof APIError && session.error.status >= 500 && session.error.status <= 599) ||
     (session.error instanceof DOMException && ['NetworkError', 'TimeoutError'].includes(session.error.name))
-  const retainWorkspace = session.data?.authenticated === true && transientFailure
+  // A 5xx after a prior 401 must not revive the identity from stale query data.
+  const retainWorkspace = !identityRevoked && session.data?.authenticated === true && transientFailure
   if (session.isPending) return <div className="auth-page"><Loading label="내 워크스페이스를 여는 중…"/></div>
   if (session.error && !retainWorkspace) return <AuthErrorPage error={session.error} retry={() => session.refetch()}/>
   if (location.pathname === '/error') return <AuthErrorPage/>

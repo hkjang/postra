@@ -35,3 +35,9 @@ it('cancels destructive bulk requests before calling the server',async()=>{
   mount(<BulkActions ids={['m1']} onSuccess={vi.fn()}/>);await user.selectOptions(screen.getByLabelText('선택 메일 작업'),'delete')
   await user.click(screen.getByRole('button',{name:'선택 메일에 적용'}));expect(mockAPI).not.toHaveBeenCalled()
 })
+it('keeps selection and reports malformed bulk outcomes without inventing success',async()=>{
+  const user=userEvent.setup(),success=vi.fn();mockAPI.mockResolvedValue({succeeded:1,failed:0,results:null})
+  mount(<BulkActions ids={['m1']} onSuccess={success}/>);await user.click(screen.getByRole('button',{name:'선택 메일에 적용'}))
+  expect(await screen.findByRole('alert')).toHaveTextContent('서버 응답 형식');expect(success).not.toHaveBeenCalled()
+  expect(screen.getByText('1개 선택')).toBeInTheDocument();expect(screen.queryByRole('status')).toBeNull()
+})

@@ -4,7 +4,8 @@ import { useNavigate } from 'react-router-dom'
 import { ArrowUpRight, CheckCheck, ListTodo, Sparkles } from 'lucide-react'
 import { api } from '@/api/client'
 import { Badge, Button, ErrorState, Textarea } from '@/components/ui'
-import type { ActionCard, Analysis, DraftView, Message } from './types'
+import type { Analysis, Message } from './types'
+import {actionCardsResponse, calendarResponse, createdDraftID, repliesResponse} from './responses'
 import {usePersonalPreferences} from '@/features/settings/preferences'
 
 type Summary = { summary?: string; requests?: string[]; dates?: string[] }
@@ -24,7 +25,7 @@ function summaryResult(analysis: Analysis): Summary {
 }
 function triageResult(analysis: Analysis): Triage {
   const value = result(analysis)
-  return { priority: typeof value.priority === 'string' ? value.priority : undefined, reply_required: value.reply_required === true, deadline: typeof value.deadline === 'string' ? value.deadline : undefined, recommended_next_action: typeof value.recommended_next_action === 'string' ? value.recommended_next_action : undefined, business_risks: strings(value.business_risks) }
+  return { priority: typeof value.priority === 'string' && ['urgent','high','normal','low'].includes(value.priority) ? value.priority : undefined, reply_required: typeof value.reply_required === 'boolean' ? value.reply_required : undefined, deadline: typeof value.deadline === 'string' ? value.deadline : undefined, recommended_next_action: typeof value.recommended_next_action === 'string' ? value.recommended_next_action : undefined, business_risks: strings(value.business_risks) }
 }
 
 export function AIContext({ message }: { message: Message }) {
@@ -37,14 +38,14 @@ export function AIContext({ message }: { message: Message }) {
   const summary = useMutation({ mutationFn: () => api<Analysis>(`/api/messages/${message.id}/analyze`, { method: 'POST', body: { type: 'summarize' } }).then(summaryResult) })
   const triage = useMutation({ mutationFn: () => api<Analysis>(`/api/messages/${message.id}/analyze`, { method: 'POST', body: { type: 'triage' } }).then(triageResult) })
   useEffect(() => {if (autoSummary && autoStarted.current !== message.id) {autoStarted.current=message.id; summary.mutate()}},[autoSummary,message.id])
-  const replies = useMutation({ mutationFn: () => api<{ suggestions: string[] }>(`/api/messages/${message.id}/suggest-replies`, { method: 'POST', body: {} }) })
-  const cards = useMutation({ mutationFn: () => api<{ cards: ActionCard[] }>(`/api/messages/${message.id}/action-cards`, { method: 'POST', body: {} }), onSuccess: () => client.invalidateQueries({ queryKey: ['action-cards'] }) })
+  const replies = useMutation({ mutationFn: () => api<unknown>(`/api/messages/${message.id}/suggest-replies`, { method: 'POST', body: {} }).then(repliesResponse) })
+  const cards = useMutation({ mutationFn: () => api<unknown>(`/api/messages/${message.id}/action-cards`, { method: 'POST', body: {} }).then(actionCardsResponse), onSuccess: () => client.invalidateQueries({ queryKey: ['action-cards'] }) })
   const reply = useMutation({
-    mutationFn: (body: string) => api<DraftView>('/api/drafts', { method: 'POST', body: { account_id: message.account_id, kind: 'reply', reply_to_message_id: message.id, body, body_author: 'ai' } }),
-    onSuccess: view => { client.setQueryData(['draft', view.draft.id], view); navigate(`/drafts/${view.draft.id}`) },
+    mutationFn: (body: string) => api<unknown>('/api/drafts', { method: 'POST', body: { account_id: message.account_id, kind: 'reply', reply_to_message_id: message.id, body, body_author: 'ai' } }).then(createdDraftID),
+    onSuccess: draftID => navigate(`/drafts/${encodeURIComponent(draftID)}`),
   })
   const [instructions, setInstructions] = useState('')
-  const instructedReply = useMutation({mutationFn: () => api<DraftView>('/api/drafts', {body: {account_id: message.account_id, kind: 'reply', reply_to_message_id: message.id, instructions}}), onSuccess: view => {client.setQueryData(['draft', view.draft.id], view); navigate(`/drafts/${view.draft.id}`)}})
+  const instructedReply = useMutation({mutationFn: () => api<unknown>('/api/drafts', {body: {account_id: message.account_id, kind: 'reply', reply_to_message_id: message.id, instructions}}).then(createdDraftID), onSuccess: draftID => navigate(`/drafts/${encodeURIComponent(draftID)}`)})
   return <aside className="ai-panel" aria-label="AI 컨텍스트">
     <div className="ai-panel-heading"><Sparkles size={18} /><h2>AI Insight</h2><Badge variant="secondary">검토 필요</Badge></div>
     <p className="muted">요약부터 답장까지, 이 메일의 다음 행동을 함께 정리합니다.</p>
@@ -56,7 +57,7 @@ export function AIContext({ message }: { message: Message }) {
     <section className="insight-section">
       <div className="row"><h3>중요도 · 다음 행동</h3><Button size="sm" variant="ghost" disabled={triage.isPending} onClick={() => triage.mutate()}>{triage.isPending ? '분석 중…' : '분석'}</Button></div>
       {triage.error && <ErrorState error={triage.error} />}
-      {triage.data && <div className="stack"><div className="row"><Badge variant={['urgent', 'high'].includes(triage.data.priority ?? '') ? 'destructive' : 'secondary'}>{({ urgent: '긴급', high: '높음', normal: '보통', low: '낮음' } as Record<string, string>)[triage.data.priority ?? ''] ?? '미분류'}</Badge><Badge variant="outline">{triage.data.reply_required ? '답장 필요' : '답장 필수 아님'}</Badge></div>{triage.data.deadline && <p>기한: {triage.data.deadline}</p>}<p>{triage.data.recommended_next_action}</p>{triage.data.business_risks?.map((risk, i) => <p key={i} className="warning-text">{risk}</p>)}</div>}
+      {triage.data && <div className="stack"><div className="row"><Badge variant={['urgent', 'high'].includes(triage.data.priority ?? '') ? 'destructive' : 'secondary'}>{({ urgent: '긴급', high: '높음', normal: '보통', low: '낮음' } as Record<string, string>)[triage.data.priority ?? ''] ?? '미분류'}</Badge><Badge variant="outline">{triage.data.reply_required === undefined ? '답장 필요 여부 미확인' : triage.data.reply_required ? '답장 필요' : '답장 필수 아님'}</Badge></div>{triage.data.deadline && <p>기한: {triage.data.deadline}</p>}<p>{triage.data.recommended_next_action}</p>{triage.data.business_risks?.map((risk, i) => <p key={i} className="warning-text">{risk}</p>)}</div>}
     </section>
     <section className="insight-section">
       <div className="row"><h3><ListTodo size={16} /> 실행 항목</h3><Button size="sm" variant="ghost" disabled={cards.isPending || cards.isSuccess} onClick={() => cards.mutate()}>{cards.isPending ? '추출 중…' : cards.isSuccess ? '생성됨' : '카드 만들기'}</Button></div>
@@ -67,6 +68,7 @@ export function AIContext({ message }: { message: Message }) {
     <section className="insight-section">
       <div className="row"><h3>스마트 답장</h3>{showReplies && <Button size="sm" variant="ghost" disabled={replies.isPending} onClick={() => replies.mutate()}>{replies.isPending ? '작성 중…' : '답장 제안'}</Button>}</div>
       {replies.error && <ErrorState error={replies.error} />}{reply.error && <ErrorState error={reply.error} />}
+      {showReplies && replies.data && !replies.data.suggestions.length && <p className="muted">제안된 답장이 없습니다.</p>}
       {showReplies && replies.data?.suggestions.map((text, i) => <div className="reply-suggestion" key={i}><p>{text}</p><Button size="sm" variant="secondary" disabled={reply.isPending} onClick={() => reply.mutate(text)}>답장에 적용 <ArrowUpRight size={14} /></Button></div>)}
       {!showReplies && <p className="muted">개인 또는 조직 설정에서 추천 답장 표시를 껐습니다.</p>}
       <p className="muted">제안은 초안으로만 저장됩니다. 발송 전 확인과 승인이 필요합니다.</p>
@@ -80,15 +82,18 @@ const fieldLabels: Record<string,string> = {action_items:'할 일',tasks:'할 �
 function analysisContent(value: unknown, depth = 0): ReactNode {
   if (value == null) return '없음'
   if (depth > 6) return '세부 정보가 너무 깊습니다.'
-  if (Array.isArray(value)) return value.length ? <ul>{value.map((item,index) => <li key={index}>{analysisContent(item,depth+1)}</li>)}</ul> : '없음'
-  if (typeof value === 'object') return <dl>{Object.entries(value).map(([key,item]) => <div key={key}><dt><strong>{fieldLabels[key] || key}</strong></dt><dd style={{marginInlineStart: 12}}>{analysisContent(item,depth+1)}</dd></div>)}</dl>
+  if (Array.isArray(value)) return value.length ? <ul>{value.slice(0,100).map((item,index) => <li key={index}>{analysisContent(item,depth+1)}</li>)}</ul> : '없음'
+  if (typeof value === 'object') {
+    const fields = Object.entries(value).filter(([key]) => !['__proto__','constructor','prototype'].includes(key)).slice(0,100)
+    return fields.length ? <dl>{fields.map(([key,item]) => <div key={key}><dt><strong>{Object.hasOwn(fieldLabels,key) ? fieldLabels[key] : key}</strong></dt><dd style={{marginInlineStart: 12}}>{analysisContent(item,depth+1)}</dd></div>)}</dl> : '표시할 분석 항목이 없습니다.'
+  }
   if (typeof value === 'boolean') return value ? '예' : '아니요'
   return String(value)
 }
 function AdditionalAnalysis({messageID}: {messageID: string}) {
   const [kind,setKind] = useState('action_items')
   const analyze = useMutation({mutationFn: () => api<Analysis>(`/api/messages/${encodeURIComponent(messageID)}/analyze`, {body: {type: kind}}).then(result)})
-  const calendar = useMutation({mutationFn: () => api<{events: {title: string; start: string; location?: string}[]}>(`/api/messages/${encodeURIComponent(messageID)}/calendar`, {method: 'POST'})})
+  const calendar = useMutation({mutationFn: () => api<unknown>(`/api/messages/${encodeURIComponent(messageID)}/calendar`, {method: 'POST'}).then(calendarResponse)})
   return <><section className="insight-section"><h3>상세 분석 · 보안 점검</h3><div className="stack"><select className="input" aria-label="상세 분석 종류" value={kind} onChange={event => {setKind(event.target.value); analyze.reset()}} disabled={analyze.isPending}>{[['action_items','할 일 추출'],['classify','분류 · 중요도'],['entities','인물 · 금액 추출'],['phishing','피싱 점검']].map(([value,label]) => <option key={value} value={value}>{label}</option>)}</select><Button variant="outline" size="sm" disabled={analyze.isPending} onClick={() => analyze.mutate()}>{analyze.isPending ? '분석 중…' : '선택한 분석 실행'}</Button>{analyze.error && <ErrorState error={analyze.error}/>}<div className="insight-prose">{analyze.data && analysisContent(analyze.data)}</div></div></section>
     <section className="insight-section"><h3>메일에서 일정 추출</h3><Button variant="outline" size="sm" disabled={calendar.isPending} onClick={() => calendar.mutate()}>{calendar.isPending ? '일정 확인 중…' : '일정 확인'}</Button>{calendar.error && <ErrorState error={calendar.error}/>} {calendar.data && <>{calendar.data.events?.length ? <><ul>{calendar.data.events.map((event,index) => <li key={index}><strong>{event.title}</strong><p>{event.start}{event.location ? ' · '+event.location : ''}</p></li>)}</ul><Button size="sm" variant="ghost" asChild><a href={`/api/messages/${encodeURIComponent(messageID)}/calendar.ics`} download>일정 파일 (.ics) 다운로드</a></Button></> : <p className="muted">추출할 일정이 없습니다.</p>}</>}</section></>
 }

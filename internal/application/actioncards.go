@@ -37,7 +37,7 @@ func (a *App) ExtractActionCards(ctx context.Context, messageID string) ([]domai
 	if err := json.Unmarshal([]byte(an.ResultJSON), &parsed); err != nil {
 		return nil, userErrf("action card extraction returned unexpected schema: %v", err)
 	}
-	var out []domain.ActionCard
+	out := make([]domain.ActionCard, 0, len(parsed.Cards))
 	for _, c := range parsed.Cards {
 		title := strings.TrimSpace(c.Title)
 		if title == "" {
@@ -68,7 +68,7 @@ func normalizeCardType(t string) string {
 }
 
 func (a *App) ListActionCards(ctx context.Context, status string, limit int) ([]domain.ActionCard, error) {
-	return a.Store.ListActionCards(ctx, userIDFrom(ctx), status, limit)
+	return listResult(a.Store.ListActionCards(ctx, userIDFrom(ctx), status, limit))
 }
 
 func (a *App) GetActionCard(ctx context.Context, id string) (*domain.ActionCard, error) {

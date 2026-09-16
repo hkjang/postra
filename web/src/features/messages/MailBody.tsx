@@ -6,6 +6,6 @@ export function mailDocument(html: string, imagesAllowed = false): string {
 }
 
 export function MailBody({ html, text, title = '메일 본문', imagesAllowed = false, receivedMessageID, allowImagesOnce = false }: { html?: string; text?: string; title?: string; imagesAllowed?: boolean; receivedMessageID?: string; allowImagesOnce?: boolean }) {
-  if (html && receivedMessageID) return <iframe className="mail-body-frame" title={title} sandbox="" referrerPolicy="no-referrer" src={`/api/messages/${encodeURIComponent(receivedMessageID)}/body/frame${allowImagesOnce ? '?external_images=once' : ''}`} />
+  if (html && receivedMessageID) return <iframe className="mail-body-frame" title={title} sandbox="allow-popups allow-popups-to-escape-sandbox" referrerPolicy="no-referrer" src={`/api/messages/${encodeURIComponent(receivedMessageID)}/body/frame${allowImagesOnce ? '?external_images=once' : ''}`} />
   return html ? <iframe className="mail-body-frame" title={title} sandbox="" referrerPolicy="no-referrer" srcDoc={mailDocument(html, imagesAllowed)} /> : <MailText text={text || '본문이 없습니다.'}/>
 }

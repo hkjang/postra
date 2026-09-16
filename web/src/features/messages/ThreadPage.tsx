@@ -3,11 +3,12 @@ import {useQuery} from '@tanstack/react-query'
 import {api} from '@/api/client'
 import {Button, EmptyState, ErrorState, Loading, PageHeader, Panel} from '@/components/ui'
 import {MailBody} from './MailBody'
-import {addresses, mailDate, type MessageView} from './types'
+import {addresses, mailDate} from './types'
+import {messageViewResponse, responseList, responseObject} from './responses'
 
 export function ThreadPage() {
   const {id = ''} = useParams()
-  const thread = useQuery({queryKey: ['thread', id], queryFn: ({signal}) => api<{timeline: MessageView[]; count: number}>(`/api/threads/${encodeURIComponent(id)}/timeline`, {signal})})
+  const thread = useQuery({queryKey: ['thread', id], queryFn: async ({signal}) => ({timeline: responseList(responseObject(await api<unknown>(`/api/threads/${encodeURIComponent(id)}/timeline`, {signal})).timeline, messageViewResponse)})})
   if (thread.isPending) return <Loading/>
   if (thread.error) return <ErrorState error={thread.error} retry={() => thread.refetch()}/>
   const messages = thread.data.timeline ?? []

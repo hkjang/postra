@@ -47,7 +47,7 @@ func (a *App) ExtractCalendarEvents(ctx context.Context, messageID string) (*Cal
 	if err := json.Unmarshal([]byte(an.ResultJSON), &parsed); err != nil {
 		return nil, userErrf("AI가 일정 형식을 반환하지 못했습니다: %v", err)
 	}
-	out := &CalendarEvents{MessageID: messageID}
+	out := &CalendarEvents{MessageID: messageID, Events: make([]CalendarEvent, 0, len(parsed.Events))}
 	for _, ev := range parsed.Events {
 		ev.Title = strings.TrimSpace(ev.Title)
 		ev.Start = strings.TrimSpace(ev.Start)

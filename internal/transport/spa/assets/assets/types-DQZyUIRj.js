@@ -1,0 +1,1 @@
+function e(e){return(e??[]).map(e=>e.name?`${e.name} <${e.email}>`:e.email).join(`, `)}function t(e){let t=new Date(e*1e3);return e&&Number.isFinite(t.getTime())?new Intl.DateTimeFormat(`ko-KR`,{month:`short`,day:`numeric`,hour:`2-digit`,minute:`2-digit`}).format(t):`날짜 없음`}export{t as n,e as t};

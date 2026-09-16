@@ -1,10 +1,11 @@
-import {act, cleanup, render, waitFor} from '@testing-library/react'
+import {act, cleanup, render, screen, waitFor} from '@testing-library/react'
+import {MemoryRouter} from 'react-router-dom'
 import {QueryClient, QueryClientProvider} from '@tanstack/react-query'
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
 import {toast} from 'sonner'
 import {api} from '@/api/client'
 import {SessionContext, type Principal} from '@/app/session'
-import {NotificationEvents, notificationChanges, type NotificationSnapshot} from './index'
+import {NotificationEvents, NotificationsPanel, notificationChanges, type NotificationSnapshot} from './index'
 
 vi.mock('@/api/client', () => ({api: vi.fn()}))
 vi.mock('sonner', () => ({toast: {info: vi.fn(), error: vi.fn(), dismiss: vi.fn()}}))
@@ -21,15 +22,38 @@ class Stream {
 }
 const user: Principal = {user_id: 'notify-user', login_id: 'hong', display_name: '홍길동', role: 'user', auth_method: 'local'}
 const base: NotificationSnapshot = {user_id: user.user_id, enabled: true, poll_seconds: 15, events: [{id: 'job:j1', category: 'sync', kind: 'job', resource_id: 'j1', status: 'running', at: 1}]}
-function mount() {
+function mount(node = <NotificationEvents/>) {
   const cache = new QueryClient({defaultOptions: {queries: {retry: false}}})
-  const view = render(<QueryClientProvider client={cache}><SessionContext.Provider value={user}><NotificationEvents/></SessionContext.Provider></QueryClientProvider>)
+  const view = render(<QueryClientProvider client={cache}><SessionContext.Provider value={user}><MemoryRouter>{node}</MemoryRouter></SessionContext.Provider></QueryClientProvider>)
   return {...view, cache}
 }
 beforeEach(() => {vi.clearAllMocks(); Stream.instances = []; vi.stubGlobal('EventSource', Stream); vi.mocked(api).mockResolvedValue(base)})
 afterEach(() => {cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks()})
 
 describe('private metadata notifications', () => {
+  it('normalizes nullable polling events before the global summary and panel consume them', async () => {
+    vi.mocked(api).mockResolvedValue({...base, events:null})
+    const view = mount(<NotificationsPanel/>)
+    expect(await screen.findByText('선택한 알림 범주에 최근 활동이 없습니다.')).toBeInTheDocument()
+    expect(view.cache.getQueryData(['notifications',user.user_id])).toMatchObject({events:[]})
+  })
+  it.each([{...base,events:{}},{...base,events:[null]},{...base,events:[{...base.events[0],status:{secret:'must-not-display'}}]},{...base,user_id:'another-user'}])('shows a safe polling error for malformed or foreign snapshots', async response => {
+    vi.mocked(api).mockResolvedValue(response)
+    mount(<NotificationsPanel/>)
+    expect(await screen.findByRole('alert')).toHaveTextContent('서버 응답 형식')
+    expect(screen.queryByText('선택한 알림 범주에 최근 활동이 없습니다.')).not.toBeInTheDocument()
+    expect(document.body).not.toHaveTextContent('must-not-display')
+  })
+  it('normalizes null SSE events and never stores malformed events in shared query state', async () => {
+    const view = mount()
+    await waitFor(()=>expect(view.cache.getQueryData(['notifications',user.user_id])).toEqual(base))
+    act(()=>Stream.instances[0].emit('snapshot',{...base,events:null}))
+    expect(view.cache.getQueryData(['notifications',user.user_id])).toMatchObject({events:[]})
+    act(()=>{Stream.instances[0].onopen?.();Stream.instances[0].emit('snapshot',{...base,events:[null]})})
+    expect(view.cache.getQueryData(['notifications',user.user_id])).toMatchObject({events:[]})
+    expect(Stream.instances[0].closed).toBe(true)
+    expect(view.cache.getQueryData(['notification-connection',user.user_id])).toBe('interrupted')
+  })
   it('does not replay initial state or disabled categories, and isolates identity changes', () => {
     expect(notificationChanges(undefined, base)).toEqual([])
     expect(notificationChanges(base, {...base, user_id: 'different-user'})).toEqual([])

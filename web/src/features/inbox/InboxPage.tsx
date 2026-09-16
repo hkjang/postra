@@ -10,6 +10,7 @@ import { mailDate, type Message, type MessageView } from '../messages/types'
 import {AdvancedSearch, BulkActions, keywordSearchParams} from './SearchTools'
 import {usePreferenceBridge} from '@/features/settings/usePreferenceBridge'
 import {registerMailCommands} from '@/lib/mail-commands'
+import {messagePageResponse, messageViewResponse, responseList, responseObject} from '../messages/responses'
 import './mail.css'
 import './search-tools.css'
 
@@ -50,12 +51,12 @@ export function InboxPage() {
     queryFn: async ({ pageParam, signal }): Promise<MailPage> => {
       if (query && mode !== 'keyword') {
         const body = mode === 'hybrid' ? { Query: query, AccountID: account, Limit: 100 } : { query, account_id: account, limit: 100 }
-        const result = await api<{ results: MessageView[] }>(`/api/${mode}-search`, { method: 'POST', body, signal })
-        const views = (result.results ?? []).filter(view => view.message?.id)
+        const result = responseObject(await api<unknown>(`/api/${mode}-search`, { method: 'POST', body, signal }))
+        const views = responseList(result.results, messageViewResponse)
         return { messages: views.map(view => view.message), views: Object.fromEntries(views.map(view => [view.message.id, view])) }
       }
       const search = keywordSearchParams(params, pageParam)
-      return api<MailPage>(`/api/messages?${search}`, { signal })
+      return api<unknown>(`/api/messages?${search}`, { signal }).then(messagePageResponse)
     },
     getNextPageParam: page => page.next_cursor || undefined,
   })

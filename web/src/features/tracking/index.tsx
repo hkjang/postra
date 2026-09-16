@@ -1,6 +1,8 @@
 import {useLocation} from 'react-router-dom'
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
+import {z} from 'zod'
 import {api} from '@/api/client'
+import {nullableList, parseResponse} from '@/api/response'
 import {Badge, Button, EmptyState, ErrorState, Loading, PageHeader, Panel} from '@/components/ui'
 import {SettingsEditor} from '@/features/settings/SettingsEditor'
 
@@ -21,10 +23,10 @@ export function BrowserTracking() {
   return <iframe title="개인정보 격리 방문 통계" aria-hidden="true" tabIndex={-1} hidden sandbox="allow-scripts" referrerPolicy="no-referrer" src={config.data.frame_url}/>
 }
 
-type Violation={origin:string;directive:string;page:string;count:number;last_seen:string;allowed:boolean}
+const trackingSchema=z.object({enabled:z.boolean(),provider:z.string(),isolated:z.boolean(),violations:nullableList(z.object({origin:z.string(),directive:z.string(),page:z.string(),count:z.number(),last_seen:z.string(),allowed:z.boolean()}))})
 export function TrackingPage() {
   const cache=useQueryClient()
-  const state=useQuery({queryKey:['admin-tracking'],queryFn:()=>api<{enabled:boolean;provider:string;isolated:boolean;violations:Violation[]}>('/api/admin/tracking'),refetchInterval:15000})
+  const state=useQuery({queryKey:['admin-tracking'],queryFn:async()=>parseResponse(trackingSchema,await api<unknown>('/api/admin/tracking')),refetchInterval:15000})
   const change=useMutation({mutationFn:(origin?:string)=>api(origin?'/api/admin/tracking/allow':'/api/admin/tracking/violations',{method:origin?'POST':'DELETE',...(origin?{body:{origin}}:{})}),onSuccess:()=>{void cache.invalidateQueries({queryKey:['admin-tracking']});void cache.invalidateQueries({queryKey:['tracking']});void cache.invalidateQueries({queryKey:['settings']})}})
   return <div className="page stack"><PageHeader title="방문 통계 · CSP 관리" description="방문 통계는 기본 비활성화입니다. 활성화해도 격리 프레임에만 실행되며, 메일 본문·검색어·사용자 식별자는 전달하지 않습니다."/>
     <Panel><h2>개인정보 격리</h2><p className="muted">로그인·설정·MCP 키 화면에는 추적을 실행하지 않습니다. 관리자 페이지는 별도 포함 옵션을 켠 경우에만 집계합니다. SPA 경로는 식별자 없는 템플릿으로만 전달됩니다. 쿠키나 최상위 DOM 접근이 필요한 일부 맞춤 스크립트는 격리 정책상 동작하지 않을 수 있습니다.</p><p>오프라인망에서는 내부 Momento 수집기와 동일 출처 프록시를 사용할 수 있습니다. 프록시는 인증·세션·CSRF 정보를 전달하거나 수집기 쿠키를 저장하지 않습니다.</p></Panel>

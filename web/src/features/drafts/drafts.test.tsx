@@ -7,10 +7,28 @@ import {api} from '@/api/client'
 import {DraftsPage} from './index'
 vi.mock('@/api/client', () => ({api: vi.fn()}))
 const mockAPI = vi.mocked(api)
-const draft = {id:'draft-a',status:'open',current_version:2,updated_at:1700000000,subject:'서버에 저장된 초안',to:[{email:'to@corp.local'}],author:'user'}
+const draft = {id:'draft-a',account_id:'account-a',status:'open',current_version:2,updated_at:1700000000,subject:'서버에 저장된 초안',to:[{email:'to@corp.local'}],author:'user'}
 beforeEach(() => mockAPI.mockReset())
 afterEach(() => {cleanup(); vi.restoreAllMocks()})
 function mount() {render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><MemoryRouter><DraftsPage/></MemoryRouter></QueryClientProvider>)}
+it('renders a nullable empty Go slice as an empty list', async () => {
+  mockAPI.mockResolvedValue({drafts:null}); mount()
+  expect(await screen.findByText('저장된 초안이 없습니다')).toBeInTheDocument()
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+})
+it.each([{drafts:{}},{drafts:[null]},{drafts:'invalid'},{}])('reports malformed pages instead of hiding them as empty: %j', async response => {
+  mockAPI.mockResolvedValue(response); mount()
+  expect(await screen.findByRole('alert')).toHaveTextContent('서버 응답 형식')
+  expect(screen.queryByText('저장된 초안이 없습니다')).not.toBeInTheDocument()
+})
+it('preserves loaded drafts when a following page has a nullable empty slice', async () => {
+  mockAPI.mockResolvedValueOnce({drafts:[{...draft,to:null}],next_cursor:'empty-tail'}).mockResolvedValueOnce({drafts:null})
+  mount(); await screen.findByText('서버에 저장된 초안')
+  await userEvent.setup().click(screen.getByRole('button',{name:'초안 더 보기'}))
+  await waitFor(()=>expect(screen.queryByRole('button',{name:'초안 더 보기'})).not.toBeInTheDocument())
+  expect(screen.getByText('서버에 저장된 초안')).toBeInTheDocument()
+  expect(screen.getByText('수신자 미지정')).toBeInTheDocument()
+})
 it('loads persisted drafts into an empty browser cache and follows server cursors', async () => {
   const user=userEvent.setup()
   mockAPI.mockResolvedValueOnce({drafts:[draft],next_cursor:'cursor-two'}).mockResolvedValueOnce({drafts:[{...draft,id:'draft-b',subject:'두 번째 페이지 초안'}]})

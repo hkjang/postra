@@ -1,11 +1,19 @@
 import {useState, type FormEvent} from 'react'
 import {useQuery} from '@tanstack/react-query'
 import {toast} from 'sonner'
+import {z} from 'zod'
 import {api} from '@/api/client'
+import {nullableList, parseResponse} from '@/api/response'
 import {useSession} from '@/app/session'
 import {Badge, Button, EmptyState, ErrorState, Input, Loading, PageHeader, Panel, Textarea} from '@/components/ui'
 
-interface MCPKey {id: string; user_id: string; name: string; key_prefix: string; status: string; scopes: string[]; legacy_scopes?: boolean; last_used_at?: number}
+const keysSchema = z.object({keys: nullableList(z.object({id: z.string(), user_id: z.string(), name: z.string(), key_prefix: z.string(), status: z.string(),
+  scopes: nullableList(z.string()), legacy_scopes: z.boolean().optional(), last_used_at: z.number().optional(),
+}))})
+type MCPKey = z.output<typeof keysSchema>['keys'][number]
+function keyList(value: unknown) {
+  return parseResponse(keysSchema, value)
+}
 interface Capabilities {enabled: boolean; http_enabled: boolean; endpoint: string; permissions: Record<string, boolean>; groups: Record<string, string[]>; aliases: Record<string, string>; request_timeout_sec: number}
 const scopes = [
   ['mail.read', '메일 읽기'], ['mail.search', '검색'], ['mail.ai', 'AI 분석'], ['mail.draft', '초안·서식·서명'],
@@ -19,7 +27,7 @@ function ScopeSelector({value, onChange, disabled, admin, label}: {value: string
 export function MCPKeysPanel({admin = false}: {admin?: boolean}) {
   const principal = useSession()
   const path = admin ? '/api/admin/mcp-keys' : '/api/mcp-keys'
-  const query = useQuery({queryKey: ['mcp-keys', admin], queryFn: ({signal}) => api<{keys: MCPKey[] | null}>(path, {signal})})
+  const query = useQuery({queryKey: ['mcp-keys', admin], queryFn: async ({signal}) => keyList(await api<unknown>(path, {signal}))})
   const [name, setName] = useState('')
   const [selected, setSelected] = useState<string[]>(['mail.read', 'mail.search'])
   const [editing, setEditing] = useState<MCPKey>()
@@ -50,6 +58,7 @@ export function MCPKeysPanel({admin = false}: {admin?: boolean}) {
     try { await navigator.clipboard.writeText(rawKey); toast.success('키를 복사했습니다.') }
     catch { toast.error('키를 선택하여 직접 복사하세요.') }
   }
+  if (query.error) return <Panel><h2>{admin ? '전체 사용자 MCP 키' : '내 MCP 키'}</h2><ErrorState error={query.error} retry={() => query.refetch()}/></Panel>
   return <Panel className="stack"><h2>{admin ? '전체 사용자 MCP 키' : '내 MCP 키'}</h2><p className="muted">키별로 필요한 최소 권한을 부여하세요. 기존 키 원문은 다시 조회할 수 없으며, 생성된 원문을 브라우저 저장소에 보관하지 않습니다.</p>
     {(Boolean(error) || query.error) && <ErrorState error={error || query.error} retry={() => {setError(undefined); void query.refetch()}}/>}
     {!admin && <form className="stack" onSubmit={create}><label className="field">클라이언트·키 이름<Input value={name} onChange={event => setName(event.target.value)} placeholder="회사 AI 도구" maxLength={120} required disabled={busy}/></label><ScopeSelector label="새 키 권한" value={selected} onChange={setSelected} disabled={busy} admin={principal?.role === 'admin'}/><div><Button disabled={busy || !name.trim()} type="submit">키 발급</Button></div></form>}
