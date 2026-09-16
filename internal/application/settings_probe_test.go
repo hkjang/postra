@@ -17,6 +17,11 @@ func TestCandidateAIProbeIsWriteOnlyAndDoesNotChangeLiveSettings(t *testing.T) {
 		if r.Header.Get("Authorization") != "Bearer "+key {
 			t.Error("candidate credential not sent")
 		}
+		if r.Method == http.MethodGet && r.URL.Path == "/models" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"id":"candidate-model","max_model_len":65536}]}`))
+			return
+		}
 		var request struct {
 			Model       string  `json:"model"`
 			Temperature float64 `json:"temperature"`
@@ -34,6 +39,9 @@ func TestCandidateAIProbeIsWriteOnlyAndDoesNotChangeLiveSettings(t *testing.T) {
 	result, err := app.ProbeSettings(ctx, SettingsProbe{Target: "ai", Values: map[string]string{"ai.base_url": server.URL, "ai.model": "candidate-model", "ai.temperature": "0.4"}, Secrets: map[string]string{"ai.api_key_ref": key}})
 	if err != nil || !result.OK {
 		t.Fatalf("probe %+v %v", result, err)
+	}
+	if result.Limits == nil || result.Limits.ContextLength != 65536 || result.Limits.Source != "models" {
+		t.Fatalf("candidate limits missing: %+v", result.Limits)
 	}
 	if current := app.currentAIConfig(); current.BaseURL != old.BaseURL || current.Model != old.Model || current.APIKeyRef != old.APIKeyRef {
 		t.Fatal("probe mutated live config")

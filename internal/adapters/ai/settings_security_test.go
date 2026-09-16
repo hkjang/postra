@@ -15,6 +15,10 @@ import (
 func TestProviderHonorsTemperatureContextAndDisabledModels(t *testing.T) {
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/models" {
+			http.NotFound(w, r)
+			return
+		}
 		calls++
 		var request chatRequest
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {

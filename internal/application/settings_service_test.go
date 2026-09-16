@@ -77,12 +77,15 @@ func TestSettingsLiveAndRestartSemantics(t *testing.T) {
 	}
 	oldSession := settingField(t, view, "mcp.session_timeout_sec").Value
 	oldAddr := app.Cfg.HTTPAddr
-	changed, err := app.AdminPatchSettings(ctx, SettingsPatch{Revision: view.Revision, Values: map[string]string{"send.max_per_minute": "7", "sync.auto_sync_minutes": "3", "ai.temperature": "0.7", "ai.context_length": "64000", "system.http_addr": "127.0.0.1:8888", "mcp.session_timeout_sec": "900"}})
+	changed, err := app.AdminPatchSettings(ctx, SettingsPatch{Revision: view.Revision, Values: map[string]string{"send.max_per_minute": "7", "sync.auto_sync_minutes": "3", "ai.temperature": "0.7", "ai.context_length": "64000", "ai.auto_context_length": "false", "system.http_addr": "127.0.0.1:8888", "mcp.session_timeout_sec": "900"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if app.EffectiveConfig().Send.MaxPerMinute != 7 || app.EffectiveConfig().Sync.AutoSyncMinutes != 3 || app.currentAIConfig().Temperature != .7 {
 		t.Fatal("live settings were not applied")
+	}
+	if app.currentAIConfig().AutoContextLength || app.currentAIConfig().ContextLength != 64000 || settingField(t, changed, "ai.auto_context_length").Apply != "live" {
+		t.Fatal("AI context mode was not applied live")
 	}
 	if app.EffectiveConfig().HTTPAddr != oldAddr {
 		t.Fatal("restart setting was incorrectly hot applied")
@@ -100,6 +103,9 @@ func TestSettingsLiveAndRestartSemantics(t *testing.T) {
 	t.Cleanup(app2.Shutdown)
 	if app2.EffectiveConfig().HTTPAddr != "127.0.0.1:8888" || app2.EffectiveConfig().Send.MaxPerMinute != 7 {
 		t.Fatal("restart lost persisted settings")
+	}
+	if app2.currentAIConfig().AutoContextLength || app2.currentAIConfig().ContextLength != 64000 {
+		t.Fatal("restart lost persisted AI context settings")
 	}
 	view2, _ := app2.AdminSettingsCatalog(ctx)
 	if settingField(t, view2, "mcp.session_timeout_sec").PendingRestart {

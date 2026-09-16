@@ -15,6 +15,7 @@ import (
 
 type SettingsProbe struct {
 	Target  string            `json:"target"`
+	Task    string            `json:"task,omitempty"`
 	Values  map[string]string `json:"values,omitempty"`
 	Secrets map[string]string `json:"secrets,omitempty"`
 }
@@ -24,6 +25,9 @@ type SettingsProbe struct {
 func (a *App) ProbeSettings(ctx context.Context, input SettingsProbe) (AIConnectionResult, error) {
 	if _, err := requireAdmin(ctx); err != nil {
 		return AIConnectionResult{}, err
+	}
+	if len(input.Task) > 100 || strings.ContainsAny(input.Task, "\x00\r\n") {
+		return AIConnectionResult{}, userErrf("AI 작업 이름이 올바르지 않습니다")
 	}
 	if err := validateSettingValues(input.Values); err != nil {
 		return AIConnectionResult{}, err
@@ -51,7 +55,7 @@ func (a *App) ProbeSettings(ctx context.Context, input SettingsProbe) (AIConnect
 		out.LatencyMS = time.Since(start).Milliseconds()
 		if err != nil {
 			out.OK = false
-			out.Message = "연결을 확인하지 못했습니다. 주소, 인증값, TLS, 모델 이름과 서버 상태를 확인하세요."
+			out.Message = providerDiagnostic(err)
 		}
 		result := "ok"
 		if !out.OK {
@@ -95,9 +99,28 @@ func (a *App) ProbeSettings(ctx context.Context, input SettingsProbe) (AIConnect
 		out.OK = true
 		out.Message = "OIDC Discovery를 확인했습니다. Client 인증·Callback 등록은 실제 SSO 로그인으로 별도 확인하세요."
 		return finish(nil)
-	case "ai", "embedding":
+	case "ai", "embedding", "ai_models", "embedding_models":
+		embedding := input.Target == "embedding" || input.Target == "embedding_models"
+		modelsOnly := input.Target == "ai_models" || input.Target == "embedding_models"
+		candidateKey := input.Secrets["ai.api_key_ref"]
+		if !embedding && input.Task != "" {
+			// Test exactly the selected route, without a successful default-model
+			// fallback masking a broken task-specific endpoint or credential.
+			route := cfg.AI.RouteForTask(input.Task)
+			if cfg.AI.TaskModels[input.Task].APIKeyRef != "" {
+				// A global candidate key must not replace an explicitly routed
+				// credential or be sent to that task's different deployment.
+				candidateKey = ""
+			}
+			cfg.AI.BaseURL, cfg.AI.Model, cfg.AI.APIKeyRef = route.BaseURL, route.Model, route.APIKeyRef
+			if route.MaxTokens > 0 && (cfg.AI.MaxTokens <= 0 || route.MaxTokens < cfg.AI.MaxTokens) {
+				cfg.AI.MaxTokens = route.MaxTokens
+			}
+			cfg.AI.TaskModels = nil
+		}
+		out.Model = cfg.AI.Model
 		endpoint := cfg.AI.BaseURL
-		if input.Target == "embedding" && cfg.AI.EmbedBaseURL != "" {
+		if embedding && cfg.AI.EmbedBaseURL != "" {
 			endpoint = cfg.AI.EmbedBaseURL
 		}
 		if !cfg.AI.AllowExternal && !localAIEndpoint(ctx, endpoint) {
@@ -114,9 +137,22 @@ func (a *App) ProbeSettings(ctx context.Context, input SettingsProbe) (AIConnect
 			cfg.AI.ExtraHeaders = headers
 			cfg.AI.ExtraHeadersRef = ""
 		}
-		provider := aiadapter.NewPreview(cfg.AI, a.Secrets, input.Secrets["ai.api_key_ref"])
-		if input.Target == "ai" {
-			result, err := provider.Generate(ctx, domain.GenerationRequest{System: "You are a connectivity probe. Never include secrets.", User: "Reply with exactly POSTRA_AI_OK", MaxTokens: 16})
+		provider := aiadapter.NewPreview(cfg.AI, a.Secrets, candidateKey)
+		if modelsOnly {
+			limits, err := queryAIModelLimits(ctx, provider, cfg.AI, "", embedding)
+			if err != nil {
+				return finish(err)
+			}
+			out.Model, out.Limits = limits.Model, &limits
+			out.OK = limits.Status == "detected" || limits.Status == "manual"
+			out.Message = modelLimitsDiagnostic(limits)
+			return finish(nil)
+		}
+		if !embedding {
+			result, err := provider.Generate(ctx, domain.GenerationRequest{System: "You are a connectivity probe. Never include secrets.", User: "Reply with exactly POSTRA_AI_OK", MaxTokens: 256})
+			if limits, lookupErr := queryAIModelLimits(ctx, provider, cfg.AI, "", false); lookupErr == nil {
+				out.Limits = &limits
+			}
 			out.OK = strings.TrimSpace(result.Text) != ""
 			out.Message = "Chat 연결이 정상입니다."
 			if !out.OK && err == nil {
@@ -125,6 +161,9 @@ func (a *App) ProbeSettings(ctx context.Context, input SettingsProbe) (AIConnect
 			return finish(err)
 		}
 		result, err := provider.Embed(ctx, domain.EmbeddingRequest{Input: []string{"Postra connection test"}})
+		if limits, lookupErr := queryAIModelLimits(ctx, provider, cfg.AI, "", true); lookupErr == nil {
+			out.Limits = &limits
+		}
 		out.OK = len(result.Vectors) == 1 && len(result.Vectors[0]) > 0
 		out.Model = result.Model
 		out.Message = "Embedding 연결이 정상입니다."

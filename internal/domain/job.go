@@ -107,6 +107,25 @@ type AIProvider interface {
 	Embed(ctx context.Context, req EmbeddingRequest) (EmbeddingResult, error)
 }
 
+// AIModelLimits describes the effective deployment limits without exposing
+// credentials, provider error bodies or arbitrary model metadata. A missing
+// limit is unknown, not unlimited. Source is models or config; Status explains
+// whether automatic discovery succeeded or a configured fallback is in use.
+type AIModelLimits struct {
+	Model           string `json:"model"`
+	ContextLength   int    `json:"context_length"`
+	MaxOutputTokens int    `json:"max_output_tokens"`
+	Source          string `json:"source"`
+	Status          string `json:"status"`
+}
+
+// AIModelLimitsProvider is optional so local mocks and non-HTTP providers can
+// keep implementing AIProvider. Discovery sends no mail content or generation
+// requests. Task selects the same route used for generation.
+type AIModelLimitsProvider interface {
+	ModelLimits(ctx context.Context, task string, embedding bool) (AIModelLimits, error)
+}
+
 // SemanticHit is a semantic-search result: a message and its similarity to
 // the query (1.0 = identical direction).
 type SemanticHit struct {

@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -19,7 +20,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"postra/internal/domain"
 	"postra/internal/platform/config"
@@ -27,10 +27,13 @@ import (
 )
 
 type OpenAICompat struct {
-	mu      sync.RWMutex
-	cfg     config.AIConfig
-	secrets domain.SecretStore
-	client  *http.Client
+	mu            sync.RWMutex
+	cfg           config.AIConfig
+	secrets       domain.SecretStore
+	client        *http.Client
+	limitsMu      sync.Mutex
+	limitsCache   map[[32]byte]cachedModelLimits
+	limitsPending map[[32]byte]*pendingModelLimits
 }
 
 func (p *OpenAICompat) Configure(cfg config.AIConfig) {
@@ -64,12 +67,13 @@ type chatMessage struct {
 }
 
 type chatRequest struct {
-	Model          string        `json:"model"`
-	Messages       []chatMessage `json:"messages"`
-	MaxTokens      int           `json:"max_tokens,omitempty"`
-	Temperature    float64       `json:"temperature"`
-	ResponseFormat *respFormat   `json:"response_format,omitempty"`
-	Stream         bool          `json:"stream"`
+	Model               string        `json:"model"`
+	Messages            []chatMessage `json:"messages"`
+	MaxTokens           int           `json:"max_tokens,omitempty"`
+	MaxCompletionTokens int           `json:"max_completion_tokens,omitempty"`
+	Temperature         float64       `json:"temperature"`
+	ResponseFormat      *respFormat   `json:"response_format,omitempty"`
+	Stream              bool          `json:"stream"`
 }
 
 type respFormat struct {
@@ -85,7 +89,8 @@ type apiUsage struct {
 type chatResponse struct {
 	Usage   apiUsage `json:"usage"`
 	Choices []struct {
-		Message chatMessage `json:"message"`
+		Message      chatMessage `json:"message"`
+		FinishReason string      `json:"finish_reason"`
 	} `json:"choices"`
 	Error *struct {
 		Message string `json:"message"`
@@ -96,7 +101,8 @@ type chatResponse struct {
 // chat-completions response (choices[].delta.content).
 type chatStreamChunk struct {
 	Choices []struct {
-		Delta struct {
+		FinishReason string `json:"finish_reason"`
+		Delta        struct {
 			Content string `json:"content"`
 		} `json:"delta"`
 	} `json:"choices"`
@@ -128,7 +134,7 @@ func (p *OpenAICompat) Generate(ctx context.Context, req domain.GenerationReques
 	route := cfg.RouteForTask(req.Task)
 	text, usage, err := p.generateOnce(ctx, cfg, client, route, req, msgs)
 	var policyErr *domain.PublicError
-	if err != nil && req.Task != "" && !errors.As(err, &policyErr) {
+	if err != nil && ctx.Err() == nil && req.Task != "" && !errors.As(err, &policyErr) {
 		// Automatic fallback to the default endpoint when a per-task model
 		// fails (§AI 작업별 모델 라우팅 "실패 시 대체 모델").
 		def := cfg.RouteForTask("")
@@ -151,7 +157,8 @@ func (p *OpenAICompat) Generate(ctx context.Context, req domain.GenerationReques
 	}, nil
 }
 
-// generateOnce performs a single chat-completion call against a resolved route.
+// generateOnce uses one resolved route and at most one safe pre-generation
+// parameter adjustment. It never retries an accepted/partial response.
 func (p *OpenAICompat) generateOnce(ctx context.Context, cfg config.AIConfig, client *http.Client,
 	route config.AITaskRoute, req domain.GenerationRequest, msgs []chatMessage) (string, domain.TokenUsage, error) {
 	if err := checkAIEndpoint(ctx, route.BaseURL, cfg.AllowExternal); err != nil {
@@ -170,91 +177,98 @@ func (p *OpenAICompat) generateOnce(ctx context.Context, cfg config.AIConfig, cl
 	if modelDisabled(cfg, route.Model) {
 		return "", domain.TokenUsage{}, &domain.PublicError{Code: "model_disabled", Message: "관리자가 비활성화한 AI 모델입니다.", Status: 403}
 	}
-	maxTokens := req.MaxTokens
-	if maxTokens <= 0 {
-		maxTokens = route.MaxTokens
+	sensitiveKey, extra, err := p.credentials(ctx, cfg, route.APIKeyRef)
+	if err != nil {
+		return "", domain.TokenUsage{}, err
 	}
-	if cfg.MaxTokens > 0 && maxTokens > cfg.MaxTokens {
-		maxTokens = cfg.MaxTokens
+	meta := discoveredModelLimits{status: "manual"}
+	if cfg.AutoContextLength {
+		meta, err = p.discoverModelLimits(ctx, cfg, client, route, sensitiveKey, extra)
+		if err != nil {
+			return "", domain.TokenUsage{}, err
+		}
 	}
-	if cfg.ContextLength > 0 {
-		// Conservative Unicode-codepoint budget, not a provider-specific
-		// tokenizer. Never silently truncate quoted mail or user intent.
-		budget := maxTokens
-		for _, msg := range msgs {
-			budget += utf8.RuneCountInString(msg.Content) + 8
-		}
-		if budget > cfg.ContextLength {
-			return "", domain.TokenUsage{}, &domain.PublicError{Code: "context_limit", Message: "AI 컨텍스트 예산을 초과했습니다. 입력 범위를 줄이거나 관리자에게 모델 Context Length를 확인하세요.", Status: 400}
-		}
+	limits := effectiveModelLimits(cfg, route, meta, false)
+	maxTokens, err := budgetOutputTokens(req.MaxTokens, limits, estimatePromptTokens(msgs))
+	if err != nil {
+		return "", domain.TokenUsage{}, err
 	}
 	body := chatRequest{Model: route.Model, Messages: msgs, MaxTokens: maxTokens, Temperature: cfg.Temperature, Stream: cfg.Stream}
 	if req.JSONMode {
 		body.ResponseFormat = &respFormat{Type: "json_object"}
 	}
-	b, err := json.Marshal(body)
-	if err != nil {
-		return "", domain.TokenUsage{}, err
-	}
-
-	url := strings.TrimSuffix(route.BaseURL, "/") + "/chat/completions"
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(b))
-	if err != nil {
-		return "", domain.TokenUsage{}, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	var sensitiveKey string
-	if route.APIKeyRef != "" {
-		if p.secrets == nil {
-			return "", domain.TokenUsage{}, fmt.Errorf("AI credential store unavailable")
-		}
-		h, err := p.secrets.Acquire(ctx, domain.SecretRef(route.APIKeyRef), domain.PurposeAIKey)
-		if err != nil {
-			return "", domain.TokenUsage{}, fmt.Errorf("acquire AI key: %w", err)
-		}
-		sensitiveKey = string(h.Reveal())
-		httpReq.Header.Set("Authorization", "Bearer "+sensitiveKey)
-		defer h.Zero()
-	}
-	extra, err := p.extraHeaders(ctx, cfg)
-	if err != nil {
-		return "", domain.TokenUsage{}, err
-	}
-	injectExtraHeaders(httpReq.Header, extra)
 	cleanError := func(message string) string { return sanitizeHeaderError(message, sensitiveKey, extra) }
-
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		return "", domain.TokenUsage{}, fmt.Errorf("AI request: %s", cleanError(err.Error()))
+	var resp *http.Response
+	for attempt := 0; attempt < 2; attempt++ {
+		encoded, marshalErr := json.Marshal(body)
+		if marshalErr != nil {
+			return "", domain.TokenUsage{}, marshalErr
+		}
+		httpReq, requestErr := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(route.BaseURL, "/")+"/chat/completions", bytes.NewReader(encoded))
+		if requestErr != nil {
+			return "", domain.TokenUsage{}, fmt.Errorf("invalid AI request")
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		if sensitiveKey != "" {
+			httpReq.Header.Set("Authorization", "Bearer "+sensitiveKey)
+		}
+		injectExtraHeaders(httpReq.Header, extra)
+		resp, err = client.Do(httpReq)
+		if err != nil {
+			return "", domain.TokenUsage{}, fmt.Errorf("AI request: %s", cleanError(err.Error()))
+		}
+		if resp.StatusCode == http.StatusOK {
+			break
+		}
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnprocessableEntity {
+			adjusted, contextRejected := adjustRejectedRequest(&body, respBody, limits, estimatePromptTokens(msgs))
+			if attempt == 0 && adjusted {
+				continue
+			}
+			if contextRejected {
+				return "", domain.TokenUsage{}, contextLimitError()
+			}
+		}
+		return "", domain.TokenUsage{}, fmt.Errorf("AI API %d: %s", resp.StatusCode, truncate(cleanError(string(respBody)), 300))
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
-		return "", domain.TokenUsage{}, fmt.Errorf("AI API %d: %s", resp.StatusCode,
-			truncate(cleanError(string(respBody)), 300))
-	}
 
 	if isEventStream(resp.Header.Get("Content-Type")) {
 		text, err := parseSSEChatStream(io.LimitReader(resp.Body, 10<<20))
 		if err != nil {
+			var policyErr *domain.PublicError
+			if errors.As(err, &policyErr) {
+				return "", domain.TokenUsage{}, err
+			}
 			return "", domain.TokenUsage{}, fmt.Errorf("%s", cleanError(err.Error()))
+		}
+		if strings.TrimSpace(text) == "" {
+			return "", domain.TokenUsage{}, emptyResponseError()
 		}
 		// Streaming responses carry no usage frame here; report unknown (zero).
 		return text, domain.TokenUsage{}, nil
 	}
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
 	if err != nil {
-		return "", domain.TokenUsage{}, err
+		return "", domain.TokenUsage{}, invalidResponseError()
 	}
 	var cr chatResponse
 	if err := json.Unmarshal(respBody, &cr); err != nil {
-		return "", domain.TokenUsage{}, fmt.Errorf("AI response parse: %w", err)
+		return "", domain.TokenUsage{}, invalidResponseError()
 	}
 	if cr.Error != nil {
-		return "", domain.TokenUsage{}, fmt.Errorf("AI API error: %s", cleanError(cr.Error.Message))
+		return "", domain.TokenUsage{}, invalidResponseError()
 	}
 	if len(cr.Choices) == 0 {
-		return "", domain.TokenUsage{}, fmt.Errorf("AI API returned no choices")
+		return "", domain.TokenUsage{}, emptyResponseError()
+	}
+	if cr.Choices[0].FinishReason == "length" {
+		return "", domain.TokenUsage{}, outputLimitError()
+	}
+	if strings.TrimSpace(cr.Choices[0].Message.Content) == "" {
+		return "", domain.TokenUsage{}, emptyResponseError()
 	}
 	return cr.Choices[0].Message.Content, domain.TokenUsage{
 		PromptTokens:     cr.Usage.PromptTokens,
@@ -268,11 +282,13 @@ func isEventStream(contentType string) bool {
 }
 
 // parseSSEChatStream reads an OpenAI-compatible streaming chat-completions
-// response and concatenates the delta content across chunks. It stops at the
-// "[DONE]" sentinel or EOF and surfaces an in-band error frame.
+// response and concatenates the delta content across chunks. A [DONE] sentinel
+// or explicit terminal finish is required; bare EOF must not turn a broken
+// connection into a successful partial answer.
 func parseSSEChatStream(r io.Reader) (string, error) {
 	br := bufio.NewReader(r)
 	var sb strings.Builder
+	finished := false
 	for {
 		line, err := br.ReadString('\n')
 		if s := strings.TrimRight(line, "\r\n"); strings.HasPrefix(s, "data:") {
@@ -284,21 +300,29 @@ func parseSSEChatStream(r io.Reader) (string, error) {
 				return sb.String(), nil
 			default:
 				var chunk chatStreamChunk
-				if uerr := json.Unmarshal([]byte(payload), &chunk); uerr == nil {
+				if uerr := json.Unmarshal([]byte(payload), &chunk); uerr != nil {
+					return "", invalidResponseError()
+				} else {
 					if chunk.Error != nil {
-						return "", fmt.Errorf("AI API error: %s", chunk.Error.Message)
+						return "", invalidResponseError()
 					}
 					for _, c := range chunk.Choices {
+						if c.FinishReason == "length" {
+							return "", outputLimitError()
+						}
+						if c.FinishReason != "" {
+							finished = true
+						}
 						sb.WriteString(c.Delta.Content)
 					}
 				}
 			}
 		}
 		if err != nil {
-			if err == io.EOF {
+			if err == io.EOF && finished {
 				return sb.String(), nil
 			}
-			return "", err
+			return "", invalidResponseError()
 		}
 	}
 }
@@ -312,6 +336,7 @@ type embedResponse struct {
 	Usage apiUsage `json:"usage"`
 	Data  []struct {
 		Embedding []float32 `json:"embedding"`
+		Index     *int      `json:"index"`
 	} `json:"data"`
 	Error *struct {
 		Message string `json:"message"`
@@ -346,6 +371,25 @@ func (p *OpenAICompat) Embed(ctx context.Context, req domain.EmbeddingRequest) (
 			inputs[i], _ = mask.Mask(inputs[i])
 		}
 	}
+	sensitiveKey, extra, err := p.credentials(ctx, cfg, cfg.APIKeyRef)
+	if err != nil {
+		return domain.EmbeddingResult{}, err
+	}
+	if cfg.AutoContextLength {
+		meta, lookupErr := p.discoverModelLimits(ctx, cfg, client, embeddingRoute(cfg), sensitiveKey, extra)
+		if lookupErr != nil {
+			return domain.EmbeddingResult{}, lookupErr
+		}
+		// An embedding batch has independent inputs, not one concatenated prompt.
+		// Without provider metadata do not impose the chat model's configured cap.
+		if meta.context > 0 {
+			for _, input := range inputs {
+				if estimateInputTokens(input) > meta.context {
+					return domain.EmbeddingResult{}, contextLimitError()
+				}
+			}
+		}
+	}
 	b, err := json.Marshal(embedRequest{Model: model, Input: inputs})
 	if err != nil {
 		return domain.EmbeddingResult{}, err
@@ -356,22 +400,8 @@ func (p *OpenAICompat) Embed(ctx context.Context, req domain.EmbeddingRequest) (
 		return domain.EmbeddingResult{}, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	var sensitiveKey string
-	if cfg.APIKeyRef != "" {
-		if p.secrets == nil {
-			return domain.EmbeddingResult{}, fmt.Errorf("AI credential store unavailable")
-		}
-		h, err := p.secrets.Acquire(ctx, domain.SecretRef(cfg.APIKeyRef), domain.PurposeAIKey)
-		if err != nil {
-			return domain.EmbeddingResult{}, fmt.Errorf("acquire AI key: %w", err)
-		}
-		sensitiveKey = string(h.Reveal())
+	if sensitiveKey != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+sensitiveKey)
-		defer h.Zero()
-	}
-	extra, err := p.extraHeaders(ctx, cfg)
-	if err != nil {
-		return domain.EmbeddingResult{}, err
 	}
 	injectExtraHeaders(httpReq.Header, extra)
 	cleanError := func(message string) string { return sanitizeHeaderError(message, sensitiveKey, extra) }
@@ -390,16 +420,40 @@ func (p *OpenAICompat) Embed(ctx context.Context, req domain.EmbeddingRequest) (
 	}
 	var er embedResponse
 	if err := json.Unmarshal(body, &er); err != nil {
-		return domain.EmbeddingResult{}, fmt.Errorf("embed response parse: %w", err)
+		return domain.EmbeddingResult{}, invalidEmbeddingError()
 	}
 	if er.Error != nil {
 		return domain.EmbeddingResult{}, fmt.Errorf("embed API error: %s",
 			cleanError(er.Error.Message))
 	}
+	if len(er.Data) != len(inputs) {
+		return domain.EmbeddingResult{}, invalidEmbeddingError()
+	}
 	out := domain.EmbeddingResult{Model: model, Vectors: make([][]float32, len(er.Data)),
 		Usage: domain.TokenUsage{PromptTokens: er.Usage.PromptTokens, TotalTokens: er.Usage.TotalTokens}}
+	dimensions := 0
 	for i, d := range er.Data {
-		out.Vectors[i] = d.Embedding
+		index := i
+		// Some compatible providers omit every index, in which case array order
+		// is their contract. Mixed/malformed indexes must never mislabel vectors.
+		if d.Index != nil {
+			index = *d.Index
+		}
+		if (d.Index == nil) != (er.Data[0].Index == nil) || index < 0 || index >= len(out.Vectors) || out.Vectors[index] != nil || len(d.Embedding) == 0 {
+			return domain.EmbeddingResult{}, invalidEmbeddingError()
+		}
+		if dimensions == 0 {
+			dimensions = len(d.Embedding)
+		}
+		if dimensions != len(d.Embedding) {
+			return domain.EmbeddingResult{}, invalidEmbeddingError()
+		}
+		for _, value := range d.Embedding {
+			if math.IsNaN(float64(value)) || math.IsInf(float64(value), 0) {
+				return domain.EmbeddingResult{}, invalidEmbeddingError()
+			}
+		}
+		out.Vectors[index] = d.Embedding
 	}
 	return out, nil
 }

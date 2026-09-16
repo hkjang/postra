@@ -47,7 +47,8 @@ var settingLabels = map[string]string{
 	"ai.api_key_ref":                      "AI API Key",
 	"ai.timeout_sec":                      "AI Timeout(초)",
 	"ai.max_tokens":                       "최대 출력 토큰",
-	"ai.context_length":                   "모델 Context Length",
+	"ai.context_length":                   "Context Length 수동·대체 한도",
+	"ai.auto_context_length":              "모델 Context Length 자동 감지",
 	"ai.temperature":                      "기본 Temperature",
 	"ai.disabled_models":                  "비활성 모델 목록",
 	"ai.allow_external":                   "외부 AI 호출 허용",
@@ -164,6 +165,14 @@ func buildSettingsDefinitions() []SettingDefinition {
 			d.Type = "enum"
 			d.Options = []string{"off", "warn", "block"}
 		}
+		switch b.Key {
+		case "ai.auto_context_length":
+			d.Help = "선택한 모델과 Endpoint의 /models에서 실제 Context 한도를 자동 조회합니다. 한도를 제공하지 않거나 조회할 수 없으면 수동·대체 한도를 사용합니다. 저장 즉시 다음 요청부터 반영됩니다."
+		case "ai.context_length":
+			d.Help = "자동 감지를 끄거나 서버가 한도를 제공하지 않을 때 사용할 입력·출력 합계 한도입니다. 자동 감지가 성공하면 감지된 값이 우선합니다. 입력 본문은 임의로 자르지 않습니다."
+		case "ai.max_tokens":
+			d.Help = "요청할 최대 출력 토큰입니다. 모델·작업별 출력 한도와 입력 후 남은 Context에 맞춰 더 작게 조정될 수 있습니다."
+		}
 		result = append(result, d)
 	}
 	extra := []SettingDefinition{
@@ -277,6 +286,10 @@ func validateSetting(d SettingDefinition, value string) error {
 		switch d.Key {
 		case "auth.session_hours":
 			if n < 1 || n > 8760 {
+				return fail()
+			}
+		case "ai.max_tokens":
+			if n > 10000000 {
 				return fail()
 			}
 		case "sync.max_concurrent_syncs":

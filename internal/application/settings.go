@@ -130,6 +130,8 @@ func (a *App) SystemSettings(ctx context.Context) (map[string]string, error) {
 		SettingAIAPIKeyRef:            aiCfg.APIKeyRef,
 		SettingAITimeout:              strconv.Itoa(aiCfg.TimeoutSec),
 		SettingAIMaxTokens:            strconv.Itoa(aiCfg.MaxTokens),
+		"ai.context_length":           strconv.Itoa(aiCfg.ContextLength),
+		"ai.auto_context_length":      strconv.FormatBool(aiCfg.AutoContextLength),
 		SettingAIAllowExternal:        strconv.FormatBool(aiCfg.AllowExternal),
 		SettingAIMaskExternalPII:      strconv.FormatBool(aiCfg.MaskExternalPII),
 		SettingAIStream:               strconv.FormatBool(aiCfg.Stream),
@@ -573,10 +575,11 @@ func (a *App) applyAISettings(values map[string]string) {
 }
 
 type AIConnectionResult struct {
-	OK        bool   `json:"ok"`
-	Model     string `json:"model"`
-	LatencyMS int64  `json:"latency_ms"`
-	Message   string `json:"message"`
+	OK        bool                  `json:"ok"`
+	Model     string                `json:"model"`
+	LatencyMS int64                 `json:"latency_ms"`
+	Message   string                `json:"message"`
+	Limits    *domain.AIModelLimits `json:"limits,omitempty"`
 }
 
 func (a *App) AdminTestAI(ctx context.Context) (AIConnectionResult, error) {
@@ -586,9 +589,13 @@ func (a *App) AdminTestAI(ctx context.Context) (AIConnectionResult, error) {
 	start := time.Now()
 	result, err := a.AI.Generate(ctx, domain.GenerationRequest{
 		System: "You are a connectivity probe. Never include secrets.",
-		User:   "Reply with exactly: POSTRA_AI_OK", MaxTokens: 16,
+		User:   "Reply with exactly: POSTRA_AI_OK", MaxTokens: 256,
 	})
 	out := AIConnectionResult{Model: a.currentAIConfig().Model, LatencyMS: time.Since(start).Milliseconds()}
+	if limits, lookupErr := queryAIModelLimits(ctx, a.aiRaw, a.currentAIConfig(), "", false); lookupErr == nil {
+		out.Limits = &limits
+	}
+	out.LatencyMS = time.Since(start).Milliseconds()
 	if err != nil {
 		out.Message = providerDiagnostic(err)
 		return out, nil

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -160,8 +161,8 @@ func (a *App) embedMessagesBatch(ctx context.Context, accountID string, messageI
 	if err != nil {
 		return err
 	}
-	if len(res.Vectors) == 0 {
-		return fmt.Errorf("embedder returned no vectors")
+	if err := validateEmbeddingVectors(res.Vectors, len(validIDs)); err != nil {
+		return err
 	}
 
 	// Every embedding is filed under its own message's account. A batch can span
@@ -170,9 +171,6 @@ func (a *App) embedMessagesBatch(ctx context.Context, accountID string, messageI
 	// semantic search silently miss mail and mis-attribute the rest.
 	byAccount := map[string][]EmbeddingItem{}
 	for idx, mID := range validIDs {
-		if idx >= len(res.Vectors) {
-			break
-		}
 		byAccount[accs[idx]] = append(byAccount[accs[idx]], EmbeddingItem{
 			MessageID: mID,
 			ChunkID:   0,
@@ -183,6 +181,30 @@ func (a *App) embedMessagesBatch(ctx context.Context, accountID string, messageI
 	for acc, items := range byAccount {
 		if err := a.VectorStore().SaveEmbeddingsBatch(ctx, userID, acc, items); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// Validate every vector before the first index write. Providers other than
+// the HTTP adapter can implement AIProvider too; a malformed response must
+// never leave a partially indexed batch or count missing vectors as success.
+func validateEmbeddingVectors(vectors [][]float32, expected int) error {
+	if len(vectors) != expected || expected == 0 {
+		return fmt.Errorf("embedder returned an unexpected vector count")
+	}
+	dimension := len(vectors[0])
+	if dimension == 0 {
+		return fmt.Errorf("embedder returned an empty vector")
+	}
+	for _, vector := range vectors {
+		if len(vector) != dimension {
+			return fmt.Errorf("embedder returned inconsistent vector dimensions")
+		}
+		for _, value := range vector {
+			if math.IsNaN(float64(value)) || math.IsInf(float64(value), 0) {
+				return fmt.Errorf("embedder returned a non-finite vector value")
+			}
 		}
 	}
 	return nil
@@ -201,8 +223,8 @@ func (a *App) SemanticSearch(ctx context.Context, query, accountID string, limit
 	if err != nil {
 		return nil, err
 	}
-	if len(res.Vectors) == 0 {
-		return nil, userErrf("embedder returned no vector for the query")
+	if err := validateEmbeddingVectors(res.Vectors, 1); err != nil {
+		return nil, err
 	}
 	userID := userIDFrom(ctx)
 	hits, err := a.VectorStore().SemanticSearch(ctx, userID, accountID, res.Vectors[0], limit)

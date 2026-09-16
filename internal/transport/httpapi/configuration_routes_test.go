@@ -2,12 +2,57 @@ package httpapi
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"postra/internal/application"
 	"postra/internal/domain"
 )
+
+func TestAIModelLimitProbeAliasesEnforceAdminAndCSRF(t *testing.T) {
+	app := browserTestApp(t, true)
+	admin, csrf := browserIdentity(t, app, "model-admin", domain.RoleAdmin)
+	user, userCSRF := browserIdentity(t, app, "model-user", domain.RoleUser)
+	var calls atomic.Int32
+	modelServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.Method != "GET" || r.URL.Path != "/v1/models" {
+			t.Errorf("unexpected provider request %s %s", r.Method, r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer write-only-probe-key" {
+			t.Error("candidate credential not forwarded")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"actual-model","max_model_len":16000}]}`))
+	}))
+	defer modelServer.Close()
+	body, _ := json.Marshal(application.SettingsProbe{Target: "ai_models", Values: map[string]string{"ai.base_url": modelServer.URL + "/v1", "ai.model": "actual-model"}, Secrets: map[string]string{"ai.api_key_ref": "write-only-probe-key"}})
+	h := New(app, "").Handler()
+	for _, prefix := range []string{"/api", "/api/v1"} {
+		path := prefix + "/admin/configuration/test"
+		before := calls.Load()
+		for _, attempt := range []struct{ identity, token, origin string }{{"", "", "https://postra.test"}, {user, userCSRF, "https://postra.test"}, {admin, "", "https://evil.test"}} {
+			w := browserRequest(h, "POST", path, attempt.identity, attempt.token, attempt.origin, string(body))
+			if w.Code != 401 && w.Code != 403 {
+				t.Fatalf("unprivileged model probe allowed: %d", w.Code)
+			}
+		}
+		if calls.Load() != before {
+			t.Fatal("forbidden probes contacted model server")
+		}
+		w := browserRequest(h, "POST", path, admin, csrf, "https://postra.test", string(body))
+		var result application.AIConnectionResult
+		if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil || w.Code != 200 || !result.OK || result.Limits == nil || result.Limits.ContextLength != 16000 || result.Limits.Source != "models" {
+			t.Fatalf("wrong probe contract: %d %s", w.Code, w.Body.String())
+		}
+		if strings.Contains(w.Body.String(), "write-only-probe-key") {
+			t.Fatal("probe credential exposed")
+		}
+	}
+}
 
 func TestConfigurationAPIUsesSameVersionedContractAndCSRF(t *testing.T) {
 	app := browserTestApp(t, true)

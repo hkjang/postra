@@ -281,8 +281,9 @@ func (a *App) runAnalysis(ctx context.Context, analysisType, targetType, targetI
 		Route       any
 		Temperature float64
 		Context     int
+		AutoContext bool
 		Mask        bool
-	}{route, aiCfg.Temperature, aiCfg.ContextLength, aiCfg.MaskExternalPII})
+	}{route, aiCfg.Temperature, aiCfg.ContextLength, aiCfg.AutoContextLength, aiCfg.MaskExternalPII})
 	sum := sha256.Sum256([]byte(analysisType + "|" + pv + "|" + string(routeJSON) + "|" + userTask + "|" + untrusted))
 	inputHash := hex.EncodeToString(sum[:])
 	if cached, err := a.Store.FindCachedAnalysis(ctx, userID, analysisType, inputHash, routedModel); err == nil {

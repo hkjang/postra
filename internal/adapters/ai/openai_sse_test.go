@@ -36,6 +36,13 @@ func TestParseSSEChatStreamError(t *testing.T) {
 	}
 }
 
+func TestParseSSEChatStreamAllowsTerminalFinishAtEOF(t *testing.T) {
+	result, err := parseSSEChatStream(strings.NewReader("data: {\"choices\":[{\"delta\":{\"content\":\"complete\"},\"finish_reason\":\"stop\"}]}\n"))
+	if err != nil || result != "complete" {
+		t.Fatalf("terminal finish not accepted: %q %v", result, err)
+	}
+}
+
 // TestGenerateStreaming verifies Generate consumes a text/event-stream
 // response when the server honors stream=true.
 func TestGenerateStreaming(t *testing.T) {

@@ -38,7 +38,19 @@ Postra의 운영 설정은 `/app/admin` 운영 콘솔, 개인 설정은 `/app/se
 
 ## AI와 연결 시험
 
-기본 Chat/Embedding 모델, 별도 임베딩 Endpoint, API Key, 암호화한 게이트웨이 추가 헤더, timeout, 출력 토큰, Context Length, Temperature, 모델 비활성 목록, 외부 호출 허용·PII 마스킹을 관리한다. Context Length 검사는 모델별 tokenizer가 아닌 **보수적인 Unicode 문자 예산**이다. 실제 provider tokenizer 한도의 대체 보증은 아니다.
+기본 Chat/Embedding 모델, 별도 임베딩 Endpoint, API Key, 암호화한 게이트웨이 추가 헤더, timeout, 출력 토큰, Context Length, Temperature, 모델 비활성 목록, 외부 호출 허용·PII 마스킹을 관리한다.
+
+**모델 Context Length 자동 감지**(`ai.auto_context_length`, 초기 환경변수 `POSTRA_AI_AUTO_CONTEXT_LENGTH`)는 기본 활성화다. 설정된 Base URL이 `http://ai.corp.local/v1`이면 `GET http://ai.corp.local/v1/models`에서 **선택한 모델 ID와 정확히 일치하는 항목**의 실행 한도를 조회한다. 기본 Chat, 작업별 모델과 Endpoint, 임베딩 전용 Endpoint를 각각 확인하며 다른 모델의 한도나 모델 이름 추측값을 가져오지 않는다. 조회에는 해당 경로의 API Key와 게이트웨이 헤더를 사용하지만 메일 내용은 보내지 않는다. 외부 AI 호출 정책·비활성 모델·리다이렉트 차단도 동일하게 적용한다.
+
+자동 감지 시 `max_model_len`, `context_length` 등 서버가 제공하는 한도가 기존 기본값보다 우선한다. `/models` 미지원·응답 누락·인증/연결 실패·선택 모델 누락 시 Chat은 **Context Length 수동·대체 한도**(`ai.context_length`, 기본 32768)를 사용한다. 자동 감지를 끄면 이 값을 명시적인 수동 한도로 사용한다. 임베딩 모델 한도를 얻지 못하면 미제공으로 표시하며, 서로 다른 Chat 모델 한도를 임베딩에 대신 적용하지 않는다. 모델 목록의 학습 한도(`n_ctx_train` 등)를 실행 서버의 실제 한도로 간주하지 않는다.
+
+입력과 guardrail의 토큰 사용량을 추정한 뒤 남은 Context에 맞춰 출력 예약량을 낮춘다. 요청값·조직 최대 출력·작업별 최대 출력·서버가 제공한 출력 상한 중 작은 값을 지키며, 입력 본문이나 시스템 지시문을 몰래 잘라내지 않는다. 입력만으로 한도를 초과하면 안전한 오류로 안내한다. 이 검사는 **모델별 tokenizer가 아닌 Unicode 기반 추정**이므로 실제 토큰 수를 보증하지 않는다. 서버가 생성 전 400/422 응답으로 정확한 Context/출력 한도 또는 `max_completion_tokens` 사용 요구를 알려주는 경우에만 같은 입력으로 한 번 조정해 재시도한다. 출력이 `length`로 끝났거나 응답이 중단·손상되면 불완전한 결과를 사용하거나 기본 모델에 자동 재전송하지 않는다.
+
+성공한 한도 조회는 최대 10분, 미제공·실패는 30초 동안 캐시하며 동일 경로의 동시 조회를 합친다. Endpoint·모델·인증값·게이트웨이 헤더가 바뀌면 이전 경로의 캐시를 재사용하지 않는다. 모델 목록 조회는 최대 3초로 제한하며 외부 공개 모델 카탈로그에 접속하지 않으므로 폐쇄망 운영을 유지한다.
+
+관리자 AI / 검색 및 임베딩 화면에서 **모델 한도 조회**를 실행하면 AI 생성 요청 없이 입력 중인 설정과 작업 모델을 확인할 수 있다. 실제 적용 한도와 자동 감지·수동·대체값 출처를 표시한다. 설정을 바꾸거나 저장하면 이전 진단 결과는 폐기하며 늦게 도착한 결과로 새 설정의 상태를 덮어쓰지 않는다. Chat 연결 시험의 출력 한도 도달·빈 응답·손상된 응답은 일반 인증 실패와 구분한다. 임베딩 응답은 입력과 벡터 개수·순서·차원·유한한 수치를 검사하며 일부만 온 응답을 전체 색인 성공으로 기록하지 않는다.
+
+참고: [OpenAI 표준 모델 목록](https://developers.openai.com/api/reference/resources/models/methods/list)은 Context 한도 필드를 보장하지 않는다. [vLLM 모델 목록 구현](https://github.com/vllm-project/vllm/blob/main/vllm/entrypoints/openai/models/serving.py)은 실행 설정의 `max_model_len`을 제공한다. 서버에서 한도를 제공하지 않는 경우에는 해당 배포의 한도를 수동·대체 값에 설정해야 한다.
 
 작업별 모델 표는 메일 요약(`summarize`), 작성(`compose`), 분류(`classify`), Q&A(`qa`), 다시 쓰기(`rewrite`), 브리핑(`digest`)을 제공한다. 고급 JSON에는 `model`, `base_url`, `max_tokens`, `api_key_ref`를 지정할 수 있다. `api_key_ref`는 등록된 `sec_...` 참조이며 키 원문을 넣을 수 없다. 알 수 없는 필드와 인증정보/쿼리 문자열이 포함된 URL은 저장 전에 거부한다. 임베딩은 별도 Embedding Model/Endpoint 설정을 사용한다.
 

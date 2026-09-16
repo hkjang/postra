@@ -263,6 +263,13 @@ func TestProviderDiagnosticsClassificationsAreFixed(t *testing.T) {
 	for _, err := range []error{errors.New(diagnosticSecret), context.DeadlineExceeded, context.Canceled, &domain.AuthError{Err: errors.New(diagnosticSecret)}} {
 		assertNoProviderEcho(t, providerDiagnostic(err))
 	}
+	for code, expected := range map[string]string{"context_limit": providerAIContext, "output_limit": providerAIOutput, "empty_response": providerAIEmpty, "model_disabled": providerAIDisabled, "invalid_embedding": providerAIEmbedding, "invalid_response": providerAIResponse, "upstream_untrusted": providerFailed} {
+		err := &domain.PublicError{Code: code, Message: diagnosticSecret, Status: 400}
+		if got := providerDiagnostic(err); got != expected {
+			t.Fatalf("unsafe or unhelpful diagnostic for %s", code)
+		}
+		assertNoProviderEcho(t, providerDiagnostic(err))
+	}
 	// Fixed legacy recovery messages must not be accepted by prefix.
 	job := &domain.Job{Type: "embed", Status: domain.JobFailed, Error: providerEmbedFailed + diagnosticSecret, UpdatedAt: time.Now().Unix()}
 	assertNoProviderEcho(t, safeJob(job))

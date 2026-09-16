@@ -47,6 +47,7 @@ var Bindings = []Binding{
 	{"ai.timeout_sec", "AI.TimeoutSec", "POSTRA_AI_TIMEOUT_SEC"},
 	{"ai.max_tokens", "AI.MaxTokens", "POSTRA_AI_MAX_TOKENS"},
 	{"ai.context_length", "AI.ContextLength", "POSTRA_AI_CONTEXT_LENGTH"},
+	{"ai.auto_context_length", "AI.AutoContextLength", "POSTRA_AI_AUTO_CONTEXT_LENGTH"},
 	{"ai.temperature", "AI.Temperature", "POSTRA_AI_TEMPERATURE"},
 	{"ai.disabled_models", "AI.DisabledModels", "POSTRA_AI_DISABLED_MODELS"},
 	{"ai.allow_external", "AI.AllowExternal", "POSTRA_AI_ALLOW_EXTERNAL"},

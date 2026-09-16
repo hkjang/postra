@@ -23,6 +23,12 @@ const (
 	providerSyncFailed  = "메일 동기화에 실패했습니다. 서버 연결·인증 설정과 계정 상태를 확인하세요."
 	providerEmbedFailed = "메일 색인 작업에 실패했습니다. AI 연결과 벡터 저장소 설정을 확인하세요."
 	providerHidden      = "서버 진단 내용은 보안을 위해 숨겼습니다. 작업 상태와 통계를 확인하세요."
+	providerAIContext   = "AI 입력이 모델 Context 한도를 초과했습니다. 입력 범위를 줄이거나 관리자에서 모델 한도 자동 감지·대체 한도를 확인하세요."
+	providerAIOutput    = "AI 출력이 토큰 한도에서 중단되었습니다. 연결·인증 실패가 아닙니다. 출력 상한을 확인하거나 더 짧은 답변을 요청하세요."
+	providerAIEmpty     = "AI 서버에 연결했으나 사용할 텍스트가 없습니다. 모델의 생성 방식과 출력 토큰 설정을 확인하세요."
+	providerAIDisabled  = "관리자가 비활성화한 AI 모델입니다. 사용할 모델을 확인하세요."
+	providerAIEmbedding = "임베딩 응답의 개수·순서·벡터 형식이 올바르지 않아 저장하지 않았습니다. 모델과 임베딩 서버를 확인하세요."
+	providerAIResponse  = "AI 응답이 중간에 끊기거나 형식이 올바르지 않아 사용하지 않았습니다. 서버 상태를 확인한 뒤 다시 시도하세요."
 )
 
 func providerDiagnostic(err error) string {
@@ -30,7 +36,26 @@ func providerDiagnostic(err error) string {
 		return ""
 	}
 	var auth *domain.AuthError
+	var public *domain.PublicError
 	var network net.Error
+	// Only recognize locally defined codes, never trust Message/Details even
+	// when an adapter wraps an upstream response in a PublicError.
+	if errors.As(err, &public) {
+		switch public.Code {
+		case "context_limit":
+			return providerAIContext
+		case "output_limit":
+			return providerAIOutput
+		case "empty_response":
+			return providerAIEmpty
+		case "model_disabled":
+			return providerAIDisabled
+		case "invalid_embedding":
+			return providerAIEmbedding
+		case "invalid_response":
+			return providerAIResponse
+		}
+	}
 	switch {
 	case errors.Is(err, context.Canceled):
 		return providerCancelled
@@ -85,7 +110,8 @@ func jobDiagnostic(kind string, status domain.JobStatus, message string) string 
 	// message merely because it begins with a known error prefix.
 	switch message {
 	case providerFailed, providerAuthFailed, providerTimeout, providerCancelled,
-		providerUnexpected, providerListFailed, providerSyncFailed, providerEmbedFailed, providerHidden:
+		providerUnexpected, providerListFailed, providerSyncFailed, providerEmbedFailed, providerHidden,
+		providerAIContext, providerAIOutput, providerAIEmpty, providerAIDisabled, providerAIEmbedding, providerAIResponse:
 		return message
 	}
 	if status == domain.JobCancelled {

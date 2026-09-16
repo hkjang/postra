@@ -8,12 +8,14 @@ import {api} from '@/api/client'
 import type {SettingsPatch} from '@/api/contracts.generated'
 import {Badge, Button, EmptyState, ErrorState, Input, Loading} from '@/components/ui'
 import type {SettingField, SettingsView} from './preferences'
+import {ConnectionDiagnostic, useConnectionProbe} from './ConnectionDiagnostic'
 import './settings.css'
 
 const sources: Record<string, string> = {default: '프로그램 기본값', configuration: '배포 설정 파일', environment: '환경변수 초기값', admin: '관리자 설정', user: '사용자 설정', account: '메일 계정 설정', policy: '관리자 강제 정책', admin_policy: '관리자 강제 정책', fixed_policy: '항상 적용되는 고정 정책'}
 const optionLabels: Record<string, string> = {true: '사용', false: '사용 안 함', system: '시스템 테마', light: '라이트', dark: '다크', comfortable: '편안하게', compact: '간결하게', right: '오른쪽', bottom: '아래', hidden: '숨김', auto: '자동 서식', text: '일반 텍스트', html: 'HTML', markdown: 'Markdown', ko: '한국어', en: 'English', relative: '상대 시간', absolute: '날짜 및 시간', iso: 'ISO 날짜', full: '항상 전체 서명', smart: '새 메일 전체 · 첫 회신 간결 · 후속 회신 생략', none: '사용 안 함'}
 export const adminCategory = (field: SettingField) => ({appearance: 'general', personal_mail: 'mail', compose: 'mail', account: 'mail', personal_ai: 'ai', personal_notifications: 'notifications', vector: 'search'}[field.category] || field.category)
 const secretLabel = (field: SettingField) => field.registered ? '등록됨 · 새 값을 입력하면 교체' : '미등록 · 새 값 입력'
+const tasks = [['summarize', '메일 요약'], ['compose', '메일 작성'], ['classify', '메일 분류'], ['qa', 'Q&A'], ['rewrite', '다시 쓰기'], ['digest', '브리핑']]
 
 function NavigationGuard({dirty, onDiscard}: {dirty: boolean; onDiscard: () => void}) {
   const blocker = useBlocker(({currentLocation, nextLocation}) => dirty && currentLocation.pathname + currentLocation.search !== nextLocation.pathname + nextLocation.search)
@@ -24,7 +26,6 @@ function TaskModels({value, onChange, disabled}: {value: string; onChange: (valu
   type Route = {model?: string; base_url?: string; max_tokens?: number; api_key_ref?: string}
   let routes: Record<string, Route> = {}
   try {routes = JSON.parse(value || '{}') || {}} catch { /* preserve invalid input for correction below */ }
-  const tasks = [['summarize', '메일 요약'], ['compose', '메일 작성'], ['classify', '메일 분류'], ['qa', 'Q&A'], ['rewrite', '다시 쓰기'], ['digest', '브리핑']]
   const change = (task: string, model: string) => {
     const next = {...routes, [task]: {...routes[task], model}}
     if (!model && !next[task].base_url && !next[task].api_key_ref && !next[task].max_tokens) delete next[task]
@@ -48,8 +49,8 @@ export function SettingsEditor({admin = false, accountID, category, query: exter
   const [query, setQuery] = useState('')
   const [confirm, setConfirm] = useState(false)
   const [busy, setBusy] = useState(false)
-	const [probeBusy, setProbeBusy] = useState(false)
-	const [probe, setProbe] = useState<{ok:boolean;message:string;latency_ms:number}>()
+  const [probeTask, setProbeTask] = useState('')
+  const probe = useConnectionProbe(`${path}:${category || ''}:${current.data?.revision || ''}`)
   const [error, setError] = useState<unknown>()
   const dirty = Object.keys(values).length + Object.values(secrets).filter(Boolean).length + Object.keys(locks).length + reset.length
   // Do not erase a pending form on a background refresh. The revision check
@@ -69,19 +70,19 @@ export function SettingsEditor({admin = false, accountID, category, query: exter
       (!search || [field.key, field.label, field.help, ...(field.environment || [])].join(' ').toLowerCase().includes(search)))
   }, [current.data, category, query, externalQuery])
   const edit = (field: SettingField, value: string) => {
+    probe.clear()
     setReset(old => old.filter(key => key !== field.key))
     if (field.secret) setSecrets(old => ({...old, [field.key]: value}))
     else setValues(old => {const next = {...old}; if (field.value === value) delete next[field.key]; else next[field.key] = value; return next})
   }
-  const discard = () => {setValues({}); setSecrets({}); setLocks({}); setReset([]); setConfirm(false); setError(undefined); setProbe(undefined)}
+  const discard = () => {setValues({}); setSecrets({}); setLocks({}); setReset([]); setConfirm(false); setError(undefined); probe.clear()}
   const changedFields = current.data?.fields?.filter(field => field.key in values || secrets[field.key] || field.key in locks || reset.includes(field.key)) || []
-  async function testCandidate(target: string) {
-    setProbeBusy(true);setProbe(undefined);setError(undefined)
-    try {setProbe(await api('/api/admin/configuration/test',{method:'POST',body:{target,values,secrets}}))}
-    catch(err){setError(err)}finally{setProbeBusy(false)}
+  function testCandidate(target: string) {
+    setError(undefined)
+    void probe.run('/api/admin/configuration/test', {target, values, secrets, ...(['ai', 'ai_models'].includes(target) && probeTask ? {task: probeTask} : {})}, target.endsWith('_models'))
   }
   async function save() {
-    setBusy(true); setError(undefined)
+    probe.clear(); setBusy(true); setError(undefined)
     try {
       const saved = await api<SettingsView>(path, {method: 'PATCH', body: {values, secrets, locks, reset, revision} satisfies SettingsPatch})
       cache.setQueryData(key, saved)
@@ -98,7 +99,16 @@ export function SettingsEditor({admin = false, accountID, category, query: exter
     {dataRouter && <NavigationGuard dirty={dirty > 0} onDiscard={discard}/>}
     {externalQuery === undefined && <label className="settings-search"><Search size={17}/><Input aria-label="설정 검색" placeholder={admin ? '설정 이름 또는 POSTRA_AI_BASE_URL 검색' : '개인 설정 검색'} value={query} onChange={event => setQuery(event.target.value)}/></label>}
     {error != null && <ErrorState error={error}/>}
-    {admin && ['ai','search','auth','storage'].includes(category || '') && <div className="stack"><div className="row"><Button variant="outline" disabled={busy||probeBusy} onClick={()=>testCandidate(category==='auth'?'oidc':category==='storage'?'database':'ai')}>{probeBusy?'시험 중…':category==='auth'?'저장 전 OIDC Discovery 확인':category==='storage'?'현재 Database 연결 확인':'저장 전 AI 연결 확인'}</Button>{['ai','search'].includes(category || '')&&<Button variant="outline" disabled={busy||probeBusy} onClick={()=>testCandidate('embedding')}>저장 전 Embedding 확인</Button>}</div><small className="muted">입력한 변경값으로 시험합니다. 설정·비밀값을 저장하거나 운영 연결을 교체하지 않습니다.</small>{probe&&<p role="status"><Badge variant={probe.ok?'secondary':'destructive'}>{probe.ok?'연결 성공':'확인 필요'}</Badge> {probe.message} · {probe.latency_ms}ms</p>}</div>}
+    {admin && ['ai', 'search', 'auth', 'storage'].includes(category || '') && <div className="stack">
+      {['ai', 'search'].includes(category || '') && <>
+        <label className="field probe-task"><span>Chat 진단 작업</span><select className="input" aria-label="Chat 진단 작업" disabled={busy} value={probeTask} onChange={event => {probe.clear(); setProbeTask(event.target.value)}}><option value="">기본 Chat Model</option>{tasks.map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label>
+        <div className="row settings-probe-actions"><Button variant="outline" disabled={busy || probe.busy} onClick={() => testCandidate('ai_models')}>저장 전 Chat 모델 한도 조회</Button><Button variant="outline" disabled={busy || probe.busy} onClick={() => testCandidate('embedding_models')}>저장 전 Embedding 모델 한도 조회</Button></div>
+        <small className="muted">모델 한도 조회는 /models 메타데이터만 읽으며 Chat 생성·임베딩을 실행하지 않습니다.</small>
+      </>}
+      <div className="row settings-probe-actions"><Button variant="outline" disabled={busy || probe.busy} onClick={() => testCandidate(category === 'auth' ? 'oidc' : category === 'storage' ? 'database' : 'ai')}>{category === 'auth' ? '저장 전 OIDC Discovery 확인' : category === 'storage' ? '현재 Database 연결 확인' : '저장 전 AI 연결 확인'}</Button>{['ai', 'search'].includes(category || '') && <Button variant="outline" disabled={busy || probe.busy} onClick={() => testCandidate('embedding')}>저장 전 Embedding 확인</Button>}</div>
+      <small className="muted">입력한 변경값으로 시험합니다. 설정·비밀값을 저장하거나 운영 연결을 교체하지 않습니다.</small>
+      {probe.busy && <p role="status">확인 중…</p>}{probe.result && <ConnectionDiagnostic result={probe.result.data} metadataOnly={probe.result.metadataOnly} showModelLimits={['ai', 'search'].includes(category || '')}/>} {probe.error != null && <ErrorState error={probe.error}/>}
+    </div>}
     {selected.length === 0 && <EmptyState title="검색된 설정이 없습니다"/>}
     <div className="settings-fields">{selected.map(field => {
       const value = field.secret ? secrets[field.key] || '' : values[field.key] ?? field.value
@@ -110,7 +120,7 @@ export function SettingsEditor({admin = false, accountID, category, query: exter
         </div>
         <div className="setting-control">{field.key === 'ai.task_models' ? <TaskModels value={value} onChange={value => edit(field, value)} disabled={disabled}/> : field.type === 'bool' ? <label className="row setting-toggle"><input id={id} type="checkbox" disabled={disabled} checked={value === 'true'} onChange={event => edit(field, String(event.target.checked))}/>{value === 'true' ? '사용' : '사용 안 함'}</label> : field.type === 'enum' ? <select className="input" id={id} disabled={disabled} value={value} onChange={event => edit(field, event.target.value)}>{field.options?.map(option => <option key={option} value={option}>{optionLabels[option] || option || '기본값'}</option>)}</select> : ['account', 'signature'].includes(field.type) ? <select id={id} className="input" disabled={disabled} value={value} onChange={event => edit(field, event.target.value)}><option value="">자동 선택 / 없음</option>{(field.type === 'account' ? accounts.data || [] : signatures.data || []).map(item => <option key={item.id} value={item.id}>{item.name || item.id}</option>)}</select> : field.type === 'json' || field.type === 'text' ? <textarea id={id} className="input" rows={4} disabled={disabled} value={value} onChange={event => edit(field, event.target.value)}/> : <Input id={id} type={field.secret ? 'password' : ['int', 'number'].includes(field.type) ? 'number' : field.type === 'url' ? 'url' : 'text'} step={field.type === 'number' ? 'any' : undefined} autoComplete={field.secret ? 'new-password' : 'off'} disabled={disabled} placeholder={field.secret ? secretLabel(field) : undefined} value={value} onChange={event => edit(field, event.target.value)}/>}
           {field.secret && <small className="muted">{field.registered ? '등록됨' : '미등록'} · 원문은 재조회할 수 없습니다. 빈 값은 유지합니다.</small>}
-          {admin && field.lockable && <label className="row policy-lock"><input type="checkbox" checked={locks[field.key] ?? field.locked} disabled={busy} onChange={event => setLocks(old => {const next = {...old}; if (event.target.checked === field.locked) delete next[field.key]; else next[field.key] = event.target.checked; return next})}/><LockKeyhole size={13}/>관리자 값 강제 적용</label>}
+          {admin && field.lockable && <label className="row policy-lock"><input type="checkbox" checked={locks[field.key] ?? field.locked} disabled={busy} onChange={event => {probe.clear(); setLocks(old => {const next = {...old}; if (event.target.checked === field.locked) delete next[field.key]; else next[field.key] = event.target.checked; return next})}}/><LockKeyhole size={13}/>관리자 값 강제 적용</label>}
           {!admin && !field.locked && ['user', 'account'].includes(field.source) && <Button variant="ghost" size="sm" disabled={busy || reset.includes(field.key)} onClick={() => {setReset(old => [...old, field.key]); setValues(old => {const next = {...old}; delete next[field.key]; return next})}}>{reset.includes(field.key) ? '상속값으로 복원 예정' : '기본값 상속으로 복원'}</Button>}
           {field.type === 'signature' && <Link to="/settings/signatures">서명 여러 개 관리</Link>}
         </div>

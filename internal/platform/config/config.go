@@ -146,20 +146,23 @@ type SendConfig struct {
 type AIConfig struct {
 	// BaseURL of an OpenAI-compatible API, e.g. "http://localhost:8000/v1"
 	// (vLLM, Ollama, or a hosted provider).
-	BaseURL         string            `json:"base_url"`
-	Model           string            `json:"model"`
-	EmbedModel      string            `json:"embed_model"`
-	EmbedBaseURL    string            `json:"embed_base_url"`
-	APIKeyRef       string            `json:"api_key_ref"`
-	TimeoutSec      int               `json:"timeout_sec"`
-	MaxTokens       int               `json:"max_tokens"`
-	ContextLength   int               `json:"context_length"`
-	Temperature     float64           `json:"temperature"`
-	DisabledModels  []string          `json:"disabled_models,omitempty"`
-	AllowExternal   bool              `json:"allow_external"`
-	MaskExternalPII bool              `json:"mask_external_pii"`
-	PromptVersions  map[string]string `json:"prompt_versions,omitempty"`
-	Stream          bool              `json:"stream"`
+	BaseURL       string `json:"base_url"`
+	Model         string `json:"model"`
+	EmbedModel    string `json:"embed_model"`
+	EmbedBaseURL  string `json:"embed_base_url"`
+	APIKeyRef     string `json:"api_key_ref"`
+	TimeoutSec    int    `json:"timeout_sec"`
+	MaxTokens     int    `json:"max_tokens"`
+	ContextLength int    `json:"context_length"`
+	// AutoContextLength uses the selected deployment's /models metadata when
+	// available. ContextLength remains the fallback or explicit manual limit.
+	AutoContextLength bool              `json:"auto_context_length"`
+	Temperature       float64           `json:"temperature"`
+	DisabledModels    []string          `json:"disabled_models,omitempty"`
+	AllowExternal     bool              `json:"allow_external"`
+	MaskExternalPII   bool              `json:"mask_external_pii"`
+	PromptVersions    map[string]string `json:"prompt_versions,omitempty"`
+	Stream            bool              `json:"stream"`
 	// CostPer1MInputTokens / CostPer1MOutputTokens price this deployment's model
 	// (USD per 1,000,000 tokens) so AI spend is observable in Prometheus. 0
 	// leaves the cost metric at zero while token counters still record usage.
@@ -262,13 +265,14 @@ func Default() Config {
 			OIDCAdminGroup:    "postra-admins",
 		},
 		AI: AIConfig{
-			BaseURL:         "http://127.0.0.1:11434/v1",
-			Model:           "llama3.1",
-			TimeoutSec:      120,
-			MaxTokens:       2048,
-			ContextLength:   32768,
-			Temperature:     0.2,
-			MaskExternalPII: true,
+			BaseURL:           "http://127.0.0.1:11434/v1",
+			Model:             "llama3.1",
+			TimeoutSec:        120,
+			MaxTokens:         2048,
+			ContextLength:     32768,
+			AutoContextLength: true,
+			Temperature:       0.2,
+			MaskExternalPII:   true,
 		},
 		Sync: SyncConfig{
 			MaxMessageBytes:    50 << 20,

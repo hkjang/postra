@@ -3,8 +3,10 @@ import {Link, useSearchParams} from 'react-router-dom'
 import {useQuery} from '@tanstack/react-query'
 import {Activity, Search} from 'lucide-react'
 import {api} from '@/api/client'
-import {Badge, Button, ErrorState, Input, PageHeader} from '@/components/ui'
+import {Button, ErrorState, Input, PageHeader} from '@/components/ui'
 import {SettingsEditor} from '@/features/settings/SettingsEditor'
+import {ConnectionDiagnostic, useConnectionProbe} from '@/features/settings/ConnectionDiagnostic'
+import type {SettingsView} from '@/features/settings/preferences'
 import {UsersPanel, ProvisioningPanel, PurgePanel} from './users'
 import {AuditPanel, IncidentsPanel} from './activity'
 import {MCPAdminPage} from '@/features/mcp'
@@ -14,15 +16,10 @@ const aliases: Record<string, string> = {sso: 'auth', settings: 'sync', keys: 'm
 const states: Record<string, string> = {healthy: '정상', configured: '설정됨 · 연결 미확인', enabled: '활성', disabled: '사용 중지', unconfigured: '미설정', unavailable: '연결 확인 필요'}
 
 function ConnectionTests({category}: {category: string}) {
-  const [result, setResult] = useState<{ok?: boolean; message?: string; latency_ms?: number}>()
-  const [error, setError] = useState<unknown>()
-  const [busy, setBusy] = useState(false)
+  const configuration = useQuery({queryKey: ['configuration'], queryFn: ({signal}) => api<SettingsView>('/api/admin/configuration', {signal}), enabled: ['ai', 'search'].includes(category)})
+  const probe = useConnectionProbe(`${category}:${configuration.data?.revision || ''}`)
   const tests = category === 'ai' ? [['/api/admin/ai/test', '현재 AI 연결 테스트']] : category === 'search' ? [['/api/admin/vector/test', '현재 임베딩·벡터 테스트']] : []
-  const test = async (path: string) => {
-    setBusy(true); setResult(undefined); setError(undefined)
-    try {setResult(await api(path, {method: 'POST'}))} catch (err) {setError(err)} finally {setBusy(false)}
-  }
-  return <>{tests.length > 0 && <div className="operations-tests">{tests.map(([path, label]) => <Button key={path} variant="outline" disabled={busy} onClick={() => test(path)}><Activity size={15}/>{busy ? '확인 중…' : label}</Button>)}<small className="muted">현재 저장된 값으로 확인합니다. 변경 후 다시 시험하세요.</small></div>}{result && <p role="status"><Badge variant={result.ok ? 'secondary' : 'destructive'}>{result.ok ? '연결 성공' : '연결 확인 필요'}</Badge> {result.message} {result.latency_ms !== undefined && `${result.latency_ms}ms`}</p>}{error != null && <ErrorState error={error}/>}</>
+  return <>{tests.length > 0 && <div className="operations-tests">{tests.map(([path, label]) => <Button key={path} variant="outline" disabled={probe.busy || configuration.isPending} onClick={() => void probe.run(path)}><Activity size={15}/>{probe.busy ? '확인 중…' : label}</Button>)}<small className="muted">현재 저장된 값으로 확인합니다. 변경 후 다시 시험하세요.</small></div>}{probe.result && <ConnectionDiagnostic result={probe.result.data}/>} {probe.error != null && <ErrorState error={probe.error}/>}</>
 }
 
 export function OperationsConsole() {
