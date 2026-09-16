@@ -92,15 +92,7 @@ func TestOIDCProviderFailuresNeverExposeCredentials(t *testing.T) {
 			if loginErr == nil || !strings.Contains(loginErr.Error(), tc.want) {
 				t.Fatal("provider failure did not return fixed actionable guidance")
 			}
-			incidents, err := app.Store.ListIncidents(context.Background(), domain.IncidentFilter{})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if tc.name != "discovery" && len(incidents) != 1 {
-				t.Fatalf("expected one sanitized OIDC incident, got %d", len(incidents))
-			}
-			encoded, _ := json.Marshal(incidents)
-			outputs := []string{loginErr.Error(), string(encoded), logs.String()}
+			outputs := []string{loginErr.Error()}
 			if tc.name == "discovery" {
 				_, _, startErr := app.BeginOIDC(context.Background(), OIDCStartOptions{})
 				if startErr == nil {
@@ -108,6 +100,18 @@ func TestOIDCProviderFailuresNeverExposeCredentials(t *testing.T) {
 				}
 				outputs = append(outputs, startErr.Error())
 			}
+			incidents, err := app.Store.ListIncidents(context.Background(), domain.IncidentFilter{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(incidents) != 1 {
+				t.Fatalf("expected one sanitized OIDC incident, got %d", len(incidents))
+			}
+			if tc.name == "discovery" && (incidents[0].Count != 2 || !strings.Contains(incidents[0].Detail, "HTTP 502") || !strings.Contains(incidents[0].Detail, issuer.URL)) {
+				t.Fatalf("discovery failures from both legs did not fold into one incident with status and issuer: %+v", incidents[0])
+			}
+			encoded, _ := json.Marshal(incidents)
+			outputs = append(outputs, string(encoded), logs.String())
 			for _, output := range outputs {
 				for _, marker := range []string{clientSecret, authorizationCode, upstreamJWT, arbitraryCode} {
 					if strings.Contains(output, marker) {
