@@ -13,6 +13,7 @@ export function usePreferenceBridge() {
   const {setTheme, setDensity} = usePreferences()
   const theme = prefs.value('ui.theme', 'system')
   const density = prefs.value('ui.density', 'comfortable')
+  const textSize = prefs.value('ui.text_size', 'standard') === 'large' ? 'large' : 'standard'
   const language = prefs.value('ui.language', 'ko')
   const dateFormat = prefs.value('ui.date_format', 'relative')
   useEffect(() => {
@@ -21,6 +22,7 @@ export function usePreferenceBridge() {
       const resolved = theme === 'dark' || theme === 'system' && media?.matches ? 'dark' : 'light'
       document.documentElement.dataset.theme = resolved
       document.documentElement.dataset.density = density
+      document.documentElement.dataset.textSize = textSize
       document.documentElement.dataset.dateFormat = dateFormat
       document.documentElement.lang = language
       setTheme(resolved); setDensity(density === 'compact' ? 'compact' : 'comfortable')
@@ -28,7 +30,7 @@ export function usePreferenceBridge() {
     apply()
     media?.addEventListener?.('change', apply)
     return () => media?.removeEventListener?.('change', apply)
-  }, [theme, density, language, dateFormat, setTheme, setDensity])
+  }, [theme, density, textSize, language, dateFormat, setTheme, setDensity])
   async function update(key: string, value: string) {
     if (prefs.locked(key)) {toast.error('관리자가 강제한 설정입니다.'); return}
     try {

@@ -14,6 +14,28 @@ const {chromium, expect} = require('@playwright/test');
   const clickedFixtureURLs = new Set();
   context.on('request', request => {if (!request.url().startsWith(base) && !request.url().startsWith('about:') && !request.url().startsWith('data:') && !clickedFixtureURLs.has(request.url())) external.push(request.url());});
   page.on('dialog', dialog => dialog.type() === 'beforeunload' ? dialog.accept() : dialog.dismiss());
+  async function responsiveScreenshots(name) {
+    for (const width of [1520, 390, 320]) {
+      await page.setViewportSize({width, height: width === 1520 ? 1050 : 844});
+      if (width < 720) await expect.poll(() => page.locator('.sidebar').evaluate(element => element.getBoundingClientRect().right)).toBeLessThanOrEqual(0);
+      await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth - innerWidth), {message: `${name} at ${width}px has no horizontal overflow`}).toBeLessThanOrEqual(0);
+      if (name === 'work-large' && width < 720) {
+        for (const label of ['상태 필터', '업무 정렬']) await expect.poll(() => page.getByRole('combobox', {name: label, exact: true}).evaluate(element => element.getBoundingClientRect().width), {message: `${label} stays readable instead of collapsing to its arrow at ${width}px`}).toBeGreaterThanOrEqual(200);
+      }
+      if (process.env.POSTRA_SPA_SCREENSHOT_DIR) await page.screenshot({path: `${process.env.POSTRA_SPA_SCREENSHOT_DIR}/${name}-${width}.png`, fullPage: true, animations: 'disabled'});
+    }
+    await page.setViewportSize({width: 1520, height: 1050});
+  }
+  async function saveTextSize(value) {
+    await page.getByRole('combobox', {name: '화면 글자 크기', exact: true}).selectOption(value);
+    await page.getByRole('button', {name: '변경 확인', exact: true}).click();
+    const review = page.getByRole('dialog', {name: '저장할 변경사항'});
+    await expect(review).toContainText('화면 글자 크기');
+    await review.getByRole('button', {name: '확인 후 저장', exact: true}).click();
+    await expect(review).toHaveCount(0);
+    await expect(page.locator('html')).toHaveAttribute('data-text-size', value);
+    await expect(page.getByRole('button', {name: '변경 확인', exact: true})).toBeDisabled();
+  }
   try {
     await page.goto(base + '/app/');
     // A genuine user with zero stored actions used to crash at cards.filter.
@@ -90,6 +112,100 @@ const {chromium, expect} = require('@playwright/test');
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
     if (process.env.POSTRA_SPA_SCREENSHOT_DIR) await page.screenshot({path: process.env.POSTRA_SPA_SCREENSHOT_DIR + '/inbox-dark.png', fullPage: true});
     await page.getByRole('button', {name: '밝은 테마', exact: true}).click();
+    // Persisted personal typography uses the actual preference API. The same
+    // live value must survive a reload and scale controls and metadata evenly.
+    await page.goto(base + '/app/settings');
+    await expect(page.getByRole('combobox', {name: '화면 글자 크기', exact: true})).toHaveValue('standard');
+    await page.getByRole('textbox', {name: '설정 검색', exact: true}).fill('화면 글자 크기');
+    await saveTextSize('large');
+    for (const control of [page.getByRole('textbox', {name: '설정 검색', exact: true}), page.getByRole('combobox', {name: '화면 글자 크기', exact: true}), page.getByRole('button', {name: '변경 확인', exact: true})]) {
+      await expect(control).toHaveCSS('font-size', '16.875px');
+    }
+    await expect(page.locator('.page-header p')).toHaveCSS('font-size', '14.625px');
+    await page.reload();
+    await expect(page.locator('html')).toHaveAttribute('data-text-size', 'large');
+    await expect(page.getByRole('combobox', {name: '화면 글자 크기', exact: true})).toHaveValue('large');
+    await page.getByRole('textbox', {name: '설정 검색', exact: true}).fill('화면 글자 크기');
+    await responsiveScreenshots('settings-large');
+    await page.goto(base + '/app/mail');
+    await expect(page.locator('.mail-list')).toContainText('프로젝트 킥오프 일정 공유');
+    await expect(page.locator('.mail-item-top time').first()).toHaveCSS('font-size', '14.625px');
+    await responsiveScreenshots('inbox-large');
+    await page.goto(base + '/app/actions');
+    await expect(page.getByRole('heading', {name: '회의 자료 검토', exact: true})).toBeVisible();
+    await responsiveScreenshots('actions-large');
+    await page.goto(base + '/app/team?message=' + process.env.POSTRA_TEST_MESSAGE_ID);
+    await page.getByRole('heading', {name: '처리 관리', exact: true}).waitFor();
+    await responsiveScreenshots('work-large');
+    await page.goto(base + '/app/compose');
+    await page.getByRole('heading', {name: '새 메일 작성', exact: true}).waitFor();
+    await expect(page.getByRole('textbox', {name: '받는 사람', exact: true})).toHaveCSS('font-size', '16.875px');
+    await responsiveScreenshots('compose-large');
+    // Reply previews must be lazy and read-only: no read-marker mutation, AI
+    // generation, draft rewrite, attachment import, or extra SMTP send.
+    await page.goto(parentURL);
+    await expect(page.locator('html')).toHaveAttribute('data-text-size', 'large');
+    await page.evaluate(() => document.fonts.ready);
+    const replyButton = page.getByRole('button', {name: '답장', exact: true});
+    await expect(replyButton).toBeEnabled();
+    await replyButton.scrollIntoViewIfNeeded();
+    let previousReplyBox = '', stableReplyBox = 0;
+    await expect.poll(async () => {
+      const box = JSON.stringify(await replyButton.boundingBox());
+      stableReplyBox = box !== 'null' && box === previousReplyBox ? stableReplyBox + 1 : 0;
+      previousReplyBox = box;
+      return stableReplyBox;
+    }, {message: 'reply button settles after persisted typography and iframe layout'}).toBeGreaterThanOrEqual(2);
+    await expect.poll(() => replyButton.evaluate(element => {
+      const rect = element.getBoundingClientRect();
+      return element.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2));
+    }), {message: 'reply click point belongs to the button, not the mail iframe'}).toBe(true);
+    const sourceRequests = [], sourceMutations = [];
+    const trackSource = request => {
+      const url = new URL(request.url());
+      if (url.origin !== new URL(base).origin) return;
+      if (url.pathname === '/api/messages/' + process.env.POSTRA_TEST_MESSAGE_ID) sourceRequests.push(request.method());
+      if (url.pathname.startsWith('/api/') && !['GET', 'HEAD'].includes(request.method())) sourceMutations.push(`${request.method()} ${url.pathname}`);
+    };
+    context.on('request', trackSource);
+    await page.evaluate(() => {
+      window.__postraReplyPointerEvents = [];
+      for (const type of ['pointerdown', 'pointerup', 'click']) document.addEventListener(type, event => {
+        const target = event.target;
+        window.__postraReplyPointerEvents.push({type, tag: target?.tagName, button: target?.closest?.('button')?.getAttribute('title') || ''});
+      }, {capture: true, once: true});
+    });
+    await replyButton.click();
+    await page.waitForURL(/\/app\/drafts\//).catch(async error => {
+      const pointerEvents = await page.evaluate(() => window.__postraReplyPointerEvents);
+      throw new Error(`Reply navigation failed; pointer=${JSON.stringify(pointerEvents)}, source reads=${JSON.stringify(sourceRequests)}, API writes=${JSON.stringify(sourceMutations)}: ${error.message}`);
+    });
+    await page.getByRole('heading', {name: '메일 초안', exact: true}).waitFor();
+    sourceMutations.length = 0; // The explicit reply-draft creation is expected.
+    const source = page.getByRole('region', {name: '답장 원문', exact: true});
+    await expect(source.getByRole('button', {name: '원문 펼치기', exact: true})).toHaveAttribute('aria-expanded', 'false');
+    assert.deepEqual(sourceRequests, [], 'collapsed source preview does not fetch the message');
+    const composeFields = page.locator('.compose-fields');
+    const readFields = () => composeFields.evaluate(element => [...element.querySelectorAll('input,select,textarea,[contenteditable=true]')].map(control => ({label: control.getAttribute('aria-label'), value: control.isContentEditable ? control.innerHTML : control.value})));
+    const fieldsBeforeSource = await readFields();
+    await source.getByRole('button', {name: '원문 펼치기', exact: true}).click();
+    await expect(source).toContainText('프로젝트 킥오프에 앞서 공유된 회의 자료를 검토');
+    await expect(source).not.toContainText(process.env.POSTRA_TEST_PRIVATE_SUBJECT);
+    await expect(source.getByRole('link', {name: '원본 메일 새 탭에서 열기'})).toHaveAttribute('target', '_blank');
+    await expect(source.getByRole('link', {name: '원본 메일 새 탭에서 열기'})).toHaveAttribute('rel', 'noopener noreferrer');
+    assert.equal(await source.locator('script,form,iframe,img[src]').count(), 0, 'plain source is safely rendered without external media');
+    await responsiveScreenshots('reply-source-large');
+    await source.getByRole('button', {name: '원문 접기', exact: true}).click();
+    await expect(source.getByRole('button', {name: '원문 펼치기', exact: true})).toHaveAttribute('aria-expanded', 'false');
+    assert.deepEqual(await readFields(), fieldsBeforeSource, 'viewing the original never inserts or changes draft content');
+    assert.deepEqual(sourceRequests, ['GET'], 'original preview performs exactly one read-only fetch');
+    assert.deepEqual(sourceMutations, [], 'viewing the original does not mutate messages or drafts or start AI jobs');
+    context.off('request', trackSource);
+    await page.goto(base + '/app/settings');
+    await saveTextSize('standard');
+    await expect(page.getByRole('textbox', {name: '설정 검색', exact: true})).toHaveCSS('font-size', '15px');
+    await expect(page.locator('.page-header p')).toHaveCSS('font-size', '13px');
+    await page.goto(parentURL);
     // Follow-up workflow uses real authenticated APIs, never AI or SMTP.
     await page.getByRole('button', {name: '나중에 다시 보기', exact: true}).click();
     await page.getByRole('combobox', {name: '다시 볼 시각', exact: true}).selectOption('custom');
@@ -215,7 +331,7 @@ const {chromium, expect} = require('@playwright/test');
     await expect(page.locator('body')).not.toContainText('프로젝트 킥오프 일정 공유');
     assert.deepEqual(errors, [], 'no browser runtime errors');
     assert.deepEqual(external, [], 'offline runtime must not request external resources');
-    console.log('PASS: real login/session/CSRF/privacy/cross-tab identity isolation, inbox/AI, dark/mobile/command, action/team, accounts/Q&A/digest, rich save/approval/send/logout; no external runtime requests');
+    console.log('PASS: real login/session/CSRF/privacy/cross-tab identity isolation, inbox/AI, persisted live typography/320px mobile, read-only reply source, dark/command, action/team, accounts/Q&A/digest, rich save/approval/send/logout; no external runtime requests');
   } catch (error) {
     if (process.env.POSTRA_SPA_SCREENSHOT_DIR) await page.screenshot({path: process.env.POSTRA_SPA_SCREENSHOT_DIR + '/failure.png', fullPage: true});
     console.error('Visible errors:', await page.getByRole('alert').allTextContents());

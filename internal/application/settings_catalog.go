@@ -209,6 +209,7 @@ func buildSettingsDefinitions() []SettingDefinition {
 		{Key: "mcp.policy", Label: "MCP 역할·도구 정책", Category: "mcp", Type: "json", Default: "", Scope: "admin", Apply: "live", Lockable: false},
 		{Key: "ui.theme", Label: "테마", Category: "appearance", Type: "enum", Default: "system", Scope: "user", Apply: "live", Lockable: true, Options: []string{"system", "light", "dark"}},
 		{Key: "ui.density", Label: "화면 밀도", Category: "appearance", Type: "enum", Default: "comfortable", Scope: "user", Apply: "live", Lockable: true, Options: []string{"comfortable", "compact"}},
+		{Key: "ui.text_size", Label: "화면 글자 크기", Category: "appearance", Type: "enum", Default: "standard", Scope: "user", Apply: "live", Lockable: true, Options: []string{"standard", "large"}, Help: "기본 또는 크게(약 12.5% 확대)를 선택합니다. 저장 즉시 전체 업무 화면에 적용되며 화면 밀도와 독립적입니다. 받은 HTML 메일과 발송 본문의 서식은 변경하지 않습니다."},
 		{Key: "ui.reader_position", Label: "읽기 패널 위치", Category: "appearance", Type: "enum", Default: "right", Scope: "user", Apply: "live", Lockable: true, Options: []string{"right", "bottom", "hidden"}},
 		{Key: "ui.preview_lines", Label: "목록 미리보기 줄 수", Category: "appearance", Type: "int", Default: "2", Scope: "user", Apply: "live", Lockable: true},
 		{Key: "ui.ai_panel", Label: "AI 패널 기본 표시", Category: "appearance", Type: "bool", Default: "true", Scope: "user", Apply: "live", Lockable: true},

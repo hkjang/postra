@@ -14,6 +14,7 @@ import { splitRecipients, textToHTML } from './utils'
 import type { MailSignature, MailTemplate, PreferenceView, RenderedMail } from './rendering'
 import { attachmentURL, DraftBody, fileBase64 } from './DraftBody'
 import {defaultComposeAccount} from './default-account'
+import {DraftSourcePanel} from './DraftSourcePanel'
 import '../inbox/mail.css'
 import './compose.css'
 
@@ -143,7 +144,7 @@ export function ComposePage() {
     },
   })
   const formatMail = useMutation({ mutationFn: async () => {
-    const reply = current?.draft as (DraftView['draft'] & { kind?: string; reply_to_message_id?: string }) | undefined
+    const reply = current?.draft
     const value = await api<RenderedMail>('/api/mail/render', { method: 'POST', body: { account_id: fields.account, ...bodyOptions(), ...renderOptions(), reply_to_message_id: reply?.kind === 'reply' || reply?.kind === 'reply_all' ? reply.reply_to_message_id : undefined } satisfies RenderMailInput })
     edit({ body: value.body_text, html: value.body_html || '' }); setMode(value.body_html ? 'html' : 'plain')
     value.warnings?.forEach(warning => toast.message(warning))
@@ -228,6 +229,7 @@ export function ComposePage() {
     {preferences.error && <ErrorState error={preferences.error} retry={() => preferences.refetch()} />}
     {!id && personalPreferences.error && <ErrorState error={personalPreferences.error} retry={() => personalPreferences.refetch()} />}
     {sendUncertain && <p className="preview-warning" role="alert">발송 요청의 결과 확인이 필요하여 편집을 잠시 잠갔습니다. 중복 발송을 막기 위해 <Link to="/sent">발송 기록</Link>을 먼저 확인해 주세요.</p>}
+    {current && (!id || current.draft.id === id) && <DraftSourcePanel key={`${current.draft.id}:${typeof current.draft.reply_to_message_id === 'string' ? current.draft.reply_to_message_id : ''}`} draftID={current.draft.id} kind={current.draft.kind} messageID={current.draft.reply_to_message_id}/>}
     {closed ? <section className="compose-closed"><Badge>{current.draft.status}</Badge><h2>{current.version.subject}</h2><p>받는 사람: {addresses(current.version.to)}</p><DraftBody draftID={current.draft.id} version={current.version.version} html={current.version.body_html} text={current.version.body_text} attachments={current.version.attachments}/>{current.version.attachments?.map(file => <p key={file.id}><a href={attachmentURL(current.draft.id, file.id, current.version.version)} download>{file.name}</a></p>)}<Button asChild variant="outline"><Link to="/sent">발송 기록 확인</Link></Button></section> : <>
       <fieldset className="compose-fields" disabled={busy || sendUncertain}>
         <label className="compose-field"><span>보내는 사람</span><select aria-label="발신 계정" value={fields.account} disabled={!!current} onChange={event => edit({ account: event.target.value })}><option value="" disabled>발신 계정 선택</option>{accounts.data.map(account => <option key={account.id} value={account.id}>{account.name || account.email} &lt;{account.email}&gt;{account.status !== 'active' ? ` · ${account.status}` : ''}</option>)}</select></label>

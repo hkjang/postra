@@ -15,7 +15,7 @@ export interface DraftAttachment { id: string; name: string; mime_type: string; 
 export interface Analysis { id: string; result_json: string; model: string }
 export interface ActionCard { id: string; title: string; detail?: string; due?: string; assignee?: string; status: string; confidence?: number }
 export interface DraftView {
-  draft: { id: string; account_id: string; status: string; current_version: number; updated_at: number };
+  draft: { id: string; account_id: string; status: string; current_version: number; updated_at: number; kind?: string; reply_to_message_id?: string };
   version: { version: number; subject: string; to: Address[]; cc?: Address[]; bcc?: Address[]; body_text: string; body_html?: string; author: string; attachments?: DraftAttachment[] };
 }
 export interface SendPreview {

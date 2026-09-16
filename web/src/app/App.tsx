@@ -92,7 +92,7 @@ export function App() {
   if (['/login', '/setup'].includes(location.pathname)) return <Navigate replace to={authReturnTo(location.pathname, location.search).replace(/^\/app/, '') || '/'}/>
   return <UserDataProvider key={session.data.principal?.user_id}><SessionContext.Provider value={session.data.principal}>
     <BrowserTracking/>
-    {retainWorkspace && <div role="status" style={{position: 'fixed', bottom: 16, right: 16, zIndex: 100, maxWidth: 'calc(100vw - 32px)', padding: '12px 16px', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--surface)', boxShadow: '0 4px 20px #0002', fontSize: 12}}><p style={{margin: '0 0 8px'}}>서버 연결을 확인하지 못했습니다. 작성 중인 내용은 유지됩니다.</p><Button size="sm" variant="outline" disabled={session.isFetching} onClick={() => session.refetch()}>{session.isFetching ? '연결 확인 중…' : '연결 다시 확인'}</Button></div>}
+    {retainWorkspace && <div role="status" style={{position: 'fixed', bottom: 16, right: 16, zIndex: 100, maxWidth: 'calc(100vw - 32px)', padding: '12px 16px', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--surface)', boxShadow: '0 4px 20px #0002', fontSize: 'var(--font-body)'}}><p style={{margin: '0 0 8px'}}>서버 연결을 확인하지 못했습니다. 작성 중인 내용은 유지됩니다.</p><Button size="sm" variant="outline" disabled={session.isFetching} onClick={() => session.refetch()}>{session.isFetching ? '연결 확인 중…' : '연결 다시 확인'}</Button></div>}
     <Suspense fallback={<Loading/>}><Routes><Route element={<Workspace/>}>
     <Route path="keys" element={<MCPKeysPage/>}/>
     <Route path="threads/:id" element={<ThreadPage/>}/><Route path="jobs" element={<JobsPage/>}/><Route path="jobs/:id" element={<JobsPage/>}/>

@@ -12,7 +12,7 @@ import {ConnectionDiagnostic, useConnectionProbe} from './ConnectionDiagnostic'
 import './settings.css'
 
 const sources: Record<string, string> = {default: '프로그램 기본값', configuration: '배포 설정 파일', environment: '환경변수 초기값', admin: '관리자 설정', user: '사용자 설정', account: '메일 계정 설정', policy: '관리자 강제 정책', admin_policy: '관리자 강제 정책', fixed_policy: '항상 적용되는 고정 정책'}
-const optionLabels: Record<string, string> = {true: '사용', false: '사용 안 함', system: '시스템 테마', light: '라이트', dark: '다크', comfortable: '편안하게', compact: '간결하게', right: '오른쪽', bottom: '아래', hidden: '숨김', auto: '자동 서식', text: '일반 텍스트', html: 'HTML', markdown: 'Markdown', ko: '한국어', en: 'English', relative: '상대 시간', absolute: '날짜 및 시간', iso: 'ISO 날짜', full: '항상 전체 서명', smart: '새 메일 전체 · 첫 회신 간결 · 후속 회신 생략', none: '사용 안 함'}
+const optionLabels: Record<string, string> = {true: '사용', false: '사용 안 함', system: '시스템 테마', light: '라이트', dark: '다크', comfortable: '편안하게', compact: '간결하게', standard: '기본', large: '크게 (112.5%)', right: '오른쪽', bottom: '아래', hidden: '숨김', auto: '자동 서식', text: '일반 텍스트', html: 'HTML', markdown: 'Markdown', ko: '한국어', en: 'English', relative: '상대 시간', absolute: '날짜 및 시간', iso: 'ISO 날짜', full: '항상 전체 서명', smart: '새 메일 전체 · 첫 회신 간결 · 후속 회신 생략', none: '사용 안 함'}
 export const adminCategory = (field: SettingField) => ({appearance: 'general', personal_mail: 'mail', compose: 'mail', account: 'mail', personal_ai: 'ai', personal_notifications: 'notifications', vector: 'search'}[field.category] || field.category)
 const secretLabel = (field: SettingField) => field.registered ? '등록됨 · 새 값을 입력하면 교체' : '미등록 · 새 값 입력'
 const tasks = [['summarize', '메일 요약'], ['compose', '메일 작성'], ['classify', '메일 분류'], ['qa', 'Q&A'], ['rewrite', '다시 쓰기'], ['digest', '브리핑']]

@@ -1,0 +1,22 @@
+/* Workspace typography. Authored mail HTML keeps its own isolated styles. */
+:root {
+  --ui-font-scale: 1;
+  --font-body: calc(.9375rem * var(--ui-font-scale));
+  --font-control: var(--font-body);
+  --font-meta: calc(.8125rem * var(--ui-font-scale));
+  --font-label: calc(.75rem * var(--ui-font-scale));
+  --font-title: calc(1rem * var(--ui-font-scale));
+  --font-section: calc(1.125rem * var(--ui-font-scale));
+  --font-page: calc(1.5rem * var(--ui-font-scale));
+  --font-reading: calc(1rem * var(--ui-font-scale));
+  --font-brand: calc(1.5rem * var(--ui-font-scale));
+  --font-display: calc(1.75rem * var(--ui-font-scale));
+  --font-stat: calc(1.5rem * var(--ui-font-scale));
+  --line-body: 1.6;
+  --line-control: 1.4;
+  --line-heading: 1.35;
+}
+
+:root[data-text-size=large] { --ui-font-scale: 1.125; }
+
+body { font-size: var(--font-body); line-height: var(--line-body); }
