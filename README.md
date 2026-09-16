@@ -11,7 +11,7 @@ Go로 작성한 개인/사내 구축형 메일 서비스입니다. 사용자의 
 
 v0.20.0의 검색 가능한 운영 콘솔은 환경변수 초기값 위에 관리자 설정과 강제 정책을 적용합니다. 개인·계정 설정과 복수 서명도 웹에서 관리합니다. [설정 관리](docs/SETTINGS.md) · [HTML 메일](docs/MAIL_RENDERING.md) · [Ask Postra](docs/ASK_POSTRA.md) · [MCP 계약](docs/MCP_CONVERGENCE.md) · [API 스키마](docs/API_CONTRACTS.md) · [릴리즈 및 이전 주의사항](docs/releases/v0.20.0.md)
 
-최신 릴리즈 [v0.22.0](docs/releases/v0.22.0.md)는 기존 API 키와 함께 Keycloak OAuth 기반 MCP 연결을 지원합니다. 관리자 화면에서 공개 URL·허용 Client·Scope를 설정하고 사용자 화면에서 연결 방법을 확인할 수 있습니다. OAuth는 기본 비활성화이며 별도 Keycloak MCP 클라이언트 등록이 필요합니다. 기존 메일·AI·개인화·승인 기반 발송은 유지합니다.
+최신 릴리즈 [v0.22.1](docs/releases/v0.22.1.md)는 OIDC Discovery 실패를 호스트 없음·연결 거부·시간 초과·TLS 인증서·HTTP 상태·issuer 불일치·JSON 아님으로 분류하고, 인증 서버가 콜백에 돌려준 오류와 함께 장애 화면에 기록합니다. v0.22.0의 Keycloak OAuth 기반 MCP 연결과 기존 메일·AI·개인화·승인 기반 발송은 그대로 유지합니다.
 
 ## 설계 핵심
 
