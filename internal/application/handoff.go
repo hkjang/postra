@@ -120,7 +120,13 @@ func (a *App) CollectHandoffClaim(ctx context.Context, token string) (*HandoffDo
 	if err != nil {
 		return nil, domain.ErrNotFound
 	}
-	a.audit(ctx, "handoff_claim_collected", "message:"+m.ID, "ok", "bytes="+strconv.Itoa(len(doc.Body)))
+	// Collection is unauthenticated, so there is no principal in ctx; the
+	// event belongs to the user whose message left, not to the default user.
+	_ = a.Store.AppendAudit(ctx, domain.AuditEvent{
+		UserID: claim.UserID, Actor: actorFrom(ctx),
+		Action: "handoff_claim_collected", Resource: "message:" + m.ID, Result: "ok",
+		Detail: "bytes=" + strconv.Itoa(len(doc.Body)),
+	})
 	return doc, nil
 }
 

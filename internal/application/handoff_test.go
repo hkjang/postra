@@ -127,6 +127,54 @@ func TestHandoffClaimRefusesOtherUsersMessage(t *testing.T) {
 	}
 }
 
+// Collection happens on a public route with no principal in the context, so
+// the event must be attributed to the user who issued the claim — the owner
+// of the message — not to whoever the context defaults to.
+func TestHandoffCollectionIsAuditedToClaimOwner(t *testing.T) {
+	app, _, _, _ := newTestApp(t)
+	ctx := WithActor(context.Background(), "test")
+	if err := app.Store.EnsureUser(ctx, "usr_other", "other"); err != nil {
+		t.Fatal(err)
+	}
+	otherCtx := WithPrincipal(ctx, domain.Principal{UserID: "usr_other", LoginID: "other", Role: domain.RoleUser})
+	now := time.Now().Unix()
+	m := &domain.Message{
+		ID: "msg_h5", UserID: "usr_other", AccountID: "acc_other", UIDL: "u-h5",
+		Subject: "theirs", From: domain.Address{Email: "sender@example.com"},
+		RawHash: "h-h5", RawURI: "mem://h5", Date: now, CreatedAt: now,
+	}
+	if err := app.Store.InsertMessage(otherCtx, m, &domain.MessageBody{MessageID: m.ID, TextBody: "body"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	view, err := app.IssueHandoffClaim(otherCtx, "msg_h5", "markdown", "https://postra.intra")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The receiving service collects without logging in: no principal at all.
+	if _, err := app.CollectHandoffClaim(WithActor(context.Background(), "rest"), view.Claim); err != nil {
+		t.Fatal(err)
+	}
+
+	collectedFor := func(c context.Context) bool {
+		events, err := app.SearchAudit(c, 20)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, ev := range events {
+			if ev.Action == "handoff_claim_collected" && ev.Resource == "message:msg_h5" {
+				return true
+			}
+		}
+		return false
+	}
+	if !collectedFor(otherCtx) {
+		t.Fatal("collection should appear in the claim owner's audit log")
+	}
+	if collectedFor(ctx) {
+		t.Fatal("collection must not be attributed to the default user")
+	}
+}
+
 // The announced source is the pinned public origin when there is one, else
 // the address the request came in on.
 func TestHandoffSourceOrigin(t *testing.T) {
