@@ -515,6 +515,8 @@ func (s *Server) collectHandoffClaim(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", handoff.ContentDisposition(doc.Filename))
 	w.Header().Set("Content-Length", strconv.Itoa(len(doc.Body)))
 	w.WriteHeader(http.StatusOK)
+	// #nosec G705 -- text/markdown attachment served under nosniff and a
+	// default-src 'none' CSP from the middleware; never rendered as HTML.
 	_, _ = w.Write(doc.Body)
 }
 

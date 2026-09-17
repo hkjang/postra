@@ -16,12 +16,18 @@ import (
 
 func TestSmartTime(t *testing.T) {
 	now := time.Now()
+	// Two hours ago is still today except in the first two hours of the day,
+	// when it belongs to yesterday; then the day's first minute stands in.
+	today := now.Add(-2 * time.Hour)
+	if !sameDay(today, now) {
+		today = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	}
 	cases := []struct {
 		name string
 		at   time.Time
 		want string
 	}{
-		{"today shows the clock", now.Add(-2 * time.Hour), now.Add(-2 * time.Hour).Format("15:04")},
+		{"today shows the clock", today, today.Format("15:04")},
 		{"yesterday is named", now.AddDate(0, 0, -1), "어제"},
 		{"this year drops the year", time.Date(now.Year(), 1, 2, 9, 0, 0, 0, now.Location()), "1월 2일"},
 		{"older keeps the year", time.Date(now.Year()-2, 3, 4, 9, 0, 0, 0, now.Location()), time.Date(now.Year()-2, 3, 4, 9, 0, 0, 0, now.Location()).Format("2006-01-02")},
