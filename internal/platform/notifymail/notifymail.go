@@ -24,7 +24,7 @@ import (
 const (
 	EventSendFailed          = "send_failed"           // an outbound mail stopped: retries exhausted, rejected or uncertain
 	EventAssigned            = "assigned"              // a team-inbox message was assigned to me
-	EventSyncCredentialError = "sync_credential_error" // mail collection stopped because the mailbox rejected the credentials
+	EventSyncCredentialError = "sync_credential_error" // #nosec G101 -- event name, never a credential value; mail collection stopped because the mailbox rejected the credentials
 	EventIncident            = "incident"              // a new critical system incident (admins)
 	EventTest                = "test"
 )
