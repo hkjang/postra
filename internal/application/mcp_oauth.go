@@ -27,6 +27,10 @@ type MCPOAuthInfo struct {
 	MetadataURL      string   `json:"metadata_url"`
 	AllowedClientIDs []string `json:"allowed_client_ids"`
 	ScopesSupported  []string `json:"scopes_supported"`
+	// AuthorizationServer is what protected-resource metadata advertises:
+	// Keycloak directly, or Postra's DCR proxy when that is enabled.
+	AuthorizationServer string            `json:"authorization_server"`
+	Proxy               MCPOAuthProxyInfo `json:"proxy"`
 }
 type MCPOAuthConnectionInfo struct {
 	ActiveEndpoint     string       `json:"active_endpoint"`
@@ -56,10 +60,13 @@ func validateMCPOAuthSetting(key, value string) error {
 		if value != "" && !validOAuthURL(value) {
 			return userErrf("OAuth MCP 공개 URL은 인증정보·쿼리·프래그먼트 없는 HTTPS URL이어야 합니다 (localhost 개발 예외)")
 		}
-	case "mcp.oauth.allowed_client_ids":
+	case "mcp.oauth.allowed_client_ids", SettingMCPOAuthProxyClientID:
 		ids := oauthList(value)
 		if len(ids) > 50 {
 			return userErrf("OAuth Client는 최대 50개까지 허용할 수 있습니다")
+		}
+		if key == SettingMCPOAuthProxyClientID && value != "" && (len(ids) != 1 || ids[0] != value) {
+			return userErrf("OAuth 프록시 Client ID는 공백·쉼표 없는 하나의 값이어야 합니다")
 		}
 		for _, id := range ids {
 			if len(id) > 128 {
@@ -92,8 +99,8 @@ func (a *App) oauthSettingsSnapshot() map[string]string {
 func oauthConfigured(values map[string]string, endpoint string) bool {
 	resource, err := url.Parse(values["mcp.oauth.resource_url"])
 	return err == nil && validOAuthURL(values["mcp.oauth.resource_url"]) && resource.Path == endpoint &&
-		validOAuthURL(values[SettingOIDCIssuer]) && len(oauthList(values["mcp.oauth.allowed_client_ids"])) > 0 &&
-		!slices.Contains(oauthList(values["mcp.oauth.allowed_client_ids"]), values[SettingOIDCClientID]) &&
+		validOAuthURL(values[SettingOIDCIssuer]) && len(oauthAllowedClients(values)) > 0 &&
+		!slices.Contains(oauthAllowedClients(values), values[SettingOIDCClientID]) &&
 		validateMCPOAuthSetting("mcp.oauth.allowed_client_ids", values["mcp.oauth.allowed_client_ids"]) == nil &&
 		validateMCPOAuthSetting("mcp.oauth.allowed_scopes", values["mcp.oauth.allowed_scopes"]) == nil
 }
@@ -122,6 +129,9 @@ func (a *App) validateMCPOAuthSettings(stored, changes map[string]string) error 
 	if values["mcp.oauth.enabled"] == "true" && !oauthConfigured(values, values["mcp.endpoint"]) {
 		return userErrf("OAuth MCP 활성화에는 HTTPS Keycloak Issuer, MCP Endpoint 경로와 일치하는 공개 URL, 웹 SSO와 구분된 허용 Client ID 및 유효한 Scope가 필요합니다")
 	}
+	if values[SettingMCPOAuthProxyEnabled] == "true" && (values["mcp.oauth.enabled"] != "true" || !oauthProxyConfigured(values)) {
+		return userErrf("DCR 프록시 활성화에는 Keycloak OAuth MCP 활성화와 웹 SSO Client와 구분된 프록시용 Keycloak Client ID가 필요합니다")
+	}
 	return nil
 }
 
@@ -134,7 +144,7 @@ func (a *App) MCPOAuthConnection() MCPOAuthConnectionInfo {
 	}
 	o := MCPOAuthInfo{Enabled: values["mcp.oauth.enabled"] == "true", Configured: oauthConfigured(values, active),
 		Issuer: values[SettingOIDCIssuer], ResourceURL: values["mcp.oauth.resource_url"],
-		AllowedClientIDs: append([]string{}, oauthList(values["mcp.oauth.allowed_client_ids"])...), ScopesSupported: []string{}}
+		AllowedClientIDs: oauthAllowedClients(values), ScopesSupported: []string{}}
 	// Deployment/imported values can predate current setting validation. Do
 	// not expose malformed URLs (potentially containing credentials) to users.
 	if !validOAuthURL(o.Issuer) {
@@ -153,6 +163,11 @@ func (a *App) MCPOAuthConnection() MCPOAuthConnectionInfo {
 		if slices.Contains(MCPScopes, scope) && values[permission] == "true" && !slices.Contains(o.ScopesSupported, scope) {
 			o.ScopesSupported = append(o.ScopesSupported, scope)
 		}
+	}
+	o.Proxy = oauthProxyInfo(values, o.Configured)
+	o.AuthorizationServer = o.Issuer
+	if o.Enabled && o.Configured && o.Proxy.Enabled && o.Proxy.Configured {
+		o.AuthorizationServer = o.Proxy.Issuer
 	}
 	return MCPOAuthConnectionInfo{ActiveEndpoint: active, ConfiguredEndpoint: values["mcp.endpoint"], PendingRestart: active != values["mcp.endpoint"], OAuth: o}
 }

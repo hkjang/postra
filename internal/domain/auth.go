@@ -78,3 +78,17 @@ type MCPKey struct {
 	Scopes       []string `json:"scopes"`
 	LegacyScopes bool     `json:"legacy_scopes,omitempty"`
 }
+
+// MCPOAuthClient is an OAuth client that registered itself (RFC 7591) with
+// the Postra MCP authorization-server proxy. It carries no user identity or
+// mail authority: end users still sign in at Keycloak and every token is
+// checked against the same MCP resource policy as a pre-registered client.
+type MCPOAuthClient struct {
+	ID           string   `json:"client_id"`
+	Name         string   `json:"client_name"`
+	SecretHash   string   `json:"-"` // empty for public clients
+	RedirectURIs []string `json:"redirect_uris"`
+	AuthMethod   string   `json:"token_endpoint_auth_method"` // none | client_secret_basic | client_secret_post
+	CreatedAt    int64    `json:"created_at"`
+	LastUsedAt   int64    `json:"last_used_at,omitempty"`
+}

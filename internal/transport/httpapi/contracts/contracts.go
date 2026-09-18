@@ -28,6 +28,7 @@ func Registry() map[string]reflect.Type {
 	return map[string]reflect.Type{
 		"MCPOAuthConnectionInfo":  reflect.TypeFor[application.MCPOAuthConnectionInfo](),
 		"MCPOAuthInfo":            reflect.TypeFor[application.MCPOAuthInfo](),
+		"MCPOAuthProxyInfo":       reflect.TypeFor[application.MCPOAuthProxyInfo](),
 		"SettingDefinition":       reflect.TypeFor[application.SettingDefinition](),
 		"EffectiveSetting":        reflect.TypeFor[application.EffectiveSetting](),
 		"SettingsView":            reflect.TypeFor[application.SettingsView](),

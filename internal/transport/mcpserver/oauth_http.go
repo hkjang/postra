@@ -39,7 +39,7 @@ func OAuthMetadataHandler(app *application.App) http.Handler {
 		w.Header().Set("Allow", "GET, OPTIONS")
 		auth.ProtectedResourceMetadataHandler(&oauthex.ProtectedResourceMetadata{
 			Resource:               info.ResourceURL,
-			AuthorizationServers:   []string{info.Issuer},
+			AuthorizationServers:   []string{info.AuthorizationServer},
 			ScopesSupported:        append([]string{}, info.ScopesSupported...),
 			BearerMethodsSupported: []string{"header"},
 			ResourceName:           "Postra MCP",

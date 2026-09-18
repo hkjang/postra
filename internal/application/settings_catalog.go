@@ -203,6 +203,9 @@ func buildSettingsDefinitions() []SettingDefinition {
 		{Key: "mcp.oauth.resource_url", Label: "OAuth MCP 공개 URL (Audience)", Category: "mcp", Type: "url", Scope: "admin", Apply: "live", Help: "예: https://postra.corp.local/mcp. Keycloak Audience mapper에도 정확히 같은 값을 등록하세요. HTTPS 필수(로컬 개발 예외)."},
 		{Key: "mcp.oauth.allowed_client_ids", Label: "OAuth 허용 Client ID", Category: "mcp", Type: "string", Scope: "admin", Apply: "live", Help: "쉼표로 구분합니다. 웹 SSO Client와 별도로 사전 등록한 MCP 클라이언트 ID만 허용하세요. PKCE S256 및 정확한 콜백 URL을 Keycloak에서 설정해야 합니다."},
 		{Key: "mcp.oauth.allowed_scopes", Label: "OAuth 허용 Scope", Category: "mcp", Type: "string", Default: "mail.read,mail.search", Scope: "admin", Apply: "live", Help: "쉼표로 구분합니다. 토큰의 scope 및 MCP 권한 정책과 교집합으로 적용합니다. mail.read, mail.search, mail.ai, mail.draft, mail.send, mail.delete, mail.work, admin.read, admin.write"},
+		{Key: SettingMCPOAuthProxyEnabled, Label: "DCR 호환 OAuth 프록시 활성화", Category: "mcp", Type: "bool", Default: "false", Scope: "admin", Apply: "live", Help: "동적 클라이언트 등록(DCR)만 지원하는 MCP 클라이언트를 위해 Postra가 인증 서버 역할을 하고 Keycloak 로그인을 대행합니다. Keycloak OAuth MCP 활성화와 프록시 Client ID가 필요합니다."},
+		{Key: SettingMCPOAuthProxyClientID, Label: "OAuth 프록시 Keycloak Client ID", Category: "mcp", Type: "string", Scope: "admin", Apply: "live", Help: "Postra가 Keycloak에 로그인을 위임할 때 사용하는 사전 등록 client입니다. Valid Redirect URI에 공개 URL의 /oauth/callback을 등록하고 mail.* scope의 Audience mapper를 연결하세요. 웹 SSO client와 구분합니다."},
+		{Key: SettingMCPOAuthProxySecretRef, Label: "OAuth 프록시 Client Secret", Category: "mcp", Type: "secret", Default: "", Scope: "admin", Apply: "live", Lockable: false, Secret: true, Help: "프록시 client가 confidential이면 입력합니다. public client는 비워 둡니다."},
 		{Key: "mcp.endpoint", Label: "MCP Endpoint", Category: "mcp", Type: "string", Default: "/mcp", Scope: "admin", Apply: "restart", Lockable: false},
 		{Key: "mcp.request_timeout_sec", Label: "MCP 요청 제한 시간(초)", Category: "mcp", Type: "int", Default: "120", Scope: "admin", Apply: "live", Lockable: false},
 		{Key: "mcp.session_timeout_sec", Label: "MCP 세션 제한 시간(초)", Category: "mcp", Type: "int", Default: "1800", Scope: "admin", Apply: "restart", Help: "진행 중인 발송과 MCP 세션을 보호하기 위해 재시작 후 적용합니다."},
@@ -393,7 +396,7 @@ func validateSetting(d SettingDefinition, value string) error {
 		return fail()
 	}
 	if d.Key == "mcp.endpoint" {
-		for _, reserved := range []string{"/.well-known", "/metrics", "/healthz", "/readyz", "/livez", "/ui", "/tracking", "/momento", "/favicon.ico", "/favicon.png", "/logo.png"} {
+		for _, reserved := range []string{"/.well-known", "/oauth", "/metrics", "/healthz", "/readyz", "/livez", "/ui", "/tracking", "/momento", "/favicon.ico", "/favicon.png", "/logo.png"} {
 			if value == reserved || strings.HasPrefix(value, reserved+"/") {
 				return fail()
 			}

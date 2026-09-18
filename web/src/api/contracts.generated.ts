@@ -203,10 +203,22 @@ export type MCPOAuthConnectionInfo = {
   "configured_endpoint": string
   "oauth": {
     "allowed_client_ids": null | Array<string>
+    "authorization_server": string
     "configured": boolean
     "enabled": boolean
     "issuer": string
     "metadata_url": string
+    "proxy": {
+      "authorization_endpoint": string
+      "callback_url": string
+      "client_id": string
+      "configured": boolean
+      "enabled": boolean
+      "issuer": string
+      "metadata_url": string
+      "registration_endpoint": string
+      "token_endpoint": string
+    }
     "resource_url": string
     "scopes_supported": null | Array<string>
   }
@@ -215,12 +227,36 @@ export type MCPOAuthConnectionInfo = {
 
 export type MCPOAuthInfo = {
   "allowed_client_ids": null | Array<string>
+  "authorization_server": string
   "configured": boolean
   "enabled": boolean
   "issuer": string
   "metadata_url": string
+  "proxy": {
+    "authorization_endpoint": string
+    "callback_url": string
+    "client_id": string
+    "configured": boolean
+    "enabled": boolean
+    "issuer": string
+    "metadata_url": string
+    "registration_endpoint": string
+    "token_endpoint": string
+  }
   "resource_url": string
   "scopes_supported": null | Array<string>
+}
+
+export type MCPOAuthProxyInfo = {
+  "authorization_endpoint": string
+  "callback_url": string
+  "client_id": string
+  "configured": boolean
+  "enabled": boolean
+  "issuer": string
+  "metadata_url": string
+  "registration_endpoint": string
+  "token_endpoint": string
 }
 
 export type MailSignature = {

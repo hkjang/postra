@@ -583,6 +583,13 @@ func serve(configPath string) error {
 	metadataHandler := mcpserver.OAuthMetadataHandler(app)
 	root.Handle(mcpserver.OAuthMetadataPath, metadataHandler)
 	root.Handle(mcpserver.OAuthMetadataPath+"/", metadataHandler)
+	// DCR-compatible authorization-server proxy; every path answers 404
+	// until an administrator enables it.
+	proxyHandler := mcpserver.OAuthProxyHandler(app)
+	for _, path := range []string{application.OAuthProxyMetadataPath, application.OAuthProxyOpenIDPath, application.OAuthProxyRegisterPath,
+		application.OAuthProxyAuthorizePath, application.OAuthProxyCallbackPath, application.OAuthProxyTokenPath} {
+		root.Handle(path, proxyHandler)
+	}
 	if cfg.WebUIEnabled {
 		registerBrowserRedirects(root)
 		appHandler := spa.Handler()

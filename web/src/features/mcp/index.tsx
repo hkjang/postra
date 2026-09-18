@@ -15,6 +15,8 @@ type MCPKey = z.output<typeof keysSchema>['keys'][number]
 function keyList(value: unknown) {
   return parseResponse(keysSchema, value)
 }
+const oauthClientsSchema = z.object({clients: nullableList(z.object({client_id: z.string(), client_name: z.string(), redirect_uris: nullableList(z.string()),
+  token_endpoint_auth_method: z.string(), created_at: z.number(), last_used_at: z.number().optional()}))})
 const capabilitiesSchema = z.object({enabled: z.boolean(), http_enabled: z.boolean(), endpoint: z.string(),
   permissions: z.record(z.string(), z.boolean()), groups: z.record(z.string(), nullableList(z.string())), aliases: z.record(z.string(), z.string()), request_timeout_sec: z.number().int().nonnegative(),
 })
@@ -73,6 +75,30 @@ export function MCPKeysPanel({admin = false}: {admin?: boolean}) {
 
 export function MCPKeysPage() { return <div className="page stack"><PageHeader title="도구 연결·MCP 키" description="외부 AI 도구가 내 메일에 접근할 수 있는 범위를 관리합니다."/><MCPConnectionPanel/><MCPKeysPanel/></div> }
 
+// Anonymous DCR registrations name redirect targets only; removing one stops
+// new authorizations and refreshes for that client. No secret is ever shown.
+function MCPOAuthClientsPanel() {
+  const query = useQuery({queryKey: ['mcp-oauth-clients'], queryFn: async ({signal}) => parseResponse(oauthClientsSchema, await api<unknown>('/api/admin/mcp-oauth-clients', {signal}))})
+  const [busy, setBusy] = useState('')
+  async function remove(id: string) {
+    if (!window.confirm('이 클라이언트 등록을 삭제할까요? 해당 클라이언트는 다시 등록하고 로그인해야 합니다.')) return
+    setBusy(id)
+    try { await api(`/api/admin/mcp-oauth-clients/${encodeURIComponent(id)}`, {method: 'DELETE'}); toast.success('클라이언트 등록을 삭제했습니다.'); await query.refetch() }
+    catch (error) { toast.error(error instanceof Error ? error.message : '삭제하지 못했습니다.') }
+    finally { setBusy('') }
+  }
+  const clients = query.data?.clients ?? []
+  return <Panel className="stack"><div className="row"><h2>DCR 등록 클라이언트</h2><Button variant="outline" size="sm" disabled={query.isFetching} onClick={() => void query.refetch()}>새로고침</Button></div>
+    <p className="small muted">OAuth 프록시에 스스로 등록한 MCP 클라이언트입니다. 등록은 로그인 권한을 부여하지 않으며, 30일간 사용하지 않은 등록은 자동 정리됩니다.</p>
+    {query.error ? <ErrorState error={query.error} retry={() => query.refetch()}/> : !query.data ? <Loading/> : clients.length === 0 ? <p className="muted">등록된 클라이언트가 없습니다.</p> : <ul className="mcp-oauth-clients">{clients.map(client => <li key={client.client_id}>
+      <div><strong>{client.client_name || '(이름 없음)'}</strong> <code>{client.client_id}</code> <Badge variant="outline">{client.token_endpoint_auth_method}</Badge></div>
+      <div className="small muted">등록 {new Date(client.created_at * 1000).toLocaleString()}{client.last_used_at ? ` · 마지막 사용 ${new Date(client.last_used_at * 1000).toLocaleString()}` : ''}</div>
+      <ul>{client.redirect_uris.map(uri => <li key={uri}><code>{uri}</code></li>)}</ul>
+      <Button variant="outline" size="sm" disabled={busy === client.client_id} onClick={() => void remove(client.client_id)}>등록 삭제</Button>
+    </li>)}</ul>}
+  </Panel>
+}
+
 function MCPAdminContents() {
   const query = useQuery({queryKey: ['mcp-capabilities'], queryFn: async ({signal}) => parseResponse(capabilitiesSchema, await api<unknown>('/api/admin/mcp', {signal}))})
   const value = query.data
@@ -82,7 +108,7 @@ function MCPAdminContents() {
       <Panel><div className="row"><Badge variant={value.enabled ? 'secondary' : 'outline'}>MCP {value.enabled ? '활성' : '비활성'}</Badge><Badge variant={value.http_enabled ? 'secondary' : 'outline'}>HTTP {value.http_enabled ? '허용' : '차단'}</Badge></div><p>요청 제한: {value.request_timeout_sec}초</p></Panel>
       <Panel><h2>조직 공통 허용 범위</h2><div className="grid">{scopes.map(([scope, label]) => <div className="row" key={scope}><span>{label}</span><Badge variant={value.permissions[scope] ? 'secondary' : 'outline'}>{value.permissions[scope] ? '허용' : '차단'}</Badge></div>)}</div><p className="small muted">조직 공통 설정, 클라이언트 인증 권한, 사용자 역할 정책을 모두 통과해야 실행됩니다. 설정 변경은 관리자 MCP 설정에서 수행합니다.</p></Panel>
       <Panel><h2>기능·도구 목록</h2>{Object.entries(value.groups).map(([group, tools]) => <details key={group}><summary>{group} ({tools.length})</summary><ul>{tools.map(tool => <li key={tool}><code>{tool}</code></li>)}</ul></details>)}<details><summary>호환 별칭</summary>{Object.entries(value.aliases).map(([alias, name]) => <p key={alias}><code>{alias}</code> → <code>{name}</code></p>)}</details><p className="small muted">클라이언트의 tools/list에서 JSON Schema, 부작용, 승인 필요 여부, 필수 권한과 예제를 조회할 수 있습니다. 긴 작업은 반환된 작업 ID로 상태를 확인하세요.</p></Panel>
-    </>}<MCPKeysPanel admin/>
+    </>}<MCPOAuthClientsPanel/><MCPKeysPanel admin/>
   </div>
 }
 

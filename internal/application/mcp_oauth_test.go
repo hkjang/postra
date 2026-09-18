@@ -28,6 +28,8 @@ type oauthTestIssuer struct {
 	discoveries atomic.Int32
 	keyRequests atomic.Int32
 	unavailable atomic.Bool
+	// tokenEndpoint, when set, answers POST /token for proxy exchange tests.
+	tokenEndpoint http.HandlerFunc
 }
 
 func newOAuthTestIssuer(t *testing.T) *oauthTestIssuer {
@@ -49,6 +51,12 @@ func newOAuthTestIssuer(t *testing.T) *oauthTestIssuer {
 			f.mu.RLock()
 			defer f.mu.RUnlock()
 			_ = json.NewEncoder(w).Encode(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{Key: &f.key.PublicKey, KeyID: f.kid, Algorithm: "RS256", Use: "sig"}}})
+		case "/token":
+			if f.tokenEndpoint == nil {
+				http.NotFound(w, r)
+				return
+			}
+			f.tokenEndpoint(w, r)
 		default:
 			http.NotFound(w, r)
 		}

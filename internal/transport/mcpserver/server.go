@@ -243,9 +243,14 @@ func HTTPHandler(app *application.App, apiToken string) http.Handler {
 		inner.ServeHTTP(w, r.WithContext(ctx))
 	}))
 	metadata := OAuthMetadataHandler(app)
+	proxy := OAuthProxyHandler(app)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == OAuthMetadataPath || strings.HasPrefix(r.URL.Path, OAuthMetadataPath+"/") {
 			metadata.ServeHTTP(w, r)
+			return
+		}
+		if IsOAuthProxyPath(r.URL.Path) {
+			proxy.ServeHTTP(w, r)
 			return
 		}
 		transport.ServeHTTP(w, r)

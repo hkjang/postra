@@ -16,7 +16,10 @@ const user: Principal = {user_id: 'u1', login_id: 'hong', display_name: '홍길�
 const admin: Principal = {...user, role: 'admin'}
 const initial = {
   active_endpoint: '/mcp', configured_endpoint: '/mcp', pending_restart: false,
-  oauth: {enabled: true, configured: true, issuer: 'https://keycloak.corp.test/realms/mail', resource_url: 'https://gateway.corp.test/tools/mail', metadata_url: 'https://gateway.corp.test/.well-known/oauth-protected-resource/tools/mail', allowed_client_ids: ['registered-agent'], scopes_supported: ['mail.read', 'mail.search']},
+  oauth: {enabled: true, configured: true, issuer: 'https://keycloak.corp.test/realms/mail', resource_url: 'https://gateway.corp.test/tools/mail', metadata_url: 'https://gateway.corp.test/.well-known/oauth-protected-resource/tools/mail', allowed_client_ids: ['registered-agent'], scopes_supported: ['mail.read', 'mail.search'],
+    authorization_server: 'https://keycloak.corp.test/realms/mail',
+    proxy: {enabled: false, configured: false, issuer: 'https://gateway.corp.test', metadata_url: 'https://gateway.corp.test/.well-known/oauth-authorization-server', registration_endpoint: 'https://gateway.corp.test/oauth/register',
+      authorization_endpoint: 'https://gateway.corp.test/oauth/authorize', token_endpoint: 'https://gateway.corp.test/oauth/token', callback_url: 'https://gateway.corp.test/oauth/callback', client_id: ''}},
 }
 const capabilities = {enabled: true, http_enabled: true, endpoint: '/mcp', permissions: {'mail.read': true}, groups: {Discovery: ['mail_capabilities']}, aliases: {}, request_timeout_sec: 120}
 let connection: typeof initial
@@ -26,6 +29,7 @@ beforeEach(() => {
   mockedAPI.mockImplementation(async path => {
     if (path === '/api/mcp/connection') return connection
     if (path === '/api/admin/mcp') return capabilities
+    if (path === '/api/admin/mcp-oauth-clients') return {clients: []}
     return {keys: []}
   })
 })
@@ -79,6 +83,37 @@ describe('MCP OAuth connection guidance', () => {
     expect(screen.getByRole('link', {name: '관리자 MCP 설정 열기'})).toHaveAttribute('href', '/admin?category=mcp')
   })
 
+  it('explains the DCR proxy, its Keycloak callback and registration endpoint when enabled, without any secret', async () => {
+    connection.oauth = {...connection.oauth, authorization_server: 'https://gateway.corp.test', proxy: {...connection.oauth.proxy, enabled: true, configured: true, client_id: 'postra-mcp-proxy'}}
+    mount()
+    expect(await screen.findByText('DCR 프록시 사용 중')).toBeInTheDocument()
+    expect(screen.getByText('DCR 등록 Endpoint').nextElementSibling).toHaveTextContent('https://gateway.corp.test/oauth/register')
+    expect(screen.getByText('프록시 Keycloak Client').nextElementSibling).toHaveTextContent('postra-mcp-proxy')
+    expect(screen.getByText('프록시 Keycloak Client').nextElementSibling).toHaveTextContent('https://gateway.corp.test/oauth/callback')
+    expect(screen.getByText(/Postra DCR 프록시가 인증 서버로 안내되며/)).toBeInTheDocument()
+    expect(screen.getByText(/동적 클라이언트 등록\(DCR\)만 지원하는 클라이언트/)).toBeInTheDocument()
+    expect(document.body).not.toHaveTextContent('client_secret')
+  })
+
+  it('lists and deletes dynamically registered clients for administrators', async () => {
+    const clients = [{client_id: 'dcr-0123', client_name: 'Claude', redirect_uris: ['https://claude.ai/api/mcp/auth_callback'], token_endpoint_auth_method: 'none', created_at: 1_760_000_000, last_used_at: 1_760_000_500}]
+    mockedAPI.mockImplementation(async (path, options) => {
+      if (path === '/api/mcp/connection') return connection
+      if (path === '/api/admin/mcp') return capabilities
+      if (path === '/api/admin/mcp-oauth-clients') return {clients: options?.method === 'DELETE' ? [] : clients.splice(0)}
+      if (path === '/api/admin/mcp-oauth-clients/dcr-0123' && options?.method === 'DELETE') return {status: 'deleted'}
+      return {keys: []}
+    })
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const person = userEvent.setup()
+    mount(<MCPAdminPage/>, admin)
+    expect(await screen.findByText('dcr-0123')).toBeInTheDocument()
+    expect(screen.getByText('https://claude.ai/api/mcp/auth_callback')).toBeInTheDocument()
+    await person.click(screen.getByRole('button', {name: '등록 삭제'}))
+    expect(await screen.findByText('등록된 클라이언트가 없습니다.')).toBeInTheDocument()
+    expect(mockedAPI).toHaveBeenCalledWith('/api/admin/mcp-oauth-clients/dcr-0123', {method: 'DELETE'})
+  })
+
   it('normalizes only known nil-list representations without granting defaults', async () => {
     mockedAPI.mockResolvedValue({...connection, oauth: {...connection.oauth, allowed_client_ids: null, scopes_supported: null}})
     mount()
@@ -117,7 +152,7 @@ describe('MCP OAuth connection guidance', () => {
   })
 
   it('shows OAuth alongside administrator key inventory while rejecting malformed capability maps safely', async () => {
-    mockedAPI.mockImplementation(async path => path === '/api/mcp/connection' ? connection : path === '/api/admin/mcp' ? {...capabilities, groups: {Read: {secret: 'do-not-echo-private-payload'}}} : {keys: []})
+    mockedAPI.mockImplementation(async path => path === '/api/mcp/connection' ? connection : path === '/api/admin/mcp' ? {...capabilities, groups: {Read: {secret: 'do-not-echo-private-payload'}}} : path === '/api/admin/mcp-oauth-clients' ? {clients: []} : {keys: []})
     mount(<MCPAdminPage/>, admin)
     expect(await screen.findByText('OAuth 설정됨 · 연결 미확인')).toBeInTheDocument()
     expect(await screen.findByRole('alert')).toHaveTextContent('서버 응답 형식')
@@ -133,6 +168,7 @@ describe('MCP OAuth connection guidance', () => {
       if (path === '/api/admin/configuration') {if (options?.method === 'PATCH') saved = true; return settings()}
       if (path === '/api/mcp/connection') return {...connection, oauth: {...connection.oauth, enabled: saved}}
       if (path === '/api/admin/mcp') return capabilities
+      if (path === '/api/admin/mcp-oauth-clients') return {clients: []}
       return {keys: []}
     })
     const person = userEvent.setup()

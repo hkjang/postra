@@ -50,6 +50,16 @@ type Storage interface {
 	RevokeMCPKey(ctx context.Context, userID, keyID string) error
 	TouchMCPKey(ctx context.Context, keyID string, lastUsedAt int64) error
 
+	// Dynamically registered OAuth clients of the MCP authorization-server
+	// proxy (shared across replicas; registrations carry no user authority).
+	CreateMCPOAuthClient(ctx context.Context, c *domain.MCPOAuthClient) error
+	GetMCPOAuthClient(ctx context.Context, id string) (*domain.MCPOAuthClient, error)
+	ListMCPOAuthClients(ctx context.Context) ([]domain.MCPOAuthClient, error)
+	CountMCPOAuthClients(ctx context.Context) (int, error)
+	TouchMCPOAuthClient(ctx context.Context, id string, lastUsedAt int64) error
+	DeleteMCPOAuthClient(ctx context.Context, id string) error
+	PruneMCPOAuthClients(ctx context.Context, unusedBefore int64) (int64, error)
+
 	CreateAccount(ctx context.Context, a *domain.MailAccount) error
 	GetAccount(ctx context.Context, userID, id string) (*domain.MailAccount, error)
 	ListAccounts(ctx context.Context, userID string) ([]domain.MailAccount, error)

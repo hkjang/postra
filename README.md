@@ -11,7 +11,7 @@ Go로 작성한 개인/사내 구축형 메일 서비스입니다. 사용자의 
 
 v0.20.0의 검색 가능한 운영 콘솔은 환경변수 초기값 위에 관리자 설정과 강제 정책을 적용합니다. 개인·계정 설정과 복수 서명도 웹에서 관리합니다. [설정 관리](docs/SETTINGS.md) · [HTML 메일](docs/MAIL_RENDERING.md) · [Ask Postra](docs/ASK_POSTRA.md) · [MCP 계약](docs/MCP_CONVERGENCE.md) · [API 스키마](docs/API_CONTRACTS.md) · [릴리즈 및 이전 주의사항](docs/releases/v0.20.0.md)
 
-최신 릴리즈 [v0.22.1](docs/releases/v0.22.1.md)는 OIDC Discovery 실패를 호스트 없음·연결 거부·시간 초과·TLS 인증서·HTTP 상태·issuer 불일치·JSON 아님으로 분류하고, 인증 서버가 콜백에 돌려준 오류와 함께 장애 화면에 기록합니다. v0.22.0의 Keycloak OAuth 기반 MCP 연결과 기존 메일·AI·개인화·승인 기반 발송은 그대로 유지합니다.
+최신 릴리즈 [v0.23.0](docs/releases/v0.23.0.md)은 동적 클라이언트 등록(DCR)만 지원하는 MCP 클라이언트도 Keycloak SSO로 연결할 수 있도록 DCR 호환 OAuth 프록시를 추가합니다. Postra가 클라이언트에게 인증 서버 역할을 하고 사용자 동의 화면을 거쳐 Keycloak 로그인을 대행하며, 발급된 토큰의 검증과 권한 계산은 v0.22.0의 사전 등록 방식과 동일합니다. 기존 API Key·메일·AI·개인화·승인 기반 발송은 그대로 유지합니다.
 
 ## 설계 핵심
 
@@ -168,7 +168,7 @@ POSTRA_ALLOW_INSECURE_MAIL=true ./postra serve
 
 - **로컬(stdio)**: `postra mcp` — Claude Code 등 로컬 MCP 클라이언트에 연결
 - **원격(Streamable HTTP)**: `postra serve` 의 `http://127.0.0.1:8480/mcp`. REST·Web UI와 같은 포트를 사용하며 비로컬 인터페이스 바인딩 시 `POSTRA_API_TOKEN` 을 요구합니다. 기존 배포 호환용 별도 리스너가 필요할 때만 `mcp_http_addr`/`POSTRA_MCP_HTTP_ADDR`를 설정하세요.
-- **Keycloak OAuth(선택)**: 기존 API Key와 병행합니다. 관리자 MCP 설정에서 활성화하고, 웹 SSO로 먼저 연결된 사용자가 사전 등록된 MCP client로 인증합니다. [설정·클라이언트 호환·토큰 폐기 한계](docs/MCP_OAUTH.md)
+- **Keycloak OAuth(선택)**: 기존 API Key와 병행합니다. 관리자 MCP 설정에서 활성화하고, 웹 SSO로 먼저 연결된 사용자가 사전 등록된 MCP client로 인증합니다. DCR만 지원하는 클라이언트(claude.ai 커넥터 등)는 DCR 호환 프록시를 켜면 MCP URL만으로 등록·동의·Keycloak 로그인을 거쳐 연결됩니다. [설정·클라이언트 호환·토큰 폐기 한계](docs/MCP_OAUTH.md)
 
 주요 **도구(Tools)**: `mail_account_*`, `secret_registration_begin`, `mail_sync_start`, `job_status`, `mail_search`, `mail_hybrid_search`, `mail_work_inbox`, `mail_message_get`, `mail_thread_get`, `mail_thread_timeline`, `mail_batch_update`, `mail_summarize` / `mail_classify` / `mail_action_items_extract` / `mail_phishing_inspect` / `mail_auth_inspect` / `mail_question_answer`, `mail_embeddings_build`, `mail_semantic_search`, `mail_rules_list` / `mail_rule_create` / `mail_rule_update` / `mail_rule_delete` / `mail_apply_rules`, `mail_draft_create`, `mail_draft_rewrite`, `mail_send_preview`, `mail_send_request_approval`, `mail_send`, `mail_local_delete`, `mail_server_delete_preview`, `mail_server_delete_request_approval`, `mail_server_delete`, `mail_audit_search`.
 

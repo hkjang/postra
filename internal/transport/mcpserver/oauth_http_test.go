@@ -25,6 +25,8 @@ type mcpOAuthFixture struct {
 	admin  context.Context
 	issuer *httptest.Server
 	key    *rsa.PrivateKey
+	// tokenEndpoint, when set, answers POST /token for proxy tests.
+	tokenEndpoint http.HandlerFunc
 }
 
 func newMCPOAuthFixture(t *testing.T, endpoints ...string) *mcpOAuthFixture {
@@ -46,6 +48,12 @@ func newMCPOAuthFixture(t *testing.T, endpoints ...string) *mcpOAuthFixture {
 			_ = json.NewEncoder(w).Encode(map[string]any{"issuer": f.issuer.URL, "jwks_uri": f.issuer.URL + "/keys", "authorization_endpoint": f.issuer.URL + "/authorize", "token_endpoint": f.issuer.URL + "/token", "id_token_signing_alg_values_supported": []string{"RS256"}})
 		case "/keys":
 			_ = json.NewEncoder(w).Encode(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{Key: &key.PublicKey, KeyID: "fixture", Algorithm: "RS256", Use: "sig"}}})
+		case "/token":
+			if f.tokenEndpoint == nil {
+				http.NotFound(w, r)
+				return
+			}
+			f.tokenEndpoint(w, r)
 		default:
 			http.NotFound(w, r)
 		}

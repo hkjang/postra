@@ -53,6 +53,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/admin/deleted-mail/purge", s.adminPurgeDeletedMail)
 	mux.HandleFunc("GET /api/admin/mcp-keys", s.adminListMCPKeys)
 	mux.HandleFunc("DELETE /api/admin/mcp-keys/{id}", s.adminRevokeMCPKey)
+	mux.HandleFunc("GET /api/admin/mcp-oauth-clients", s.adminListMCPOAuthClients)
+	mux.HandleFunc("DELETE /api/admin/mcp-oauth-clients/{id}", s.adminDeleteMCPOAuthClient)
 	mux.HandleFunc("GET /api/admin/incidents", s.adminListIncidents)
 	mux.HandleFunc("POST /api/admin/incidents/{id}/resolve", s.adminResolveIncident)
 	mux.HandleFunc("GET /api/admin/settings", s.adminGetSettings)
@@ -1219,6 +1221,25 @@ func (s *Server) adminRevokeMCPKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "revoked"})
+}
+
+// Dynamically registered OAuth clients of the MCP proxy: listed so an
+// administrator can see who registered, removed to stop new authorizations.
+func (s *Server) adminListMCPOAuthClients(w http.ResponseWriter, r *http.Request) {
+	clients, err := s.app.ListMCPOAuthClients(r.Context())
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"clients": clients})
+}
+
+func (s *Server) adminDeleteMCPOAuthClient(w http.ResponseWriter, r *http.Request) {
+	if err := s.app.DeleteMCPOAuthClient(r.Context(), r.PathValue("id")); err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 func (s *Server) batchUpdateMessages(w http.ResponseWriter, r *http.Request) {

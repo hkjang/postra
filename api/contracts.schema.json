@@ -810,6 +810,53 @@
               "items": {
                 "type": "string"
               }
+            },
+            "authorization_server": {
+              "type": "string"
+            },
+            "proxy": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "configured": {
+                  "type": "boolean"
+                },
+                "issuer": {
+                  "type": "string"
+                },
+                "metadata_url": {
+                  "type": "string"
+                },
+                "registration_endpoint": {
+                  "type": "string"
+                },
+                "authorization_endpoint": {
+                  "type": "string"
+                },
+                "token_endpoint": {
+                  "type": "string"
+                },
+                "callback_url": {
+                  "type": "string"
+                },
+                "client_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "enabled",
+                "configured",
+                "issuer",
+                "metadata_url",
+                "registration_endpoint",
+                "authorization_endpoint",
+                "token_endpoint",
+                "callback_url",
+                "client_id"
+              ],
+              "additionalProperties": false
             }
           },
           "required": [
@@ -819,7 +866,9 @@
             "resource_url",
             "metadata_url",
             "allowed_client_ids",
-            "scopes_supported"
+            "scopes_supported",
+            "authorization_server",
+            "proxy"
           ],
           "additionalProperties": false
         }
@@ -868,6 +917,53 @@
           "items": {
             "type": "string"
           }
+        },
+        "authorization_server": {
+          "type": "string"
+        },
+        "proxy": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "configured": {
+              "type": "boolean"
+            },
+            "issuer": {
+              "type": "string"
+            },
+            "metadata_url": {
+              "type": "string"
+            },
+            "registration_endpoint": {
+              "type": "string"
+            },
+            "authorization_endpoint": {
+              "type": "string"
+            },
+            "token_endpoint": {
+              "type": "string"
+            },
+            "callback_url": {
+              "type": "string"
+            },
+            "client_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "enabled",
+            "configured",
+            "issuer",
+            "metadata_url",
+            "registration_endpoint",
+            "authorization_endpoint",
+            "token_endpoint",
+            "callback_url",
+            "client_id"
+          ],
+          "additionalProperties": false
         }
       },
       "title": "MCPOAuthInfo",
@@ -878,7 +974,54 @@
         "resource_url",
         "metadata_url",
         "allowed_client_ids",
-        "scopes_supported"
+        "scopes_supported",
+        "authorization_server",
+        "proxy"
+      ],
+      "additionalProperties": false
+    },
+    "MCPOAuthProxyInfo": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "configured": {
+          "type": "boolean"
+        },
+        "issuer": {
+          "type": "string"
+        },
+        "metadata_url": {
+          "type": "string"
+        },
+        "registration_endpoint": {
+          "type": "string"
+        },
+        "authorization_endpoint": {
+          "type": "string"
+        },
+        "token_endpoint": {
+          "type": "string"
+        },
+        "callback_url": {
+          "type": "string"
+        },
+        "client_id": {
+          "type": "string"
+        }
+      },
+      "title": "MCPOAuthProxyInfo",
+      "required": [
+        "enabled",
+        "configured",
+        "issuer",
+        "metadata_url",
+        "registration_endpoint",
+        "authorization_endpoint",
+        "token_endpoint",
+        "callback_url",
+        "client_id"
       ],
       "additionalProperties": false
     },

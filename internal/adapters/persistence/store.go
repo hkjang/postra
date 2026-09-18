@@ -183,6 +183,11 @@ CREATE TABLE IF NOT EXISTS mcp_keys (
   status TEXT NOT NULL DEFAULT 'active', created_at INTEGER NOT NULL, last_used_at INTEGER DEFAULT 0);
 CREATE INDEX IF NOT EXISTS idx_mcp_keys_user ON mcp_keys(user_id);
 
+CREATE TABLE IF NOT EXISTS mcp_oauth_clients (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', secret_hash TEXT NOT NULL DEFAULT '',
+  redirect_uris_json TEXT NOT NULL DEFAULT '[]', auth_method TEXT NOT NULL DEFAULT 'none',
+  created_at INTEGER NOT NULL, last_used_at INTEGER NOT NULL DEFAULT 0);
+
 CREATE TABLE IF NOT EXISTS mail_accounts (
   id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL,
   email TEXT NOT NULL, status TEXT NOT NULL,
@@ -2501,6 +2506,88 @@ func (s *Store) UpdateMCPKeyScopes(ctx context.Context, userID, keyID string, sc
 		return ErrNotFound
 	}
 	return nil
+}
+
+// ---------- dynamically registered MCP OAuth clients ----------
+
+func (s *Store) CreateMCPOAuthClient(ctx context.Context, c *domain.MCPOAuthClient) error {
+	uris, err := json.Marshal(c.RedirectURIs)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO mcp_oauth_clients (id, name, secret_hash, redirect_uris_json, auth_method, created_at, last_used_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`, c.ID, c.Name, c.SecretHash, string(uris), c.AuthMethod, c.CreatedAt, c.LastUsedAt)
+	return err
+}
+
+func scanMCPOAuthClient(row interface{ Scan(...any) error }) (*domain.MCPOAuthClient, error) {
+	var c domain.MCPOAuthClient
+	var uris string
+	if err := row.Scan(&c.ID, &c.Name, &c.SecretHash, &uris, &c.AuthMethod, &c.CreatedAt, &c.LastUsedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	if err := json.Unmarshal([]byte(uris), &c.RedirectURIs); err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+func (s *Store) GetMCPOAuthClient(ctx context.Context, id string) (*domain.MCPOAuthClient, error) {
+	return scanMCPOAuthClient(s.db.QueryRowContext(ctx, `SELECT id, name, secret_hash, redirect_uris_json, auth_method, created_at, last_used_at
+		FROM mcp_oauth_clients WHERE id = ?`, id))
+}
+
+func (s *Store) ListMCPOAuthClients(ctx context.Context) ([]domain.MCPOAuthClient, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, secret_hash, redirect_uris_json, auth_method, created_at, last_used_at
+		FROM mcp_oauth_clients ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []domain.MCPOAuthClient{}
+	for rows.Next() {
+		c, err := scanMCPOAuthClient(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *c)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) CountMCPOAuthClients(ctx context.Context) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM mcp_oauth_clients`).Scan(&n)
+	return n, err
+}
+
+func (s *Store) TouchMCPOAuthClient(ctx context.Context, id string, lastUsedAt int64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE mcp_oauth_clients SET last_used_at = ? WHERE id = ?`, lastUsedAt, id)
+	return err
+}
+
+func (s *Store) DeleteMCPOAuthClient(ctx context.Context, id string) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM mcp_oauth_clients WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// PruneMCPOAuthClients removes registrations neither created nor used since
+// the cutoff, so anonymous registrations cannot accumulate without bound.
+func (s *Store) PruneMCPOAuthClients(ctx context.Context, unusedBefore int64) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM mcp_oauth_clients WHERE MAX(created_at, last_used_at) < ?`, unusedBefore)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 func (s *Store) TryAcquireLease(ctx context.Context, key, nodeID string, durationSec int) (bool, error) {
