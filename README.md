@@ -11,7 +11,7 @@ Go로 작성한 개인/사내 구축형 메일 서비스입니다. 사용자의 
 
 v0.20.0의 검색 가능한 운영 콘솔은 환경변수 초기값 위에 관리자 설정과 강제 정책을 적용합니다. 개인·계정 설정과 복수 서명도 웹에서 관리합니다. [설정 관리](docs/SETTINGS.md) · [HTML 메일](docs/MAIL_RENDERING.md) · [Ask Postra](docs/ASK_POSTRA.md) · [MCP 계약](docs/MCP_CONVERGENCE.md) · [API 스키마](docs/API_CONTRACTS.md) · [릴리즈 및 이전 주의사항](docs/releases/v0.20.0.md)
 
-최신 릴리즈 [v0.23.0](docs/releases/v0.23.0.md)은 동적 클라이언트 등록(DCR)만 지원하는 MCP 클라이언트도 Keycloak SSO로 연결할 수 있도록 DCR 호환 OAuth 프록시를 추가합니다. Postra가 클라이언트에게 인증 서버 역할을 하고 사용자 동의 화면을 거쳐 Keycloak 로그인을 대행하며, 발급된 토큰의 검증과 권한 계산은 v0.22.0의 사전 등록 방식과 동일합니다. 기존 API Key·메일·AI·개인화·승인 기반 발송은 그대로 유지합니다.
+최신 릴리즈 [v0.23.1](docs/releases/v0.23.1.md)은 v0.23.0 이후 CI 의 gosec(medium+) 검사를 실패시키던 OAuth 프록시의 오탐 2건에 근거 주석을 달아 검사를 복구하고, SMTP 발송 어댑터의 AUTH 선택·응답 분류·TLS 경로를 스크립트된 루프백 릴레이로 검증하는 테스트를 추가한 패치 릴리즈입니다. 실행 동작 변경은 없으며 v0.23.0의 DCR 호환 OAuth 프록시, v0.22.0의 Keycloak OAuth MCP 연결, 기존 API Key·메일·AI·개인화·승인 기반 발송은 그대로 유지합니다.
 
 ## 설계 핵심
 
