@@ -378,7 +378,7 @@ func (p *oauthProxy) tokenEndpoint(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
-		_, _ = w.Write(body)
+		_, _ = w.Write(body) // #nosec G705 -- json.Valid-checked upstream token response served as application/json with nosniff, never HTML
 		return
 	}
 	out, err := p.app.ExchangeMCPOAuthProxy(r.Context(), application.MCPOAuthTokenRequest{

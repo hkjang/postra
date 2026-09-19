@@ -260,9 +260,17 @@ func TestMCPOAuthProxyPassesPreregisteredClientsThrough(t *testing.T) {
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"refresh_token":"kc-refresh"`) || len(f.upstream) != 1 || f.upstream[0].Get("code_verifier") != strings.Repeat("b", 43) || f.upstream[0].Get("client_id") != "desktop" {
 		t.Fatalf("pass-through token: %d %s upstream=%v", rec.Code, rec.Body.String(), f.upstream)
 	}
+	// The upstream body is relayed verbatim, so it must be pinned to JSON and
+	// never sniffable as a document.
+	if ct, nosniff := rec.Header().Get("Content-Type"), rec.Header().Get("X-Content-Type-Options"); ct != "application/json" || nosniff != "nosniff" {
+		t.Fatalf("relayed token response headers: Content-Type=%q X-Content-Type-Options=%q", ct, nosniff)
+	}
 	rec = proxyRequest(handler, "POST", "https://postra.test/oauth/token", form.Encode(), map[string]string{"Content-Type": "application/x-www-form-urlencoded"})
 	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "upstream says no") {
 		t.Fatalf("upstream error not relayed: %d %s", rec.Code, rec.Body.String())
+	}
+	if ct, nosniff := rec.Header().Get("Content-Type"), rec.Header().Get("X-Content-Type-Options"); ct != "application/json" || nosniff != "nosniff" {
+		t.Fatalf("relayed token error headers: Content-Type=%q X-Content-Type-Options=%q", ct, nosniff)
 	}
 	// The proxy's own upstream client and the web SSO client are never
 	// pass-through identities.

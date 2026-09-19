@@ -44,7 +44,7 @@ const (
 	OAuthProxyRegisterPath  = "/oauth/register"
 	OAuthProxyAuthorizePath = "/oauth/authorize"
 	OAuthProxyCallbackPath  = "/oauth/callback"
-	OAuthProxyTokenPath     = "/oauth/token"
+	OAuthProxyTokenPath     = "/oauth/token" // #nosec G101 -- endpoint path, not a credential
 
 	oauthProxyStateTTL      = 10 * time.Minute
 	oauthProxyCodeTTL       = 90 * time.Second
