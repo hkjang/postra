@@ -297,12 +297,19 @@ go test -race ./...      # 동시성 검사
 
 **릴리즈 자동화**: `release.yml` 이 `v*` 태그 push 시 버전 각인 정적 바이너리·오프라인 이미지 tarball·SBOM·체크섬을 빌드해 GitHub Release로 발행합니다. 버전은 `-ldflags -X …/build.Version` 로 주입되어 `postra version`·MCP·`postra_build_info` 메트릭에 일관 반영됩니다.
 
-로컬에서도 동일 검사 실행:
+저장소 루트에서 로컬 검사 실행:
 
 ```bash
 go run golang.org/x/vuln/cmd/govulncheck@latest ./...
-go run github.com/securego/gosec/v2/cmd/gosec@latest -severity medium -exclude-dir=scripts ./...
+make lint           # 포맷 검사 + gosec 보안 검사
+make lint-format    # cmd/·internal/ Go 파일의 포맷 위반 경로 출력 및 실패 (파일 수정 없음)
+make lint-security  # CI와 같은 gosec v2.28.0, medium+, scripts 제외, ./... 범위
 ```
+
+최초 실행에는 도구·모듈 다운로드가 필요할 수 있습니다. `make lint`는 소스나
+`go.mod`·`go.sum`·번들을 수정하지 않으며, 위반이나 검사 실행 오류가 있으면 실패합니다.
+로컬 Go 버전에 따라 CI와 실행 환경은 다를 수 있습니다. 이 타깃은 전체 CI를 대체하지
+않으며 빌드·테스트·govulncheck·프런트엔드 등의 검사는 별도로 실행해야 합니다.
 
 ## 확장 (post-MVP)
 

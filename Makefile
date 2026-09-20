@@ -2,7 +2,7 @@ GO ?= go
 NPM ?= npm
 VERSION ?= dev
 
-.PHONY: build build-offline frontend frontend-test frontend-check test
+.PHONY: build build-offline frontend frontend-test frontend-check test lint lint-format lint-security
 
 # Rebuild the browser bundle before embedding it in the executable.
 build: frontend
@@ -28,3 +28,13 @@ build-offline:
 
 test:
 	$(GO) test -race ./...
+
+lint: lint-format lint-security
+
+lint-format:
+	@files="$$(gofmt -l ./cmd ./internal)" || exit $$?; \
+		if [ -n "$$files" ]; then printf '%s\n' "$$files"; exit 1; fi
+
+# Keep the version and scan scope aligned with .github/workflows/ci.yml.
+lint-security:
+	$(GO) run github.com/securego/gosec/v2/cmd/gosec@v2.28.0 -severity medium -exclude-dir=scripts ./...
