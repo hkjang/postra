@@ -1,6 +1,7 @@
 package smtp
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -32,6 +33,10 @@ type relayOpts struct {
 	dropAfterData bool     // close without the final DATA reply
 	starttls      bool     // honour STARTTLS with a self-signed cert
 	implicitTLS   bool     // listen with tls.Listen (SMTPS / 465 style)
+	// hangAfter names a command ("EHLO", "MAIL", "DATA", ...) after which the
+	// relay reads the line (and, for DATA, the whole body) and then goes silent
+	// without closing the socket until the test ends.
+	hangAfter string
 }
 
 // recorded collects every command line the relay read, tagged with whether
@@ -41,6 +46,14 @@ type recorded struct {
 	lines    []string
 	tls      []bool
 	finished chan struct{}
+	hung     chan struct{} // one signal per connection that reached hangAfter
+	body     int           // DATA bytes received after dot-unstuffing
+}
+
+func (r *recorded) bodyLen() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.body
 }
 
 func (r *recorded) add(line string, overTLS bool) {
@@ -127,7 +140,18 @@ func fakeRelay(t *testing.T, o relayOpts) (port int, got *recorded) {
 		ln = tls.NewListener(ln, tlsCfg)
 	}
 	t.Cleanup(func() { _ = ln.Close() })
-	got = &recorded{finished: make(chan struct{}, 8)}
+	got = &recorded{finished: make(chan struct{}, 8), hung: make(chan struct{}, 8)}
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	// hang parks the connection open-but-silent until the test's cleanup runs.
+	hang := func(after string) bool {
+		if o.hangAfter == "" || !strings.EqualFold(o.hangAfter, after) {
+			return false
+		}
+		got.hung <- struct{}{}
+		<-release
+		return true
+	}
 
 	serve := func(conn net.Conn) {
 		defer conn.Close()
@@ -145,6 +169,9 @@ func fakeRelay(t *testing.T, o relayOpts) (port int, got *recorded) {
 			}
 			got.add(line, overTLS)
 			command, _, _ := strings.Cut(line, " ")
+			if !strings.EqualFold(command, "DATA") && hang(command) {
+				return
+			}
 			switch strings.ToUpper(command) {
 			case "EHLO":
 				ext := append([]string{"250-localhost"}, o.ehlo...)
@@ -191,10 +218,14 @@ func fakeRelay(t *testing.T, o relayOpts) (port int, got *recorded) {
 				_ = wire.PrintfLine("%s", o.rcptReply)
 			case "DATA":
 				_ = wire.PrintfLine("354 send content")
-				if _, err := wire.ReadDotBytes(); err != nil {
+				body, err := wire.ReadDotBytes()
+				if err != nil {
 					return
 				}
-				if o.dropAfterData {
+				got.mu.Lock()
+				got.body += len(body)
+				got.mu.Unlock()
+				if o.dropAfterData || hang("DATA") {
 					return
 				}
 				_ = wire.PrintfLine("250 queued")
@@ -396,6 +427,134 @@ func TestSendClassifiesReplies(t *testing.T) {
 		if !got.has("DATA") {
 			t.Fatalf("DATA missing: %v", got.all())
 		}
+	})
+}
+
+// waitHung blocks until the relay has parked one connection at hangAfter.
+func (r *recorded) waitHung(t *testing.T) {
+	t.Helper()
+	select {
+	case <-r.hung:
+	case <-time.After(5 * time.Second):
+		t.Fatal("relay never reached the hang point")
+	}
+}
+
+// The relay accepts the connection and answers EHLO, then swallows a later
+// command without replying and without closing. Before command deadlines
+// existed, Send blocked here forever and one stuck relay froze the serial
+// outbox worker on the leader node.
+func TestSendCommandTimeout(t *testing.T) {
+	t.Run("silent MAIL reply fails temporary within the command timeout", func(t *testing.T) {
+		port, got := fakeRelay(t, relayOpts{hangAfter: "MAIL"})
+		opts := sendOpts(port, "none", "", "")
+		opts.CommandTimeoutSec = 1
+		start := time.Now()
+		_, err := doSend(t, opts)
+		elapsed := time.Since(start)
+		se := asSendError(t, err)
+		if !se.Temporary() {
+			t.Fatalf("deadline error must be temporary: %v", err)
+		}
+		if !strings.Contains(err.Error(), "MAIL FROM") {
+			t.Fatalf("err %q lacks stage", err)
+		}
+		if elapsed > 4*time.Second {
+			t.Fatalf("Send took %v, command timeout not applied after dial", elapsed)
+		}
+		got.waitHung(t)
+		if !got.has("EHLO") || !got.has("MAIL ") || got.has("RCPT ") {
+			t.Fatalf("commands: %v", got.all())
+		}
+	})
+
+	t.Run("ctx cancel unblocks a stuck command before the timeout", func(t *testing.T) {
+		port, got := fakeRelay(t, relayOpts{hangAfter: "MAIL"})
+		opts := sendOpts(port, "none", "", "")
+		opts.CommandTimeoutSec = 60
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go func() {
+			got.waitHung(t)
+			cancel()
+		}()
+		start := time.Now()
+		_, err := Client{}.Send(ctx, opts, testEnvelope, strings.NewReader("Subject: t\r\n\r\nhi\r\n"))
+		elapsed := time.Since(start)
+		se := asSendError(t, err)
+		if !se.Temporary() {
+			t.Fatalf("cancellation must be temporary: %v", err)
+		}
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cause not visible: %v", err)
+		}
+		if elapsed > 4*time.Second {
+			t.Fatalf("Send took %v after cancel", elapsed)
+		}
+		if got.has("RCPT ") {
+			t.Fatalf("commands: %v", got.all())
+		}
+	})
+
+	t.Run("silence after the DATA payload is uncertain not failed", func(t *testing.T) {
+		port, got := fakeRelay(t, relayOpts{hangAfter: "DATA"})
+		opts := sendOpts(port, "none", "", "")
+		opts.CommandTimeoutSec = 1
+		start := time.Now()
+		receipt, err := doSend(t, opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !receipt.Uncertain {
+			t.Fatalf("receipt: %+v", receipt)
+		}
+		if elapsed := time.Since(start); elapsed > 4*time.Second {
+			t.Fatalf("Send took %v", elapsed)
+		}
+		got.waitHung(t)
+		if !got.has("DATA") {
+			t.Fatalf("DATA missing: %v", got.all())
+		}
+	})
+
+	t.Run("large payload is delivered intact through the per-chunk deadline", func(t *testing.T) {
+		port, got := fakeRelay(t, relayOpts{})
+		opts := sendOpts(port, "none", "", "")
+		opts.CommandTimeoutSec = 1
+		body := "Subject: big\r\n\r\n" + strings.Repeat("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd\r\n", 50_000)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		// bytes.Reader implements WriterTo, exactly like the production caller.
+		receipt, err := Client{}.Send(ctx, opts, testEnvelope, bytes.NewReader([]byte(body)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if receipt.ServerResponse != "250 accepted" || receipt.Uncertain {
+			t.Fatalf("receipt: %+v", receipt)
+		}
+		got.waitConn(t)
+		// ReadDotBytes on the relay side normalises CRLF to LF.
+		if n, want := got.bodyLen(), len(strings.ReplaceAll(body, "\r\n", "\n")); n != want {
+			t.Fatalf("relay received %d body bytes, want %d", n, want)
+		}
+	})
+
+	t.Run("TestConnection reports a silent EHLO as the smtp step", func(t *testing.T) {
+		port, got := fakeRelay(t, relayOpts{hangAfter: "EHLO"})
+		opts := sendOpts(port, "none", "", "")
+		opts.CommandTimeoutSec = 1
+		start := time.Now()
+		diag, err := Client{}.TestConnection(context.Background(), opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if elapsed := time.Since(start); elapsed > 4*time.Second {
+			t.Fatalf("TestConnection took %v", elapsed)
+		}
+		if diag.OK || len(diag.Steps) != 2 || diag.Steps[1].Step != "smtp_ehlo_auth" || diag.Steps[1].OK || diag.Steps[1].Detail == "" {
+			t.Fatalf("diag: %+v", diag)
+		}
+		got.waitHung(t)
 	})
 }
 

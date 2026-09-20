@@ -420,6 +420,7 @@ func (a *App) deliver(ctx context.Context, out *domain.OutboundMessage, acc *dom
 		AuthMethod: acc.SMTPAuth, Username: acc.SMTPUsername, Password: secret,
 		InsecureSkipVerify: acc.InsecureSkipVerify,
 		ConnectTimeoutSec:  a.EffectiveConfig().Sync.ConnectTimeoutSec,
+		CommandTimeoutSec:  a.EffectiveConfig().Sync.CommandTimeoutSec,
 	}, domain.Envelope{From: acc.Email, To: rcpts}, bytes.NewReader(raw))
 }
 

@@ -353,6 +353,7 @@ func (a *App) testSMTP(ctx context.Context, acc *domain.MailAccount) domain.Conn
 		AuthMethod: acc.SMTPAuth, Username: acc.SMTPUsername, Password: secret,
 		InsecureSkipVerify: acc.InsecureSkipVerify,
 		ConnectTimeoutSec:  a.EffectiveConfig().Sync.ConnectTimeoutSec,
+		CommandTimeoutSec:  a.EffectiveConfig().Sync.CommandTimeoutSec,
 	})
 	if err != nil || diag == nil {
 		return domain.ConnDiagnostics{Target: "smtp", Steps: []domain.ConnStep{

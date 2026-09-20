@@ -36,7 +36,50 @@ func dialTLSConfig(opts domain.SMTPSendOptions) *tls.Config {
 	}
 }
 
-func (Client) connect(ctx context.Context, opts domain.SMTPSendOptions) (*smtp.Client, error) {
+// session is one relay conversation. net/smtp has no notion of ctx or
+// per-command deadlines, so the raw conn is kept: every command arms a fresh
+// deadline on it (the same pattern as the POP3/IMAP adapters), and ctx
+// cancellation closes it so a blocked read returns immediately. After
+// STARTTLS the deadline still goes on the raw conn — tls.Conn delegates
+// SetDeadline to it anyway.
+type session struct {
+	c         *smtp.Client
+	conn      net.Conn
+	ctx       context.Context
+	commandTO time.Duration
+	stop      func() bool // detaches the ctx watcher; safe to call twice
+}
+
+func (s *session) deadline() { _ = s.conn.SetDeadline(time.Now().Add(s.commandTO)) }
+
+// cause annotates a command error with the ctx error when cancellation is
+// what closed the socket, so the outbox log shows why instead of a bare
+// "use of closed network connection".
+func (s *session) cause(err error) error {
+	if cerr := s.ctx.Err(); cerr != nil {
+		return fmt.Errorf("%w (%w)", err, cerr)
+	}
+	return err
+}
+
+func (s *session) close() {
+	s.stop()
+	s.c.Close()
+}
+
+// deadlineWriter arms the command deadline before each chunk so a large DATA
+// payload is bounded per write, not for the whole upload.
+type deadlineWriter struct {
+	s *session
+	w io.Writer
+}
+
+func (d deadlineWriter) Write(p []byte) (int, error) {
+	d.s.deadline()
+	return d.w.Write(p)
+}
+
+func (Client) connect(ctx context.Context, opts domain.SMTPSendOptions) (*session, error) {
 	addr := net.JoinHostPort(opts.Host, strconv.Itoa(opts.Port))
 	d := &net.Dialer{Timeout: secondsOr(opts.ConnectTimeoutSec, 15)}
 
@@ -50,30 +93,38 @@ func (Client) connect(ctx context.Context, opts domain.SMTPSendOptions) (*smtp.C
 	if err != nil {
 		return nil, fmt.Errorf("smtp connect %s: %w", addr, err)
 	}
+	s := &session{conn: conn, ctx: ctx, commandTO: secondsOr(opts.CommandTimeoutSec, 60)}
+	s.stop = context.AfterFunc(ctx, func() { _ = conn.Close() })
+	s.deadline()
 	c, err := smtp.NewClient(conn, opts.Host)
 	if err != nil {
+		s.stop()
 		conn.Close()
-		return nil, err
+		return nil, s.cause(err)
 	}
+	s.c = c
+	s.deadline()
 	if err := c.Hello(localName()); err != nil {
-		c.Close()
-		return nil, err
+		s.close()
+		return nil, s.cause(err)
 	}
 	if opts.Security == domain.SecurityStartTLS {
 		if ok, _ := c.Extension("STARTTLS"); !ok {
-			c.Close()
+			s.close()
 			return nil, errors.New("server does not offer STARTTLS")
 		}
+		s.deadline()
 		if err := c.StartTLS(dialTLSConfig(opts)); err != nil {
-			c.Close()
-			return nil, fmt.Errorf("STARTTLS: %w", err)
+			s.close()
+			return nil, fmt.Errorf("STARTTLS: %w", s.cause(err))
 		}
 	}
+	s.deadline()
 	if err := authenticate(c, opts); err != nil {
-		c.Close()
+		s.close()
 		return nil, err
 	}
-	return c, nil
+	return s, nil
 }
 
 func authenticate(c *smtp.Client, opts domain.SMTPSendOptions) error {
@@ -170,11 +221,13 @@ func (cl Client) TestConnection(ctx context.Context, opts domain.SMTPSendOptions
 	if !step("dns", err) {
 		return diag, nil
 	}
-	c, err := cl.connect(ctx, opts)
+	s, err := cl.connect(ctx, opts)
 	if !step("smtp_ehlo_auth", err) {
 		return diag, nil
 	}
-	c.Quit()
+	defer s.close()
+	s.deadline()
+	s.c.Quit()
 	diag.OK = true
 	return diag, nil
 }
@@ -185,7 +238,7 @@ func (cl Client) Send(ctx context.Context, opts domain.SMTPSendOptions, env doma
 			opts.Password.Zero()
 		}
 	}()
-	c, err := cl.connect(ctx, opts)
+	s, err := cl.connect(ctx, opts)
 	if err != nil {
 		// Auth failures are permanent; connection issues are retryable.
 		var ae *AuthError
@@ -194,27 +247,35 @@ func (cl Client) Send(ctx context.Context, opts domain.SMTPSendOptions, env doma
 		}
 		return domain.SendReceipt{}, &SendError{Err: err, temp: true}
 	}
-	defer c.Close()
+	defer s.close()
+	c := s.c
 
+	s.deadline()
 	if err := c.Mail(env.From); err != nil {
-		return domain.SendReceipt{}, classify(fmt.Errorf("MAIL FROM: %w", err))
+		return domain.SendReceipt{}, classify(fmt.Errorf("MAIL FROM: %w", s.cause(err)))
 	}
 	for _, rcpt := range env.To {
+		s.deadline()
 		if err := c.Rcpt(rcpt); err != nil {
-			return domain.SendReceipt{}, classify(fmt.Errorf("RCPT TO %s: %w", rcpt, err))
+			return domain.SendReceipt{}, classify(fmt.Errorf("RCPT TO %s: %w", rcpt, s.cause(err)))
 		}
 	}
+	s.deadline()
 	w, err := c.Data()
 	if err != nil {
-		return domain.SendReceipt{}, classify(fmt.Errorf("DATA: %w", err))
+		return domain.SendReceipt{}, classify(fmt.Errorf("DATA: %w", s.cause(err)))
 	}
-	if _, err := io.Copy(w, message); err != nil {
+	// Hide any WriterTo on the source so io.Copy chunks through deadlineWriter
+	// instead of handing the whole body over in one write.
+	if _, err := io.Copy(deadlineWriter{s, w}, struct{ io.Reader }{message}); err != nil {
 		w.Close()
-		return domain.SendReceipt{}, &SendError{Err: fmt.Errorf("DATA write: %w", err), temp: true}
+		return domain.SendReceipt{}, &SendError{Err: fmt.Errorf("DATA write: %w", s.cause(err)), temp: true}
 	}
 	// After the payload is fully handed over, a lost final response means the
 	// server may have accepted the message: report uncertain, never retried
-	// automatically (SMTP-008/009).
+	// automatically (SMTP-008/009). A deadline or ctx close here counts as
+	// lost for the same reason.
+	s.deadline()
 	if err := w.Close(); err != nil {
 		if isConnectionLost(err) {
 			return domain.SendReceipt{Uncertain: true, ServerResponse: err.Error()}, nil
@@ -222,6 +283,7 @@ func (cl Client) Send(ctx context.Context, opts domain.SMTPSendOptions, env doma
 		return domain.SendReceipt{}, fmt.Errorf("DATA close: %w", err)
 	}
 	resp := "250 accepted"
+	s.deadline()
 	if err := c.Quit(); err != nil && !isConnectionLost(err) {
 		resp = "accepted (QUIT: " + err.Error() + ")"
 	}

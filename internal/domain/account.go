@@ -167,6 +167,7 @@ type SMTPSendOptions struct {
 	Password           *SecretHandle
 	InsecureSkipVerify bool
 	ConnectTimeoutSec  int
+	CommandTimeoutSec  int
 }
 
 // SMTPClient wraps a maintained SMTP implementation behind a stable port
