@@ -50,9 +50,10 @@ func (Dialer) Dial(ctx context.Context, opts domain.POP3DialOptions) (domain.POP
 	}
 
 	s := &session{
-		conn:      conn,
-		text:      textproto.NewConn(conn),
-		commandTO: secondsOr(opts.CommandTimeoutSec, 60),
+		conn:            conn,
+		text:            textproto.NewConn(conn),
+		commandTO:       secondsOr(opts.CommandTimeoutSec, 60),
+		maxMessageBytes: opts.MaxMessageBytes,
 	}
 	if _, err := s.readResponse(); err != nil {
 		conn.Close()
@@ -100,9 +101,10 @@ func (Dialer) Dial(ctx context.Context, opts domain.POP3DialOptions) (domain.POP
 type AuthError = domain.AuthError
 
 type session struct {
-	conn      net.Conn
-	text      *textproto.Conn
-	commandTO time.Duration
+	conn            net.Conn
+	text            *textproto.Conn
+	commandTO       time.Duration
+	maxMessageBytes int64
 }
 
 func (s *session) deadline() { s.conn.SetDeadline(time.Now().Add(s.commandTO)) }
@@ -187,22 +189,58 @@ func (s *session) UIDL(ctx context.Context) ([]domain.RemoteMessage, error) {
 // retrBody reads a multi-line response body with dot-unstuffing.
 func (s *session) retrBody() (io.ReadCloser, error) {
 	var buf bytes.Buffer
+	// ReadByte uses textproto's fixed-size buffered reader, never a growing
+	// line buffer. Keep only a possible trailing CR and the leading dot out
+	// of the output until we can distinguish CRLF / the terminating dot.
+	write := func(p []byte) error {
+		if s.maxMessageBytes > 0 && int64(len(p)) > s.maxMessageBytes-int64(buf.Len()) {
+			// Do not drain: the peer may never finish this body. Closing also
+			// prevents unread body bytes from becoming the next command reply.
+			_ = s.Close()
+			return fmt.Errorf("pop3 body exceeds maximum of %d bytes", s.maxMessageBytes)
+		}
+		_, _ = buf.Write(p)
+		return nil
+	}
+	lineStart, dot, data, cr := true, false, false, false
+	s.deadline()
 	for {
-		s.deadline()
-		line, err := s.text.ReadLineBytes()
+		b, err := s.text.R.ReadByte()
 		if err != nil {
 			return nil, err
 		}
-		if len(line) == 1 && line[0] == '.' {
-			break
+		if lineStart {
+			lineStart = false
+			if b == '.' {
+				dot = true
+				continue
+			}
 		}
-		if len(line) > 1 && line[0] == '.' {
-			line = line[1:]
+		if b == '\n' {
+			if dot && !data {
+				return io.NopCloser(&buf), nil
+			}
+			if err := write([]byte("\r\n")); err != nil {
+				return nil, err
+			}
+			lineStart, dot, data, cr = true, false, false, false
+			s.deadline()
+			continue
 		}
-		buf.Write(line)
-		buf.WriteString("\r\n")
+		if cr {
+			if err := write([]byte{'\r'}); err != nil {
+				return nil, err
+			}
+			data = true
+		}
+		cr = b == '\r'
+		if !cr {
+			if err := write([]byte{b}); err != nil {
+				return nil, err
+			}
+			data = true
+		}
 	}
-	return io.NopCloser(&buf), nil
 }
 
 func (s *session) Retrieve(ctx context.Context, number int) (io.ReadCloser, error) {
