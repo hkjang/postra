@@ -336,8 +336,8 @@ func TestMCPOAuthScopeStepUpPreservesRequestAndAPIKeyErrorContract(t *testing.T)
 		{`{"jsonrpc":"2.0","id":204,"method":"resources/read","params":{"uri":"postra://draft/nonexistent"}}`, "mail.draft"},
 	} {
 		code, challenge, body := call(f.token(t, map[string]any{"scope": "openid"}), test.body)
-		if code != 403 || !strings.Contains(challenge, `error="insufficient_scope"`) || !strings.Contains(challenge, `scope="`+test.scopes+`"`) || !strings.Contains(challenge, `resource_metadata="https://postra.test/.well-known/oauth-protected-resource/mcp"`) || !strings.Contains(body, `"code":"insufficient_scope"`) {
-			t.Fatalf("missing bounded OAuth step-up challenge: status=%d challenge=%q", code, challenge)
+		if code != 200 || !strings.Contains(challenge, `error="insufficient_scope"`) || !strings.Contains(challenge, `scope="`+test.scopes+`"`) || !strings.Contains(challenge, `resource_metadata="https://postra.test/.well-known/oauth-protected-resource/mcp"`) || !strings.Contains(body, "insufficient_scope") {
+			t.Fatalf("missing bounded OAuth step-up challenge: status=%d challenge=%q body=%s", code, challenge, body)
 		}
 	}
 	audits, err := f.app.Store.SearchAudit(f.admin, application.DefaultUserID, 100)
@@ -391,14 +391,14 @@ func (failedOAuthBody) Read(p []byte) (int, error) {
 }
 func (failedOAuthBody) Close() error { return nil }
 
-func TestMCPOAuthPreflightMalformedAndLargeBodiesArePreserved(t *testing.T) {
+func TestMCPOAuthScopeHintMalformedAndLargeBodiesArePreserved(t *testing.T) {
 	f := newMCPOAuthFixture(t)
 	info := f.app.MCPOAuthConnection().OAuth
 	p := domain.Principal{UserID: application.DefaultUserID, AuthMethod: "mcp_oauth", MCPScopes: []string{}}
 	for _, body := range []string{`invalid-json`, `[]`, `{"jsonrpc":"2.0","id":1,"method":"unknown"}`, strings.Repeat("x", oauthPreflightLimit+10)} {
 		req := httptest.NewRequest("POST", "https://postra.test/mcp", strings.NewReader(body))
 		req = req.WithContext(application.WithPrincipal(req.Context(), p))
-		if oauthScopePreflight(httptest.NewRecorder(), req, f.app, info) {
+		if oauthScopeHint(httptest.NewRecorder(), req, f.app, info) {
 			t.Fatal("preflight replaced SDK protocol validation")
 		}
 		got, err := io.ReadAll(req.Body)
@@ -409,7 +409,7 @@ func TestMCPOAuthPreflightMalformedAndLargeBodiesArePreserved(t *testing.T) {
 	req := httptest.NewRequest("POST", "https://postra.test/mcp", nil)
 	req.Body = failedOAuthBody{}
 	rec := httptest.NewRecorder()
-	if !oauthScopePreflight(rec, req, f.app, info) || rec.Code != 400 || strings.Contains(rec.Body.String(), "private transport error") {
+	if !oauthScopeHint(rec, req, f.app, info) || rec.Code != 400 || strings.Contains(rec.Body.String(), "private transport error") {
 		t.Fatal("body read failure was swallowed or disclosed")
 	}
 }

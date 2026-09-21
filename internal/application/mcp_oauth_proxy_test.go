@@ -465,17 +465,21 @@ func TestMCPOAuthProxyRejectsUpstreamTokensTheResourceWouldNotAccept(t *testing.
 		r, _ := url.Parse(redirect)
 		return app.ExchangeMCPOAuthProxy(ctx, MCPOAuthTokenRequest{GrantType: "authorization_code", Code: r.Query().Get("code"), ClientID: client.ClientID, CodeVerifier: verifier})
 	}
-	for name, claims := range map[string]map[string]any{
-		"missing audience": {"aud": "postra-web"},
-		"unlinked subject": {"sub": "someone-else"},
-		"id token":         {"typ": "ID"},
+	// Each refusal must name its own cause: they need different fixes.
+	for name, test := range map[string]struct {
+		claims map[string]any
+		reason string
+	}{
+		"missing audience": {map[string]any{"aud": "postra-web"}, "audience"},
+		"unlinked subject": {map[string]any{"sub": "someone-else"}, "no Postra user is linked"},
+		"id token":         {map[string]any{"typ": "ID"}, "not a usable bearer access token"},
 	} {
 		up.mu.Lock()
-		up.claims = claims
+		up.claims = test.claims
 		up.mu.Unlock()
 		tok, err := exchange(t, name)
 		e := proxyErr(t, err)
-		if tok != nil || e.Code != "invalid_grant" || !strings.Contains(e.Description, "audience") {
+		if tok != nil || e.Code != "invalid_grant" || !strings.Contains(e.Description, test.reason) {
 			t.Fatalf("%s: token handed out or unhelpful error: %+v", name, e)
 		}
 	}

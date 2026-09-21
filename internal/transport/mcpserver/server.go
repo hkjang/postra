@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -185,6 +186,9 @@ func HTTPHandler(app *application.App, apiToken string) http.Handler {
 		return NewServer(app)
 	}, &mcp.StreamableHTTPOptions{SessionTimeout: time.Duration(app.SettingInt("mcp.session_timeout_sec")) * time.Second})
 	protected := http.NewCrossOriginProtection()
+	// Refused OAuth tokens are logged with their reason, but an anonymous
+	// caller can produce them at will: at most one line per address per minute.
+	rejections := newIPLimiter(1, time.Minute)
 	transport := protected.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := application.WithRequestTrace(application.WithActor(r.Context(), "mcp"), "")
 		w.Header().Set("Cache-Control", "no-store")
@@ -217,8 +221,15 @@ func HTTPHandler(app *application.App, apiToken string) http.Handler {
 				}
 			}
 			if !ok && raw != "" {
-				if p, err := app.AuthenticateMCPOAuthToken(r.Context(), raw); err == nil {
+				p, reason, err := app.AuthenticateMCPOAuthTokenReason(r.Context(), raw)
+				if err == nil {
 					principal, ok = p, true
+				} else if oauth.Enabled && oauth.Configured && strings.Count(raw, ".") == 2 && rejections.allow(application.ClientIP(r.RemoteAddr)) {
+					// A bearer that is shaped like a Keycloak token but is
+					// refused leaves the agent with a bare 401. The operator
+					// needs the reason; it names the deployment, never the
+					// token.
+					slog.Warn("MCP OAuth token refused", "reason", reason, "trace_id", application.RequestTrace(ctx))
 				}
 			}
 			if !ok {
@@ -232,7 +243,7 @@ func HTTPHandler(app *application.App, apiToken string) http.Handler {
 			}
 			ctx = application.WithPrincipal(ctx, principal)
 			r = r.WithContext(ctx)
-			if principal.AuthMethod == "mcp_oauth" && oauthScopePreflight(w, r, app, oauth) {
+			if principal.AuthMethod == "mcp_oauth" && oauthScopeHint(w, r, app, oauth) {
 				return
 			}
 			// Revalidate credentials before every HTTP call, then pass only a
