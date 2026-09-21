@@ -153,18 +153,34 @@ func mcpDecode[T any](t *testing.T, result *mcp.CallToolResult) T {
 	return value
 }
 
+// Errors carry no StructuredContent, so assert the channels that do: the text
+// content the model reads and the _meta copy for machine consumers.
 func requireToolError(t *testing.T, result *mcp.CallToolResult, code string) domain.ErrorResponse {
 	t.Helper()
 	if !result.IsError {
 		t.Fatal("expected denied tool call")
 	}
-	raw, _ := json.Marshal(result.StructuredContent)
+	if result.StructuredContent != nil {
+		t.Fatal("error results must not carry structured content: it can never match the declared output schema")
+	}
+	if len(result.Content) != 1 {
+		t.Fatalf("error result carries %d content blocks", len(result.Content))
+	}
+	text, ok := result.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatal("error result is not text content")
+	}
 	var value domain.ErrorResponse
-	if err := json.Unmarshal(raw, &value); err != nil {
+	if err := json.Unmarshal([]byte(text.Text), &value); err != nil {
 		t.Fatal(err)
 	}
 	if value.Code != code || value.Message == "" || value.TraceID == "" {
 		t.Fatalf("error contract: %+v, wanted %s", value, code)
+	}
+	meta, _ := json.Marshal(result.Meta["postra_error"])
+	var fromMeta domain.ErrorResponse
+	if json.Unmarshal(meta, &fromMeta) != nil || fromMeta.Code != value.Code || fromMeta.TraceID != value.TraceID {
+		t.Fatalf("_meta error copy diverged from the text envelope: %s", meta)
 	}
 	return value
 }
