@@ -65,6 +65,8 @@ Audience는 client ID `postra-mcp-desktop`이나 웹 SSO client ID가 아니라 
 
 MCP 클라이언트는 authorization 및 token 요청에 `resource`를 전달해야 한다. 다만 Keycloak 버전·활성화 기능에 따라 이를 직접 처리하는 범위가 다르므로 `resource`만 보내면 audience가 자동 설정된다고 가정하지 않는다. Keycloak 공식 MCP 가이드는 optional scope의 custom audience mapper 방식을 안내한다. [Keycloak MCP audience 구성](https://www.keycloak.org/securing-apps/mcp-authz-server)
 
+Postra의 DCR 프록시는 authorization·token 요청 모두에 `resource`를 Keycloak으로 그대로 전달한다(RFC 8707). Resource Indicator를 처리하는 Keycloak 버전에서는 이것만으로 audience가 채워지고, 모르는 버전은 파라미터를 무시하므로 Audience mapper 구성이 여전히 기준이다. 클라이언트가 보낸 `resource`는 scheme·host 대소문자와 끝의 `/`만 다른 경우 같은 값으로 취급한다.
+
 ## 3. Postra 관리자 화면에서 활성화
 
 1. `/app/admin`의 **인증 및 SSO**에서 기존 issuer·웹 client·callback을 확인한다. OIDC 연결 시험은 discovery 확인이며 실제 사용자 로그인 성공을 대신하지 않는다.
@@ -200,7 +202,10 @@ Keycloak discovery의 `jwks_uri`는 설정한 issuer와 동일한 scheme·host·
 | DCR 클라이언트 등록이 404 | `mcp.oauth.proxy.enabled`, `mcp.oauth.enabled`, 프록시 client ID, 리버스 프록시의 `/oauth/*`·`/.well-known/oauth-authorization-server` 전달 |
 | 등록은 되지만 동의 화면 대신 오류 페이지나 `error`가 전달됨 | 클라이언트가 보낸 redirect URI가 등록한 것과 다름(loopback은 포트만 가변), PKCE S256 누락, 다른 `resource` 값, 허용 scope가 하나도 없음 |
 | 동의 후 Keycloak이 `invalid_redirect_uri` | 프록시용 Keycloak client의 Valid Redirect URI에 `https://<공개 MCP origin>/oauth/callback`이 정확히 있는지 확인 |
-| token endpoint가 `invalid_grant`와 audience 안내를 반환 | 프록시용 client에 `mail.*` scope와 Audience mapper 연결, 사용자의 웹 SSO 선행 로그인, confidential client secret 입력 여부 |
+| token endpoint가 `invalid_grant`를 반환 | `error_description`이 거부 사유를 그대로 말한다(audience, 허용 client, 미연결 사용자, ID token 등). 같은 문장이 서버 로그와 관리자 인시던트에도 남는다 |
+| 연결·도구 목록은 되는데 모든 도구가 `insufficient_scope` | 토큰의 `scope`에 `mail.*`가 없다. Keycloak client scope의 **Include in token scope**와 client 연결을 확인한다. 이 경우 관리자 인시던트가 기록된다 |
+| 권한이 없는 도구를 한 번 호출하면 연결이 끊김 | scope 거부는 HTTP 403이 아니라 JSON-RPC 도구 오류로 반환되며 세션이 유지된다 |
+| 예전에 연결해 둔 클라이언트가 갑자기 `invalid_client` | 등록은 30일 미사용 시 정리되고 관리자가 폐기할 수 있다. 클라이언트에서 연결을 삭제하고 다시 추가하면 새로 등록된다 |
 | 동의 화면이 반복해서 나타남 | 의도된 동작이다. 클라이언트별 동의는 기억하지 않는다 |
 
 지원 요청에는 시각, Postra/Keycloak/클라이언트 버전, 비밀이 없는 설정 키와 오류 코드만 포함한다. **토큰 원문, client secret, Authorization 헤더, 전체 JWT payload를 채팅·스크린샷·공개 JWT 디코더에 붙여 넣지 않는다.** 필요한 claim 점검은 승인된 내부 도구로 로컬에서 수행한다.

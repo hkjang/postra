@@ -90,15 +90,19 @@ type replayRequestBody struct {
 	io.Closer
 }
 
-// Standard OAuth clients discover additional scopes via an HTTP 403
-// challenge, before the SDK commits a JSON/SSE response. Read-ahead is bounded
-// and replays the exact bytes; oversized or malformed requests are left to
-// the SDK, whose shared gateway always remains authoritative.
-func oauthScopePreflight(w http.ResponseWriter, r *http.Request, app *application.App, info application.MCPOAuthInfo) bool {
+// oauthScopeHint annotates a request the scope policy will refuse with the
+// RFC 6750 challenge naming the missing scopes, so an OAuth client can ask
+// its user for consent to more. It never answers the request itself: a tool
+// denial is part of the MCP contract and belongs in the JSON-RPC result, and
+// an HTTP error status at this point aborts the client's transport — the Go
+// SDK closes the whole session on it, so one out-of-scope call would drop the
+// connection instead of returning a usable error. Read-ahead is bounded and
+// replays the exact bytes; oversized or malformed requests are left to the
+// SDK, whose shared gateway always remains authoritative.
+func oauthScopeHint(w http.ResponseWriter, r *http.Request, app *application.App, info application.MCPOAuthInfo) bool {
 	if r.Method != http.MethodPost || r.URL.Path != app.MCPOAuthConnection().ActiveEndpoint || r.Body == nil {
 		return false
 	}
-	started := time.Now()
 	original := r.Body
 	body, err := io.ReadAll(io.LimitReader(original, oauthPreflightLimit+1))
 	r.Body = replayRequestBody{Reader: io.MultiReader(bytes.NewReader(body), original), Closer: original}
@@ -146,8 +150,8 @@ func oauthScopePreflight(w http.ResponseWriter, r *http.Request, app *applicatio
 	for _, scope := range required {
 		if !slices.Contains(info.ScopesSupported, scope) {
 			// Consent cannot override an administrator's disabled capability.
-			// Leave such denials to the normal SDK error contract, without
-			// prompting an OAuth client to repeatedly request unavailable scopes.
+			// Leave such denials unannotated, without prompting an OAuth
+			// client to repeatedly request unavailable scopes.
 			return false
 		}
 	}
@@ -156,15 +160,7 @@ func oauthScopePreflight(w http.ResponseWriter, r *http.Request, app *applicatio
 		parts = append(parts, fmt.Sprintf("scope=%q", strings.Join(required, " ")))
 	}
 	w.Header().Set("WWW-Authenticate", "Bearer "+strings.Join(parts, ", "))
-	writeMCPHTTPError(w, r.Context(), public)
-	_, response := application.PublicError(r.Context(), public)
-	encoded, _ := json.Marshal(response)
-	inputBytes := len(request.Params.Arguments)
-	if request.Method == "resources/read" {
-		inputBytes = len(request.Params.URI)
-	}
-	recordMCPCall(r.Context(), app, tool, "error", public.Code, inputBytes, len(encoded)+1, time.Since(started))
-	return true
+	return false
 }
 
 // The SDK checks TokenInfo.UserID on every HTTP request that resumes a

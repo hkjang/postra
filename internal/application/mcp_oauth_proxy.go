@@ -508,7 +508,10 @@ func (a *App) PrepareMCPOAuthProxy(ctx context.Context, req MCPOAuthAuthorizeReq
 	client, err := a.Store.GetMCPOAuthClient(ctx, req.ClientID)
 	if err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
-			return nil, oauthErr(http.StatusBadRequest, "invalid_client", "unknown client_id; register the client first")
+			// Clients cache their registration; this deployment forgets one after
+			// 30 idle days, on an administrator revocation, or with the database.
+			// The browser sees this as a page, so it has to say what to do next.
+			return nil, oauthErr(http.StatusBadRequest, "invalid_client", "this deployment no longer knows this client registration. Remove the Postra connection in your MCP client and add it again so it registers anew.")
 		}
 		return nil, err
 	}
@@ -534,7 +537,7 @@ func (a *App) PrepareMCPOAuthProxy(ctx context.Context, req MCPOAuthAuthorizeReq
 	if req.CodeChallengeMethod != "S256" || !validPKCEChallenge(req.CodeChallenge) {
 		return nil, fail("invalid_request", "PKCE with code_challenge_method=S256 is required")
 	}
-	if req.Resource != "" && req.Resource != o.ResourceURL {
+	if req.Resource != "" && !sameOAuthResource(req.Resource, o.ResourceURL) {
 		return nil, fail("invalid_target", "resource must be "+o.ResourceURL)
 	}
 	scopes := a.resolveProxyScopes(o, req.Scope)
@@ -565,7 +568,7 @@ func (a *App) BeginMCPOAuthProxy(ctx context.Context, sealedRequest, nonce strin
 	}
 	client, err := a.Store.GetMCPOAuthClient(ctx, consent.ClientID)
 	if err != nil {
-		return "", oauthErr(http.StatusBadRequest, "invalid_client", "the client registration no longer exists")
+		return "", oauthErr(http.StatusBadRequest, "invalid_client", "this client registration no longer exists. Remove the Postra connection in your MCP client and add it again so it registers anew.")
 	}
 	if !allow {
 		return MCPOAuthProxyErrorRedirect(&MCPOAuthProxyError{Code: "access_denied", Description: "the user refused the connection", RedirectURI: consent.RedirectURI, State: consent.State}), nil
@@ -585,7 +588,10 @@ func (a *App) BeginMCPOAuthProxy(ctx context.Context, sealedRequest, nonce strin
 	_ = a.Store.TouchMCPOAuthClient(ctx, client.ID, time.Now().Unix())
 	a.audit(WithActor(ctx, "mcp_oauth_proxy"), "mcp_oauth_proxy_consent", "oauth_client:"+client.ID, "ok", consent.RedirectURI)
 	cfg := oauth2.Config{ClientID: o.Proxy.ClientID, Endpoint: endpoint, RedirectURL: o.Proxy.CallbackURL, Scopes: append([]string{oidc.ScopeOpenID}, consent.Scopes...)}
-	return cfg.AuthCodeURL(sealed, oauth2.S256ChallengeOption(verifier)), nil
+	// RFC 8707: name the resource upstream too, so a Keycloak that honours
+	// resource indicators sets the audience without a per-scope Audience
+	// mapper. Versions that do not know the parameter ignore it.
+	return cfg.AuthCodeURL(sealed, oauth2.S256ChallengeOption(verifier), oauth2.SetAuthURLParam("resource", o.ResourceURL)), nil
 }
 
 // CompleteMCPOAuthProxy turns Keycloak's callback into the redirect back to
@@ -749,7 +755,7 @@ func (a *App) ExchangeMCPOAuthProxy(ctx context.Context, req MCPOAuthTokenReques
 		if !pkceMatches(req.CodeVerifier, code.CodeChallenge) {
 			return nil, oauthErr(http.StatusBadRequest, "invalid_grant", "PKCE verification failed")
 		}
-		tok, err = cfg.Exchange(upstream, code.UpstreamCode, oauth2.VerifierOption(code.Verifier))
+		tok, err = cfg.Exchange(upstream, code.UpstreamCode, oauth2.VerifierOption(code.Verifier), oauth2.SetAuthURLParam("resource", o.ResourceURL))
 		if err != nil {
 			detail := oidcExchangeGuidance(err)
 			slog.Warn("MCP OAuth proxy upstream code exchange failed", "detail", detail, "client_id", o.Proxy.ClientID)
@@ -768,10 +774,20 @@ func (a *App) ExchangeMCPOAuthProxy(ctx context.Context, req MCPOAuthTokenReques
 	default:
 		return nil, oauthErr(http.StatusBadRequest, "unsupported_grant_type", "grant_type must be authorization_code or refresh_token")
 	}
-	principal, err := a.AuthenticateMCPOAuthToken(ctx, tok.AccessToken)
+	principal, reason, err := a.AuthenticateMCPOAuthTokenReason(ctx, tok.AccessToken)
 	if err != nil {
-		a.recordIncident(domain.SeverityWarning, "mcp_oauth", "MCP OAuth 프록시가 발급받은 토큰이 MCP 자격 증명으로 거부됨", "client "+o.Proxy.ClientID+": Audience mapper, 허용 Client, 사용자 SSO 연결 확인")
-		return nil, oauthErr(http.StatusBadRequest, "invalid_grant", "Keycloak issued a token this MCP resource does not accept: check the audience mapper for "+o.ResourceURL+", the proxy client, and that the user signed in to Postra with SSO first")
+		// The client only ever sees "invalid_grant", so the reason has to
+		// reach both the operator's incident feed and the user's agent —
+		// otherwise a missing Audience mapper and an unlinked user are the
+		// same dead end.
+		slog.Warn("MCP OAuth proxy token refused by the MCP resource", "reason", reason, "client_id", o.Proxy.ClientID)
+		a.recordIncident(domain.SeverityWarning, "mcp_oauth", "MCP OAuth 프록시가 발급받은 토큰이 MCP 자격 증명으로 거부됨", reason)
+		return nil, oauthErr(http.StatusBadRequest, "invalid_grant", "Keycloak issued a token this MCP resource does not accept: "+reason)
+	}
+	if reason != "" {
+		// The connection will succeed and then refuse every tool; say so now.
+		slog.Warn("MCP OAuth proxy issued a token with no usable MCP scope", "reason", reason, "client_id", o.Proxy.ClientID)
+		a.recordIncident(domain.SeverityWarning, "mcp_oauth", "MCP OAuth 토큰에 사용 가능한 MCP scope가 없음", reason)
 	}
 	out := &MCPOAuthTokenResponse{AccessToken: tok.AccessToken, TokenType: "Bearer", Scope: strings.Join(principal.MCPScopes, " ")}
 	if !tok.Expiry.IsZero() {
@@ -842,4 +858,21 @@ func MCPOAuthProxyErrorRedirect(e *MCPOAuthProxyError) string {
 	}
 	target.RawQuery = query.Encode()
 	return target.String()
+}
+
+// sameOAuthResource compares an RFC 8707 resource indicator with the
+// configured MCP resource. Clients derive the indicator from the URL their
+// user typed, so scheme and host case and a trailing slash vary; everything
+// else must match exactly.
+func sameOAuthResource(requested, configured string) bool {
+	normalize := func(raw string) string {
+		u, err := url.Parse(raw)
+		if err != nil {
+			return raw
+		}
+		u.Scheme, u.Host = strings.ToLower(u.Scheme), strings.ToLower(u.Host)
+		u.Path = strings.TrimSuffix(u.Path, "/")
+		return u.String()
+	}
+	return normalize(requested) == normalize(configured)
 }

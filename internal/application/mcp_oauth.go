@@ -308,29 +308,60 @@ func (c keycloakAccessClaims) valid() bool {
 // this MCP resource. Web login/ID tokens are not MCP credentials. No email
 // linking, provisioning, role promotion or credential persistence occurs here.
 func (a *App) AuthenticateMCPOAuthToken(ctx context.Context, raw string) (domain.Principal, error) {
-	fail := func() (domain.Principal, error) { return domain.Principal{}, domain.ErrNotFound }
+	principal, _, err := a.AuthenticateMCPOAuthTokenReason(ctx, raw)
+	return principal, err
+}
+
+// AuthenticateMCPOAuthTokenReason is AuthenticateMCPOAuthToken with the
+// operator-facing reason a token was refused. Every rejection otherwise looks
+// alike to a client — "invalid_grant" — while the causes (a missing Keycloak
+// Audience mapper, a client outside the allow list, a user who never signed in
+// to Postra with SSO) need completely different fixes. The reason names the
+// deployment, never the token or its holder's credentials.
+func (a *App) AuthenticateMCPOAuthTokenReason(ctx context.Context, raw string) (domain.Principal, string, error) {
+	fail := func(reason string) (domain.Principal, string, error) {
+		return domain.Principal{}, reason, domain.ErrNotFound
+	}
 	if len(raw) > 32768 || strings.Count(raw, ".") != 2 {
-		return fail()
+		return fail("the credential is not a compact JWT access token")
 	}
 	o := a.MCPOAuthConnection().OAuth
 	if !o.Enabled || !o.Configured || !a.SettingBool("mcp.enabled") || !a.SettingBool("mcp.http_enabled") {
-		return fail()
+		return fail("OAuth MCP is disabled or incompletely configured on this deployment")
 	}
 	p, err := a.mcpProvider(ctx, o.Issuer)
 	if err != nil {
-		return fail()
+		return fail("the Keycloak issuer " + o.Issuer + " could not be discovered")
 	}
-	token, err := p.Verifier(&oidc.Config{ClientID: o.ResourceURL, SupportedSigningAlgs: []string{oidc.RS256, oidc.RS384, oidc.RS512, oidc.ES256, oidc.ES384, oidc.ES512, oidc.PS256, oidc.PS384, oidc.PS512}}).Verify(ctx, raw)
-	if err != nil || strings.TrimSpace(token.Subject) == "" {
-		return fail()
+	// The audience is checked here rather than through oidc.Config.ClientID so
+	// a missing Audience mapper is distinguishable from a bad signature.
+	token, err := p.Verifier(&oidc.Config{SkipClientIDCheck: true, SupportedSigningAlgs: []string{oidc.RS256, oidc.RS384, oidc.RS512, oidc.ES256, oidc.ES384, oidc.ES512, oidc.PS256, oidc.PS384, oidc.PS512}}).Verify(ctx, raw)
+	if err != nil {
+		return fail("the token did not verify against the issuer: " + err.Error())
+	}
+	if strings.TrimSpace(token.Subject) == "" {
+		return fail("the token carries no subject")
+	}
+	if !slices.Contains(token.Audience, o.ResourceURL) {
+		return fail("the token audience " + strings.Join(token.Audience, ", ") + " does not name the MCP resource " + o.ResourceURL +
+			"; add a Keycloak Audience mapper with that custom audience to the scopes this client requests")
 	}
 	var claims keycloakAccessClaims
-	if token.Claims(&claims) != nil || !claims.valid() || !slices.Contains(o.AllowedClientIDs, claims.ClientID) {
-		return fail()
+	if token.Claims(&claims) != nil {
+		return fail("the token claims could not be read")
+	}
+	if !claims.valid() {
+		return fail("the token is not a usable bearer access token (typ=" + claims.Type + "; it may be an ID token, expired, not yet valid, or sender-constrained)")
+	}
+	if !slices.Contains(o.AllowedClientIDs, claims.ClientID) {
+		return fail("the token was issued to client " + claims.ClientID + ", which mcp.oauth.allowed_client_ids does not list")
 	}
 	user, err := a.Store.GetUserByOIDC(ctx, o.Issuer, token.Subject)
-	if err != nil || user.Status != domain.UserActive {
-		return fail()
+	if err != nil {
+		return fail("no Postra user is linked to this Keycloak subject; the user must sign in to Postra once in the browser with SSO before connecting over MCP")
+	}
+	if user.Status != domain.UserActive {
+		return fail("the linked Postra user is not active")
 	}
 	principal := principalFor(user, "mcp_oauth")
 	principal.OAuthClientID = claims.ClientID
@@ -342,5 +373,9 @@ func (a *App) AuthenticateMCPOAuthToken(ctx context.Context, raw string) (domain
 			principal.MCPScopes = append(principal.MCPScopes, scope)
 		}
 	}
-	return principal, nil
+	if len(principal.MCPScopes) == 0 {
+		return principal, "the token carries none of the scopes this deployment grants (" + strings.Join(o.ScopesSupported, " ") +
+			"); the Keycloak client scopes must be defined with Include in token scope on", nil
+	}
+	return principal, "", nil
 }
