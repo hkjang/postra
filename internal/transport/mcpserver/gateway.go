@@ -16,10 +16,21 @@ import (
 	"postra/internal/platform/telemetry"
 )
 
+// toolError renders a failure as the MCP tool-error result: isError with the
+// public envelope as the text content the model reads. It deliberately sets no
+// StructuredContent. A tool that declares an output schema must make its
+// structured content conform to it, and an error envelope never can — it is a
+// different shape, and the inferred schemas close additionalProperties. A
+// client that validates the response (the TypeScript SDK does) therefore
+// rejected every failed call. That was invisible with an MCP key, whose scopes
+// are broad enough that few calls fail, and constant over OAuth, where a token
+// carries only the scopes Keycloak granted. The envelope still travels in
+// _meta, which is not schema-validated, for callers that want it parsed.
 func toolError(ctx context.Context, err error) *mcp.CallToolResult {
 	_, response := application.PublicError(ctx, err)
 	data, _ := json.Marshal(response)
-	return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: string(data)}}, StructuredContent: response, Meta: mcp.Meta{"trace_id": response.TraceID}}
+	return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: string(data)}},
+		Meta: mcp.Meta{"trace_id": response.TraceID, "postra_error": response}}
 }
 
 func resourceTool(uri string) string {

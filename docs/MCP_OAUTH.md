@@ -205,6 +205,7 @@ Keycloak discovery의 `jwks_uri`는 설정한 issuer와 동일한 scheme·host·
 | token endpoint가 `invalid_grant`를 반환 | `error_description`이 거부 사유를 그대로 말한다(audience, 허용 client, 미연결 사용자, ID token 등). 같은 문장이 서버 로그와 관리자 인시던트에도 남는다 |
 | 연결·도구 목록은 되는데 모든 도구가 `insufficient_scope` | 토큰의 `scope`에 `mail.*`가 없다. Keycloak client scope의 **Include in token scope**와 client 연결을 확인한다. 이 경우 관리자 인시던트가 기록된다 |
 | 권한이 없는 도구를 한 번 호출하면 연결이 끊김 | scope 거부는 HTTP 403이 아니라 JSON-RPC 도구 오류로 반환되며 세션이 유지된다 |
+| 실패한 호출마다 클라이언트가 스키마 검증 오류를 보고 | 도구 오류 결과는 `structuredContent` 를 싣지 않는다. 오류 봉투는 text content 와 `_meta.postra_error` 로 전달된다. OAuth 토큰은 Keycloak 이 발급한 scope 만 가지므로 거부가 잦아 이 문제가 MCP 키보다 먼저 드러난다 |
 | 예전에 연결해 둔 클라이언트가 갑자기 `invalid_client` | 등록은 30일 미사용 시 정리되고 관리자가 폐기할 수 있다. 클라이언트에서 연결을 삭제하고 다시 추가하면 새로 등록된다 |
 | 동의 화면이 반복해서 나타남 | 의도된 동작이다. 클라이언트별 동의는 기억하지 않는다 |
 

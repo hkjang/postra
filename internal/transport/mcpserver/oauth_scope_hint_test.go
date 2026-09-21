@@ -41,10 +41,11 @@ func TestMCPOAuthScopeDenialKeepsTheSessionAlive(t *testing.T) {
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "mail_draft", Arguments: map[string]any{"account_id": "acc_mcp", "kind": "new"}})
 	if err != nil {
 		t.Fatalf("out-of-scope tool call broke the transport instead of returning a tool error: %v", err)
-	}
-	raw, _ := json.Marshal(result.StructuredContent)
-	if !result.IsError || !strings.Contains(string(raw), "insufficient_scope") || !strings.Contains(string(raw), "mail.draft") {
-		t.Fatalf("scope denial did not name its missing scope: %s", raw)
+		denial := requireToolError(t, result, "insufficient_scope")
+		raw, _ := json.Marshal(denial.Details)
+		if !strings.Contains(string(raw), "mail.draft") {
+			t.Fatalf("scope denial did not name its missing scope: %s", raw)
+		}
 	}
 	// The session must still carry the calls the token does cover.
 	if _, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "mail_identity", Arguments: map[string]any{}}); err != nil {
