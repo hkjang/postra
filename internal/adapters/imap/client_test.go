@@ -147,7 +147,111 @@ func TestIMAPRejectsOversizeLiteral(t *testing.T) {
 	}
 }
 
+// refusedLiteralServer serves two messages: sequence 1 is a body that really
+// arrives on the wire but is larger than the client's limit, sequence 2 is an
+// ordinary message. It models the server the ingest loop meets when
+// RFC822.SIZE is missing, so the application-level oversize skip cannot fire
+// and the adapter's guard is what refuses the body mid-response.
+func refusedLiteralServer(t *testing.T, big string) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		br := bufio.NewReader(conn)
+		io.WriteString(conn, "* OK IMAP4rev1 ready\r\n")
+		for {
+			line, err := br.ReadString('\n')
+			if err != nil {
+				return
+			}
+			sp := strings.SplitN(strings.TrimRight(line, "\r\n"), " ", 3)
+			if len(sp) < 2 {
+				continue
+			}
+			tag, cmd := sp[0], strings.ToUpper(sp[1])
+			switch {
+			case cmd == "SELECT":
+				io.WriteString(conn, "* 2 EXISTS\r\n* OK [UIDVALIDITY 9] ok\r\n")
+				fmt.Fprintf(conn, "%s OK\r\n", tag)
+			case cmd == "FETCH" && len(sp) == 3 && strings.HasPrefix(sp[2], "1 "):
+				fmt.Fprintf(conn, "* 1 FETCH (UID 1 BODY[] {%d}\r\n", len(big))
+				io.WriteString(conn, big)
+				io.WriteString(conn, ")\r\n")
+				fmt.Fprintf(conn, "%s OK\r\n", tag)
+			case cmd == "FETCH":
+				fmt.Fprintf(conn, "* 2 FETCH (UID 2 BODY[] {%d}\r\n", len(testMsg))
+				io.WriteString(conn, testMsg)
+				io.WriteString(conn, ")\r\n")
+				fmt.Fprintf(conn, "%s OK\r\n", tag)
+			default:
+				fmt.Fprintf(conn, "%s OK\r\n", tag)
+			}
+		}
+	}()
+	return ln.Addr().String()
+}
+
+// TestIMAPRefusedLiteralKeepsStreamFramed pins the behaviour the ingest loop
+// depends on: refusing one oversized body must not leave its bytes in the
+// socket, because sync.go counts the failure and keeps fetching the remaining
+// messages over the same session.
+func TestIMAPRefusedLiteralKeepsStreamFramed(t *testing.T) {
+	// The refused body contains a line ending in a literal announcement — the
+	// shape a client that skips the bytes would misread as protocol text.
+	big := "X-Trap: {40}\r\n" + strings.Repeat("y", 40) + "\r\n" + strings.Repeat("z", 3<<20)
+	sess := dialMax(t, refusedLiteralServer(t, big), 1<<20)
+	defer sess.Close()
+	ctx := context.Background()
+
+	// The refusal itself must be reported — reading the response to its tagged
+	// completion must not turn the oversized body into a silent success for
+	// commands that do not depend on a literal.
+	_, err := sess.Retrieve(ctx, 1)
+	if err == nil || !strings.Contains(err.Error(), "exceeds max message size") {
+		t.Fatalf("first fetch error = %v, want the oversized literal to be refused", err)
+	}
+	rc, err := sess.Retrieve(ctx, 2)
+	if err != nil {
+		t.Fatalf("fetch after a refused literal: %v", err)
+	}
+	got, _ := io.ReadAll(rc)
+	if string(got) != testMsg {
+		t.Fatalf("body after a refused literal = %.60q, want %q", got, testMsg)
+	}
+}
+
+// TestIMAPUndrainableLiteralAbandonsSession pins the other half: a literal too
+// large to discard must close the session instead of being drained (the
+// 4 GiB announcement is never sent, so draining it would block until the
+// command deadline) and every later command must fail with that same error.
+func TestIMAPUndrainableLiteralAbandonsSession(t *testing.T) {
+	sess := dialMax(t, oversizeServer(t), 50<<20)
+	defer sess.Close()
+	ctx := context.Background()
+
+	_, err := sess.Retrieve(ctx, 1)
+	if !errors.Is(err, errUnframed) {
+		t.Fatalf("first fetch error = %v, want one wrapping errUnframed", err)
+	}
+	if _, err := sess.Retrieve(ctx, 1); !errors.Is(err, errUnframed) {
+		t.Fatalf("second fetch error = %v, want the session to stay unusable", err)
+	}
+}
+
 func dial(t *testing.T, addr string) domain.InboundSession {
+	t.Helper()
+	return dialMax(t, addr, 0)
+}
+
+func dialMax(t *testing.T, addr string, maxBytes int64) domain.InboundSession {
 	t.Helper()
 	host, portStr, _ := net.SplitHostPort(addr)
 	var port int
@@ -155,6 +259,7 @@ func dial(t *testing.T, addr string) domain.InboundSession {
 	sess, err := Dialer{}.Dial(context.Background(), domain.InboundDialOptions{
 		Host: host, Port: port, Security: domain.SecurityNone,
 		Username: "me", Password: domain.NewSecretHandle([]byte("pw")),
+		MaxMessageBytes: maxBytes,
 	})
 	if err != nil {
 		t.Fatalf("dial: %v", err)

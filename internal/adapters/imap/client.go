@@ -10,6 +10,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -31,6 +32,12 @@ var (
 	reValid = regexp.MustCompile(`UIDVALIDITY (\d+)`)
 	reLit   = regexp.MustCompile(`\{(\d+)\}$`)
 )
+
+// errUnframed marks a session whose byte stream could no longer be put back in
+// frame after a refused literal. Once it is set every command fails with it,
+// which is the only safe answer: reading on would hand message bytes to the
+// response parser.
+var errUnframed = errors.New("imap session abandoned: response stream could not be resynchronized")
 
 func (Dialer) Dial(ctx context.Context, opts domain.InboundDialOptions) (domain.InboundSession, error) {
 	addr := net.JoinHostPort(opts.Host, strconv.Itoa(opts.Port))
@@ -115,7 +122,19 @@ type session struct {
 	indexed     bool
 	deleted     bool
 	literals    []string // literal payloads read during the last exec, in order
+	broken      error    // set once the stream can no longer be trusted
 }
+
+// resyncDrainLimit bounds how many bytes a refused literal may cost to discard.
+// Below it, dropping the body costs a moment and the ingest loop can carry on
+// with the rest of the mailbox over the same session; above it the server is
+// better abandoned than drained, not least because a bogus length announces
+// bytes that never arrive and would only block until the command deadline.
+const resyncDrainLimit = 32 << 20
+
+// drainChunk is how much of a refused literal is discarded between deadline
+// refreshes, so a slow but live server is not cut off mid-drain.
+const drainChunk = 1 << 20
 
 func (s *session) deadline() { s.conn.SetDeadline(time.Now().Add(s.commandTO)) }
 
@@ -133,6 +152,9 @@ func (s *session) readLine() (string, error) {
 // matching tagged completion. Server literals ({n}) are read inline so the
 // stream stays framed; the literal bytes are appended to the current line.
 func (s *session) exec(format string, args ...any) ([]string, error) {
+	if s.broken != nil {
+		return nil, s.broken
+	}
 	s.tagN++
 	tag := fmt.Sprintf("a%d", s.tagN)
 	s.deadline()
@@ -141,6 +163,10 @@ func (s *session) exec(format string, args ...any) ([]string, error) {
 	}
 	s.literals = nil
 	var untagged []string
+	// A refused literal is reported only once the response has been read to its
+	// tagged completion, so the failure costs this one command and not the
+	// framing of every command after it.
+	var refused error
 	for {
 		line, err := s.readLine()
 		if err != nil {
@@ -160,14 +186,20 @@ func (s *session) exec(format string, args ...any) ([]string, error) {
 			// small margin over MaxMessageBytes for envelope/header framing so
 			// legitimate at-limit messages still fetch.
 			if s.maxLiteral > 0 && int64(n) > s.maxLiteral+(1<<20) {
-				return nil, fmt.Errorf("server literal %d bytes exceeds max message size %d", n, s.maxLiteral)
+				if refused == nil {
+					refused = fmt.Errorf("server literal %d bytes exceeds max message size %d", n, s.maxLiteral)
+				}
+				if err := s.discardLiteral(int64(n)); err != nil {
+					return nil, err
+				}
+			} else {
+				buf := make([]byte, n)
+				s.deadline()
+				if _, err := io.ReadFull(s.r, buf); err != nil {
+					return nil, err
+				}
+				s.literals = append(s.literals, string(buf))
 			}
-			buf := make([]byte, n)
-			s.deadline()
-			if _, err := io.ReadFull(s.r, buf); err != nil {
-				return nil, err
-			}
-			s.literals = append(s.literals, string(buf))
 			cont, err := s.readLine()
 			if err != nil {
 				return nil, err
@@ -177,12 +209,42 @@ func (s *session) exec(format string, args ...any) ([]string, error) {
 		if strings.HasPrefix(line, tag+" ") {
 			status := strings.TrimPrefix(line, tag+" ")
 			if strings.HasPrefix(status, "OK") {
-				return untagged, nil
+				return untagged, refused
 			}
 			return untagged, fmt.Errorf("server: %s", status)
 		}
 		untagged = append(untagged, line)
 	}
+}
+
+// discardLiteral drops the bytes of a literal the client refuses to buffer, so
+// the next protocol line is read where the server believes the response
+// continues. A length too large to drain — or a drain that fails part way —
+// leaves the stream at an unknown offset, so the session is abandoned instead.
+func (s *session) discardLiteral(n int64) error {
+	if n > resyncDrainLimit {
+		return s.abandon(fmt.Errorf("%w: %d-byte literal exceeds the %d-byte resync budget", errUnframed, n, int64(resyncDrainLimit)))
+	}
+	for remaining := n; remaining > 0; {
+		chunk := remaining
+		if chunk > drainChunk {
+			chunk = drainChunk
+		}
+		s.deadline()
+		got, err := io.CopyN(io.Discard, s.r, chunk)
+		if err != nil {
+			return s.abandon(fmt.Errorf("%w: discarding a %d-byte literal: %w", errUnframed, n, err))
+		}
+		remaining -= got
+	}
+	return nil
+}
+
+// abandon closes the connection and records why every later command fails.
+func (s *session) abandon(err error) error {
+	s.broken = err
+	s.conn.Close()
+	return err
 }
 
 func (s *session) selectInbox() error {
@@ -374,6 +436,9 @@ func (s *session) readLineNoReset() (string, error) {
 // cancellation and is always joined, so no reader goroutine is leaked across
 // successive Idle calls (§P1 IMAP IDLE).
 func (s *session) Idle(ctx context.Context) error {
+	if s.broken != nil {
+		return s.broken
+	}
 	s.tagN++
 	tag := fmt.Sprintf("a%d", s.tagN)
 
