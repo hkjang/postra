@@ -8,6 +8,7 @@ package imap
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -191,24 +192,31 @@ func (s *session) exec(format string, args ...any) ([]string, error) {
 			if m == nil {
 				break
 			}
-			n, _ := strconv.Atoi(m[1])
+			// The announced length comes from a server the account owner
+			// chose, so it is untrusted input. A length that does not fit in
+			// int64 leaves the number of bytes that follow unknown — there is
+			// no offset to resynchronize at and nothing safe to drain — so the
+			// session is abandoned rather than read on.
+			n, err := strconv.ParseInt(m[1], 10, 64)
+			if err != nil {
+				return nil, s.abandon(fmt.Errorf("%w: unreadable literal length %q: %w", errUnframed, m[1], err))
+			}
 			// Reject an oversized literal before allocating for it. Allow a
 			// small margin over MaxMessageBytes for envelope/header framing so
 			// legitimate at-limit messages still fetch.
-			if limit := s.refusalThreshold(); limit > 0 && int64(n) > limit {
+			if limit := s.refusalThreshold(); limit > 0 && n > limit {
 				if refused == nil {
 					refused = fmt.Errorf("server literal %d bytes exceeds max message size %d", n, s.maxLiteral)
 				}
-				if err := s.discardLiteral(int64(n)); err != nil {
+				if err := s.discardLiteral(n); err != nil {
 					return nil, err
 				}
 			} else {
-				buf := make([]byte, n)
-				s.deadline()
-				if _, err := io.ReadFull(s.r, buf); err != nil {
+				lit, err := s.readLiteral(n)
+				if err != nil {
 					return nil, err
 				}
-				s.literals = append(s.literals, string(buf))
+				s.literals = append(s.literals, lit)
 			}
 			cont, err := s.readLine()
 			if err != nil {
@@ -247,6 +255,34 @@ func (s *session) resyncBudget() int64 {
 		return math.MaxInt64
 	}
 	return limit * resyncDrainFactor
+}
+
+// readLiteral buffers a literal the client accepts. The buffer follows the
+// bytes that actually arrive instead of the length the server announced:
+// reserving the announced size would let a server amplify a short reply — or one
+// it never sends at all — into an allocation of whatever length it cares to
+// declare. Like discardLiteral it refreshes the deadline every chunk, so a slow
+// but live server is not cut off part way through a body.
+func (s *session) readLiteral(n int64) (string, error) {
+	var b bytes.Buffer
+	reserve := int64(drainChunk)
+	if n < reserve {
+		reserve = n
+	}
+	b.Grow(int(reserve))
+	for remaining := n; remaining > 0; {
+		chunk := remaining
+		if chunk > drainChunk {
+			chunk = drainChunk
+		}
+		s.deadline()
+		got, err := io.CopyN(&b, s.r, chunk)
+		if err != nil {
+			return "", err
+		}
+		remaining -= got
+	}
+	return b.String(), nil
 }
 
 // discardLiteral drops the bytes of a literal the client refuses to buffer, so

@@ -8,6 +8,8 @@ import (
 	"io"
 	"math"
 	"net"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -314,6 +316,95 @@ func TestIMAPUndrainableLiteralAbandonsSession(t *testing.T) {
 	}
 	if _, err := sess.Retrieve(ctx, 1); !errors.Is(err, errUnframed) {
 		t.Fatalf("second fetch error = %v, want the session to stay unusable", err)
+	}
+}
+
+// declaredLiteralServer announces a BODY literal whose length is taken verbatim
+// from declared (so a length outside int64 can be scripted), then sends body and
+// closes. It models the untrusted server an account's own host may be: the
+// announced length is whatever it says, and the bytes behind it are whatever it
+// chooses to send.
+func declaredLiteralServer(t *testing.T, declared, body string) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		br := bufio.NewReader(conn)
+		io.WriteString(conn, "* OK IMAP4rev1 ready\r\n")
+		for {
+			line, err := br.ReadString('\n')
+			if err != nil {
+				return
+			}
+			sp := strings.SplitN(strings.TrimRight(line, "\r\n"), " ", 3)
+			if len(sp) < 2 {
+				continue
+			}
+			tag, cmd := sp[0], strings.ToUpper(sp[1])
+			switch cmd {
+			case "SELECT":
+				io.WriteString(conn, "* 1 EXISTS\r\n* OK [UIDVALIDITY 3] ok\r\n")
+				fmt.Fprintf(conn, "%s OK\r\n", tag)
+			case "FETCH":
+				fmt.Fprintf(conn, "* 1 FETCH (UID 1 BODY[] {%s}\r\n", declared)
+				io.WriteString(conn, body)
+				return // hang up rather than send the rest of the announced bytes
+			default:
+				fmt.Fprintf(conn, "%s OK\r\n", tag)
+			}
+		}
+	}()
+	return ln.Addr().String()
+}
+
+// TestIMAPOutOfRangeLiteralAbandonsSession pins the parse of the announced
+// length. On an account with no size limit (MaxMessageBytes <= 0 turns the
+// refusal threshold off) a length outside int64 must not be read as a usable
+// number: the client cannot know how many bytes follow, so it abandons the
+// session rather than allocating for it or trying to drain it.
+func TestIMAPOutOfRangeLiteralAbandonsSession(t *testing.T) {
+	sess := dialMax(t, declaredLiteralServer(t, "99999999999999999999", ""), 0)
+	defer sess.Close()
+	ctx := context.Background()
+
+	_, err := sess.Retrieve(ctx, 1)
+	if !errors.Is(err, errUnframed) {
+		t.Fatalf("fetch of an out-of-range literal = %v, want an error wrapping errUnframed", err)
+	}
+	if _, err := sess.Retrieve(ctx, 1); !errors.Is(err, errUnframed) {
+		t.Fatalf("second fetch error = %v, want the session to stay unusable", err)
+	}
+}
+
+// TestIMAPLiteralBufferTracksDeliveredBytes pins that the body buffer follows
+// the bytes that actually arrive, not the size the server announced. Without
+// that, a server with no size limit configured amplifies a short reply into a
+// buffer of whatever length it cares to declare.
+func TestIMAPLiteralBufferTracksDeliveredBytes(t *testing.T) {
+	const declared = 1 << 30 // 1 GiB announced...
+	const sent = "only these bytes arrive"
+
+	sess := dialMax(t, declaredLiteralServer(t, strconv.Itoa(declared), sent), 0)
+	defer sess.Close()
+
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	_, err := sess.Retrieve(context.Background(), 1)
+	runtime.ReadMemStats(&after)
+
+	if err == nil {
+		t.Fatal("fetch of a truncated literal succeeded, want an error")
+	}
+	if grew := after.TotalAlloc - before.TotalAlloc; grew > 64<<20 {
+		t.Fatalf("fetch allocated %d bytes for a %d-byte announcement that delivered %d bytes; want the buffer to track delivery", grew, declared, len(sent))
 	}
 }
 
