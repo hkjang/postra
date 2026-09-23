@@ -11,7 +11,7 @@ Go로 작성한 개인/사내 구축형 메일 서비스입니다. 사용자의 
 
 v0.20.0의 검색 가능한 운영 콘솔은 환경변수 초기값 위에 관리자 설정과 강제 정책을 적용합니다. 개인·계정 설정과 복수 서명도 웹에서 관리합니다. [설정 관리](docs/SETTINGS.md) · [HTML 메일](docs/MAIL_RENDERING.md) · [Ask Postra](docs/ASK_POSTRA.md) · [MCP 계약](docs/MCP_CONVERGENCE.md) · [API 스키마](docs/API_CONTRACTS.md) · [릴리즈 및 이전 주의사항](docs/releases/v0.20.0.md)
 
-최신 릴리즈 [v0.23.3](docs/releases/v0.23.3.md)은 OAuth 로 연결한 MCP 클라이언트가 실패한 호출마다 스키마 검증 오류를 보고하던 문제를 고친 패치 릴리즈입니다. 도구 오류 결과는 성공 스키마를 만족할 수 없는 오류 봉투를 `structuredContent` 로 보내지 않고, text content 와 `_meta.postra_error` 로 전달합니다. 설정 키·DB 변경은 없고 v0.23.2의 MCP OAuth 세션 유지, v0.23.0의 DCR 호환 OAuth 프록시, v0.22.0의 Keycloak OAuth MCP 연결, 기존 API Key·메일·AI·개인화·승인 기반 발송은 그대로 유지합니다.
+최신 릴리즈 [v0.23.4](docs/releases/v0.23.4.md)는 크기 제한을 넘는 메일 본문을 거부한 뒤 같은 IMAP 세션의 응답 경계가 어긋나 이후 메일이 엉뚱한 내용으로 수집될 수 있던 문제를 고친 패치 릴리즈입니다. 거부한 리터럴은 상한 안에서 버려 스트림을 다시 맞추고, 상한을 넘거나 드레인이 깨지면 세션을 폐기합니다. 설정 키·DB 변경은 없고 v0.23.3의 MCP 도구 오류 스키마 수정, v0.23.2의 MCP OAuth 세션 유지, v0.23.0의 DCR 호환 OAuth 프록시, v0.22.0의 Keycloak OAuth MCP 연결, 기존 API Key·메일·AI·개인화·승인 기반 발송은 그대로 유지합니다.
 
 ## 설계 핵심
 

@@ -2,16 +2,16 @@
 
 Docker 데몬 없이 빌드한, 오프라인망에서 바로 사용 가능한 산출물입니다.
 
-> **v0.23.3 — MCP 도구 오류의 스키마 위반 수정**: OAuth 로 연결한 MCP 클라이언트가 실패한 호출마다 스키마 검증 오류를 보고하던 문제를 고친 패치 릴리즈입니다. 도구 오류 결과는 `structuredContent` 대신 text content 와 `_meta.postra_error` 로 오류 봉투를 전달합니다. 새 설정 키·DB 마이그레이션·필수 환경변수는 없습니다. [릴리즈 내용](../docs/releases/v0.23.3.md)을 확인하세요. MCP OAuth 세션 유지는 [v0.23.2](../docs/releases/v0.23.2.md), DCR 호환 OAuth 프록시는 [v0.23.0](../docs/releases/v0.23.0.md), Keycloak OAuth MCP 연결은 [v0.22.0](../docs/releases/v0.22.0.md)과 [설정 가이드](../docs/MCP_OAUTH.md)를 참고하세요. v0.19.x 이하에서 업그레이드할 경우 [v0.20.0의 백업·Keycloak 콜백·권한 변경 안내](../docs/releases/v0.20.0.md)도 먼저 확인하세요.
+> **v0.23.4 — 과대 IMAP 리터럴 거부 후 메일이 섞이던 문제 수정**: `Sync.MaxMessageBytes`(기본 50MiB)를 넘는 메일 본문을 거부한 뒤 같은 IMAP 세션의 응답 경계가 어긋나, 이후 메일이 엉뚱한 내용으로 수집될 수 있던 문제를 고친 패치 릴리즈입니다. 거부한 본문은 상한 안에서 버려 스트림을 다시 맞추고, 상한을 넘으면 세션을 폐기합니다. 새 설정 키·DB 마이그레이션·필수 환경변수는 없습니다. [릴리즈 내용](../docs/releases/v0.23.4.md)을 확인하세요. MCP 도구 오류 스키마 수정은 [v0.23.3](../docs/releases/v0.23.3.md), MCP OAuth 세션 유지는 [v0.23.2](../docs/releases/v0.23.2.md), DCR 호환 OAuth 프록시는 [v0.23.0](../docs/releases/v0.23.0.md), Keycloak OAuth MCP 연결은 [v0.22.0](../docs/releases/v0.22.0.md)과 [설정 가이드](../docs/MCP_OAUTH.md)를 참고하세요. v0.19.x 이하에서 업그레이드할 경우 [v0.20.0의 백업·Keycloak 콜백·권한 변경 안내](../docs/releases/v0.20.0.md)도 먼저 확인하세요.
 
 기존 SSO·메일 프로비저닝·비밀값 암호화·승인·멱등 발송은 유지합니다. 런타임 Node 서버나 외부 CDN은 필요 없으며 서체와 시간대 데이터도 실행 파일에 포함됩니다.
 
 | 파일 | 설명 |
 | --- | --- |
-| `postra-0.23.3.tar.gz` | `docker load` 로 불러오는 컨테이너 이미지 (`postra:0.23.3`, linux/amd64) |
-| `postra-0.23.3-linux-amd64` | 정적 링크 단일 실행 파일 (CGO 없음, 의존성 없음) |
-| `postra-0.23.3-sbom.cdx.json` | CycloneDX 소프트웨어 자재명세서 |
-| `postra-0.23.3-frontend-sbom.cdx.json` | 프런트엔드 의존성 CycloneDX 명세서 |
+| `postra-0.23.4.tar.gz` | `docker load` 로 불러오는 컨테이너 이미지 (`postra:0.23.4`, linux/amd64) |
+| `postra-0.23.4-linux-amd64` | 정적 링크 단일 실행 파일 (CGO 없음, 의존성 없음) |
+| `postra-0.23.4-sbom.cdx.json` | CycloneDX 소프트웨어 자재명세서 |
+| `postra-0.23.4-frontend-sbom.cdx.json` | 프런트엔드 의존성 CycloneDX 명세서 |
 | `SHA256SUMS.txt` | 모든 릴리즈 파일의 SHA-256 체크섬 |
 
 이미지는 순수 Go 정적 바이너리 + CA 인증서 + 최소 rootfs 로만 구성됩니다(scratch 기반).
@@ -20,7 +20,7 @@ Docker 데몬 없이 빌드한, 오프라인망에서 바로 사용 가능한 �
 
 ```bash
 # 폐쇄망 호스트로 tar.gz 를 옮긴 뒤:
-docker load -i postra-0.23.3.tar.gz     # gzip 자동 인식
+docker load -i postra-0.23.4.tar.gz     # gzip 자동 인식
 docker image ls postra
 
 # 오프라인망(평문 POP3/SMTP 허용) 실행 예시
@@ -30,7 +30,7 @@ docker run -d --name postra \
   -e POSTRA_HTTP_ADDR=0.0.0.0:8480 \
   -e POSTRA_ALLOW_INSECURE_MAIL=true \
   -e POSTRA_API_TOKEN=change-me \
-  postra:0.23.3
+  postra:0.23.4
 
 # CLI 사용 (같은 컨테이너)
 docker exec -it postra postra account list
@@ -42,9 +42,9 @@ REST API는 `/api/v1/`(기존 `/api/` 호환), 유일한 공식 Web UI는 `/app/
 ## 2) 바이너리 단독 실행 (Docker 불필요)
 
 ```bash
-chmod +x postra-0.23.3-linux-amd64
-./postra-0.23.3-linux-amd64 init
-POSTRA_BOOTSTRAP_ADMIN_PASSWORD='replace-with-a-long-secret' ./postra-0.23.3-linux-amd64 serve
+chmod +x postra-0.23.4-linux-amd64
+./postra-0.23.4-linux-amd64 init
+POSTRA_BOOTSTRAP_ADMIN_PASSWORD='replace-with-a-long-secret' ./postra-0.23.4-linux-amd64 serve
 ```
 
 ## 데이터 / 비밀값
@@ -58,6 +58,6 @@ Docker 없이 이미지를 다시 만들려면:
 
 ```bash
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o postra ./cmd/postra
-go run scripts/mkimage.go postra postra-image.tar postra:0.23.3
+go run scripts/mkimage.go postra postra-image.tar postra:0.23.4
 gzip -9 postra-image.tar
 ```
