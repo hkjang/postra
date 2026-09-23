@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"regexp"
 	"strconv"
@@ -125,12 +126,21 @@ type session struct {
 	broken      error    // set once the stream can no longer be trusted
 }
 
-// resyncDrainLimit bounds how many bytes a refused literal may cost to discard.
-// Below it, dropping the body costs a moment and the ingest loop can carry on
-// with the rest of the mailbox over the same session; above it the server is
-// better abandoned than drained, not least because a bogus length announces
-// bytes that never arrive and would only block until the command deadline.
-const resyncDrainLimit = 32 << 20
+// literalMargin is the slack allowed over MaxMessageBytes before a literal is
+// refused, so a legitimate at-limit message still fetches with its envelope and
+// header framing.
+const literalMargin = 1 << 20
+
+// resyncDrainFactor bounds how many bytes a refused literal may cost to
+// discard, as a multiple of the size at which a literal is refused. Within that
+// budget, dropping the body costs a moment and the ingest loop can carry on with
+// the rest of the mailbox over the same session. Beyond it the announced length
+// is no longer plausibly a message the server is really sending, and a bogus
+// length announces bytes that never arrive and would only block until the
+// command deadline, so the session is abandoned instead of drained. Deriving the
+// budget from the refusal threshold keeps the drain path reachable at every
+// configured MaxMessageBytes rather than only at small ones.
+const resyncDrainFactor = 4
 
 // drainChunk is how much of a refused literal is discarded between deadline
 // refreshes, so a slow but live server is not cut off mid-drain.
@@ -185,7 +195,7 @@ func (s *session) exec(format string, args ...any) ([]string, error) {
 			// Reject an oversized literal before allocating for it. Allow a
 			// small margin over MaxMessageBytes for envelope/header framing so
 			// legitimate at-limit messages still fetch.
-			if s.maxLiteral > 0 && int64(n) > s.maxLiteral+(1<<20) {
+			if limit := s.refusalThreshold(); limit > 0 && int64(n) > limit {
 				if refused == nil {
 					refused = fmt.Errorf("server literal %d bytes exceeds max message size %d", n, s.maxLiteral)
 				}
@@ -217,13 +227,35 @@ func (s *session) exec(format string, args ...any) ([]string, error) {
 	}
 }
 
+// refusalThreshold is the announced literal size above which a body is refused
+// rather than buffered (0 when no limit is configured).
+func (s *session) refusalThreshold() int64 {
+	if s.maxLiteral <= 0 {
+		return 0
+	}
+	if s.maxLiteral > math.MaxInt64-literalMargin {
+		return math.MaxInt64
+	}
+	return s.maxLiteral + literalMargin
+}
+
+// resyncBudget is the most a refused literal may cost to drain before the
+// session is abandoned instead.
+func (s *session) resyncBudget() int64 {
+	limit := s.refusalThreshold()
+	if limit <= 0 || limit > math.MaxInt64/resyncDrainFactor {
+		return math.MaxInt64
+	}
+	return limit * resyncDrainFactor
+}
+
 // discardLiteral drops the bytes of a literal the client refuses to buffer, so
 // the next protocol line is read where the server believes the response
 // continues. A length too large to drain — or a drain that fails part way —
 // leaves the stream at an unknown offset, so the session is abandoned instead.
 func (s *session) discardLiteral(n int64) error {
-	if n > resyncDrainLimit {
-		return s.abandon(fmt.Errorf("%w: %d-byte literal exceeds the %d-byte resync budget", errUnframed, n, int64(resyncDrainLimit)))
+	if budget := s.resyncBudget(); n > budget {
+		return s.abandon(fmt.Errorf("%w: %d-byte literal exceeds the %d-byte resync budget", errUnframed, n, budget))
 	}
 	for remaining := n; remaining > 0; {
 		chunk := remaining
