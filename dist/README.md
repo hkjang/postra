@@ -2,16 +2,16 @@
 
 Docker 데몬 없이 빌드한, 오프라인망에서 바로 사용 가능한 산출물입니다.
 
-> **v0.23.5 — IMAP 리터럴 길이 오버플로로 수집이 죽던 문제 수정**: 상한을 끈 계정(`sync.max_message_bytes <= 0`)에서 서버가 표현 범위를 넘는 리터럴 길이를 선언하면 수집 작업이 패닉하던 문제를 고친 패치 릴리즈입니다. 길이는 64비트로 파싱하고 읽을 수 없으면 세션을 폐기하며, 수용한 리터럴도 선언한 크기를 미리 할당하지 않고 도착한 바이트만큼만 버퍼에 담습니다. 새 설정 키·DB 마이그레이션·필수 환경변수는 없습니다. [릴리즈 내용](../docs/releases/v0.23.5.md)을 확인하세요. 과대 리터럴 거부 후 스트림 재동기화는 [v0.23.4](../docs/releases/v0.23.4.md), MCP 도구 오류 스키마 수정은 [v0.23.3](../docs/releases/v0.23.3.md), MCP OAuth 세션 유지는 [v0.23.2](../docs/releases/v0.23.2.md), DCR 호환 OAuth 프록시는 [v0.23.0](../docs/releases/v0.23.0.md), Keycloak OAuth MCP 연결은 [v0.22.0](../docs/releases/v0.22.0.md)과 [설정 가이드](../docs/MCP_OAUTH.md)를 참고하세요. v0.19.x 이하에서 업그레이드할 경우 [v0.20.0의 백업·Keycloak 콜백·권한 변경 안내](../docs/releases/v0.20.0.md)도 먼저 확인하세요.
+> **v0.23.6 — 개행을 보내지 않는 IMAP 서버가 메모리를 늘리던 문제 수정**: 서버가 줄바꿈을 한 번도 보내지 않고 바이트만 흘리면 프로토콜 줄 하나가 데드라인이 끝날 때까지 자라던 문제를 고친 패치 릴리즈입니다. 프로토콜 줄은 1 MiB 상한을 넘으면 세션을 폐기하며, 명령 데드라인이 갱신되지 않는 IDLE 경로의 28분 창에도 같은 상한이 걸립니다. 메일 본문은 `{n}` 리터럴로 오므로 영향받지 않습니다. 새 설정 키·DB 마이그레이션·필수 환경변수는 없습니다. [릴리즈 내용](../docs/releases/v0.23.6.md)을 확인하세요. 리터럴 길이 안전 처리는 [v0.23.5](../docs/releases/v0.23.5.md), 과대 리터럴 거부 후 스트림 재동기화는 [v0.23.4](../docs/releases/v0.23.4.md), MCP 도구 오류 스키마 수정은 [v0.23.3](../docs/releases/v0.23.3.md), MCP OAuth 세션 유지는 [v0.23.2](../docs/releases/v0.23.2.md), DCR 호환 OAuth 프록시는 [v0.23.0](../docs/releases/v0.23.0.md), Keycloak OAuth MCP 연결은 [v0.22.0](../docs/releases/v0.22.0.md)과 [설정 가이드](../docs/MCP_OAUTH.md)를 참고하세요. v0.19.x 이하에서 업그레이드할 경우 [v0.20.0의 백업·Keycloak 콜백·권한 변경 안내](../docs/releases/v0.20.0.md)도 먼저 확인하세요.
 
 기존 SSO·메일 프로비저닝·비밀값 암호화·승인·멱등 발송은 유지합니다. 런타임 Node 서버나 외부 CDN은 필요 없으며 서체와 시간대 데이터도 실행 파일에 포함됩니다.
 
 | 파일 | 설명 |
 | --- | --- |
-| `postra-0.23.5.tar.gz` | `docker load` 로 불러오는 컨테이너 이미지 (`postra:0.23.5`, linux/amd64) |
-| `postra-0.23.5-linux-amd64` | 정적 링크 단일 실행 파일 (CGO 없음, 의존성 없음) |
-| `postra-0.23.5-sbom.cdx.json` | CycloneDX 소프트웨어 자재명세서 |
-| `postra-0.23.5-frontend-sbom.cdx.json` | 프런트엔드 의존성 CycloneDX 명세서 |
+| `postra-0.23.6.tar.gz` | `docker load` 로 불러오는 컨테이너 이미지 (`postra:0.23.6`, linux/amd64) |
+| `postra-0.23.6-linux-amd64` | 정적 링크 단일 실행 파일 (CGO 없음, 의존성 없음) |
+| `postra-0.23.6-sbom.cdx.json` | CycloneDX 소프트웨어 자재명세서 |
+| `postra-0.23.6-frontend-sbom.cdx.json` | 프런트엔드 의존성 CycloneDX 명세서 |
 | `SHA256SUMS.txt` | 모든 릴리즈 파일의 SHA-256 체크섬 |
 
 이미지는 순수 Go 정적 바이너리 + CA 인증서 + 최소 rootfs 로만 구성됩니다(scratch 기반).
@@ -20,7 +20,7 @@ Docker 데몬 없이 빌드한, 오프라인망에서 바로 사용 가능한 �
 
 ```bash
 # 폐쇄망 호스트로 tar.gz 를 옮긴 뒤:
-docker load -i postra-0.23.5.tar.gz     # gzip 자동 인식
+docker load -i postra-0.23.6.tar.gz     # gzip 자동 인식
 docker image ls postra
 
 # 오프라인망(평문 POP3/SMTP 허용) 실행 예시
@@ -30,7 +30,7 @@ docker run -d --name postra \
   -e POSTRA_HTTP_ADDR=0.0.0.0:8480 \
   -e POSTRA_ALLOW_INSECURE_MAIL=true \
   -e POSTRA_API_TOKEN=change-me \
-  postra:0.23.5
+  postra:0.23.6
 
 # CLI 사용 (같은 컨테이너)
 docker exec -it postra postra account list
@@ -42,9 +42,9 @@ REST API는 `/api/v1/`(기존 `/api/` 호환), 유일한 공식 Web UI는 `/app/
 ## 2) 바이너리 단독 실행 (Docker 불필요)
 
 ```bash
-chmod +x postra-0.23.5-linux-amd64
-./postra-0.23.5-linux-amd64 init
-POSTRA_BOOTSTRAP_ADMIN_PASSWORD='replace-with-a-long-secret' ./postra-0.23.5-linux-amd64 serve
+chmod +x postra-0.23.6-linux-amd64
+./postra-0.23.6-linux-amd64 init
+POSTRA_BOOTSTRAP_ADMIN_PASSWORD='replace-with-a-long-secret' ./postra-0.23.6-linux-amd64 serve
 ```
 
 ## 데이터 / 비밀값
@@ -58,6 +58,6 @@ Docker 없이 이미지를 다시 만들려면:
 
 ```bash
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o postra ./cmd/postra
-go run scripts/mkimage.go postra postra-image.tar postra:0.23.5
+go run scripts/mkimage.go postra postra-image.tar postra:0.23.6
 gzip -9 postra-image.tar
 ```
