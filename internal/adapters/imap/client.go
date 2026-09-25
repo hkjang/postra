@@ -147,16 +147,54 @@ const resyncDrainFactor = 4
 // refreshes, so a slow but live server is not cut off mid-drain.
 const drainChunk = 1 << 20
 
+// maxLineBytes caps how many bytes one protocol line may accumulate. Message
+// bodies never travel on this path — they arrive as {n} literals and are read by
+// readLiteral — so everything read here is protocol text (tagged completions,
+// FETCH envelopes, capability and LIST lines), for which 1 MiB is generous.
+// Without a cap a server that streams bytes and never sends LF grows the line
+// buffer until the deadline expires, which on the IDLE path is the 28-minute
+// re-idle window rather than the 60-second command timeout.
+const maxLineBytes = 1 << 20
+
 func (s *session) deadline() { s.conn.SetDeadline(time.Now().Add(s.commandTO)) }
 
 // readLine reads one CRLF-terminated protocol line (without the CRLF).
 func (s *session) readLine() (string, error) {
 	s.deadline()
-	line, err := s.r.ReadString('\n')
-	if err != nil {
-		return "", err
+	return s.readBoundedLine()
+}
+
+// readBoundedLine reads one LF-terminated line, without the trailing CRLF and
+// without letting it grow past maxLineBytes. It is the only place the adapter
+// reads raw protocol text: a server that never sends LF would otherwise keep the
+// reader accumulating fragments for as long as the deadline allows. Once the
+// bound trips, the offset the server believes the response continues at is
+// unknown — the rest of that line is still on the wire — so the session is
+// abandoned rather than resynchronized, exactly as for an undrainable literal.
+//
+// Deadline policy stays with the callers: readLine refreshes the command
+// deadline, readLineNoReset deliberately does not (see its comment).
+func (s *session) readBoundedLine() (string, error) {
+	var acc []byte
+	for {
+		frag, err := s.r.ReadSlice('\n')
+		if err != nil && !errors.Is(err, bufio.ErrBufferFull) {
+			return "", err
+		}
+		if int64(len(acc))+int64(len(frag)) > maxLineBytes {
+			return "", s.abandon(fmt.Errorf("%w: protocol line exceeds %d bytes", errUnframed, maxLineBytes))
+		}
+		if err == nil {
+			if len(acc) == 0 {
+				// The whole line fit in one read: no need to copy it out of the
+				// reader's buffer twice.
+				return strings.TrimRight(string(frag), "\r\n"), nil
+			}
+			return strings.TrimRight(string(append(acc, frag...)), "\r\n"), nil
+		}
+		// frag points into the reader's buffer, which the next read reuses.
+		acc = append(acc, frag...)
 	}
-	return strings.TrimRight(line, "\r\n"), nil
 }
 
 // exec sends a tagged command and collects untagged responses until the
@@ -488,13 +526,11 @@ func (s *session) FetchFlags(ctx context.Context, number int) ([]string, error) 
 
 // readLineNoReset reads one CRLF-terminated line WITHOUT resetting the
 // connection deadline (readLine resets it to commandTO on every call, which
-// would defeat the long IDLE window). The caller manages the deadline.
+// would defeat the long IDLE window). The caller manages the deadline. The
+// maxLineBytes bound matters most here: the deadline this path runs under is the
+// 28-minute re-idle window, so an unbounded line would buffer for that long.
 func (s *session) readLineNoReset() (string, error) {
-	line, err := s.r.ReadString('\n')
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimRight(line, "\r\n"), nil
+	return s.readBoundedLine()
 }
 
 // Idle issues the RFC 2177 IDLE command and blocks until the server reports

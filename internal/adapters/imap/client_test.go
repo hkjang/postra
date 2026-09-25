@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"postra/internal/domain"
 	"postra/internal/platform/config"
@@ -405,6 +406,202 @@ func TestIMAPLiteralBufferTracksDeliveredBytes(t *testing.T) {
 	}
 	if grew := after.TotalAlloc - before.TotalAlloc; grew > 64<<20 {
 		t.Fatalf("fetch allocated %d bytes for a %d-byte announcement that delivered %d bytes; want the buffer to track delivery", grew, declared, len(sent))
+	}
+}
+
+// unterminatedLineServer answers FETCH with a response line it never terminates:
+// after the opening of an untagged FETCH it keeps writing bytes with no LF until
+// the client hangs up. It models the server an account owner may point at — one
+// that grows the client's line buffer for as long as the client keeps reading.
+// The writes are throttled so the pre-bound behaviour (buffer until the command
+// deadline) is observable without exhausting the test machine's memory.
+func unterminatedLineServer(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stop := make(chan struct{})
+	t.Cleanup(func() { close(stop); ln.Close() })
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		br := bufio.NewReader(conn)
+		io.WriteString(conn, "* OK IMAP4rev1 ready\r\n")
+		chunk := strings.Repeat("z", 4096)
+		for {
+			line, err := br.ReadString('\n')
+			if err != nil {
+				return
+			}
+			sp := strings.SplitN(strings.TrimRight(line, "\r\n"), " ", 3)
+			if len(sp) < 2 {
+				continue
+			}
+			tag, cmd := sp[0], strings.ToUpper(sp[1])
+			switch cmd {
+			case "SELECT":
+				io.WriteString(conn, "* 1 EXISTS\r\n* OK [UIDVALIDITY 5] ok\r\n")
+				fmt.Fprintf(conn, "%s OK\r\n", tag)
+			case "FETCH", "IDLE":
+				if cmd == "IDLE" {
+					io.WriteString(conn, "+ idling\r\n")
+				} else {
+					io.WriteString(conn, "* 1 FETCH (UID 1 ")
+				}
+				for {
+					select {
+					case <-stop:
+						return
+					default:
+					}
+					if _, err := io.WriteString(conn, chunk); err != nil {
+						return
+					}
+					time.Sleep(time.Millisecond)
+				}
+			default:
+				fmt.Fprintf(conn, "%s OK\r\n", tag)
+			}
+		}
+	}()
+	return ln.Addr().String()
+}
+
+// TestIMAPUnterminatedLineAbandonsSession pins the line-length bound: a server
+// that streams bytes and never sends LF must not be able to grow the client's
+// line buffer until the deadline expires. Once the bound trips, the offset the
+// server believes the response continues at is unknown, so the session is
+// abandoned like any other unframed response.
+func TestIMAPUnterminatedLineAbandonsSession(t *testing.T) {
+	sess := dialMax(t, unterminatedLineServer(t), 50<<20)
+	defer sess.Close()
+	ctx := context.Background()
+
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	_, err := sess.Retrieve(ctx, 1)
+	runtime.ReadMemStats(&after)
+
+	if !errors.Is(err, errUnframed) {
+		t.Fatalf("fetch of an unterminated line = %v, want an error wrapping errUnframed", err)
+	}
+	if !strings.Contains(err.Error(), "protocol line exceeds") {
+		t.Fatalf("fetch error = %v, want it to name the line-length bound", err)
+	}
+	if grew := after.TotalAlloc - before.TotalAlloc; grew > 16*maxLineBytes {
+		t.Fatalf("fetch buffered %d bytes of an unterminated line; want the %d-byte bound to stop it", grew, maxLineBytes)
+	}
+	if _, err := sess.Retrieve(ctx, 1); !errors.Is(err, errUnframed) {
+		t.Fatalf("second fetch error = %v, want the session to stay unusable", err)
+	}
+}
+
+// TestIMAPUnterminatedIdleLineAbandonsSession pins the bound on the IDLE path,
+// which is where it matters most: readLineNoReset deliberately leaves the
+// deadline alone, so the window an unterminated line could buffer for there is
+// the 28-minute re-idle window rather than the 60-second command timeout. It
+// also walks the abandon-during-IDLE exit, where the deferred DONE is written to
+// a socket abandon has already closed.
+func TestIMAPUnterminatedIdleLineAbandonsSession(t *testing.T) {
+	sess := dialMax(t, unterminatedLineServer(t), 0)
+	defer sess.Close()
+
+	idler, ok := sess.(domain.IdleCapable)
+	if !ok {
+		t.Fatalf("session %T is not IdleCapable", sess)
+	}
+	err := idler.Idle(context.Background())
+	if !errors.Is(err, errUnframed) {
+		t.Fatalf("idle over an unterminated line = %v, want an error wrapping errUnframed", err)
+	}
+	// A bound trip is not a re-idle timeout: the caller must not loop back into
+	// IDLE on a stream it can no longer frame.
+	if err := idler.Idle(context.Background()); !errors.Is(err, errUnframed) {
+		t.Fatalf("second idle = %v, want the session to stay unusable", err)
+	}
+}
+
+// longLineServer answers every FETCH with the one untagged line given, so a
+// response sitting exactly at the line-length bound can be checked end to end.
+func longLineServer(t *testing.T, untagged string) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		br := bufio.NewReader(conn)
+		io.WriteString(conn, "* OK IMAP4rev1 ready\r\n")
+		for {
+			line, err := br.ReadString('\n')
+			if err != nil {
+				return
+			}
+			sp := strings.SplitN(strings.TrimRight(line, "\r\n"), " ", 3)
+			if len(sp) < 2 {
+				continue
+			}
+			tag, cmd := sp[0], strings.ToUpper(sp[1])
+			switch cmd {
+			case "SELECT":
+				io.WriteString(conn, "* 1 EXISTS\r\n* OK [UIDVALIDITY 777] ok\r\n")
+				fmt.Fprintf(conn, "%s OK\r\n", tag)
+			case "FETCH":
+				io.WriteString(conn, untagged+"\r\n")
+				fmt.Fprintf(conn, "%s OK\r\n", tag)
+			default:
+				fmt.Fprintf(conn, "%s OK\r\n", tag)
+			}
+		}
+	}()
+	return ln.Addr().String()
+}
+
+// TestIMAPLongLineAtBoundIsReturnedWhole pins the other side of the bound: a
+// line that fills it exactly — bigger than bufio's 4 KiB read buffer, so it is
+// reassembled from many fragments — must come back byte-for-byte, with the UID
+// and size at its far end still parsed. A bound that dropped or truncated the
+// tail would silently lose every message's identity.
+func TestIMAPLongLineAtBoundIsReturnedWhole(t *testing.T) {
+	const prefix = "* 1 FETCH (X-Pad "
+	const suffix = " UID 101 RFC822.SIZE 20)"
+	// -2 for the CRLF, which counts against the bound as delivered bytes.
+	line := prefix + strings.Repeat("z", maxLineBytes-len(prefix)-len(suffix)-2) + suffix
+
+	sess := dialMax(t, longLineServer(t, line), 0)
+	defer sess.Close()
+
+	msgs, err := sess.UIDL(context.Background())
+	if err != nil {
+		t.Fatalf("enumerate over a %d-byte line: %v", len(line), err)
+	}
+	if len(msgs) != 1 || msgs[0].UIDL != "777.101" || msgs[0].Size != 20 {
+		t.Fatalf("enumerate = %+v, want one message 777.101 of 20 bytes", msgs)
+	}
+
+	lines, err := sess.(*session).exec("FETCH 1:1 (UID RFC822.SIZE)")
+	if err != nil {
+		t.Fatalf("exec over a %d-byte line: %v", len(line), err)
+	}
+	if len(lines) != 1 {
+		t.Fatalf("untagged lines = %d, want 1", len(lines))
+	}
+	if len(lines[0]) != len(line) {
+		t.Fatalf("line length = %d, want %d (the bound must not truncate)", len(lines[0]), len(line))
+	}
+	if lines[0] != line {
+		t.Fatalf("line differs from what the server sent (suffix %.40q, want %.40q)",
+			lines[0][len(lines[0])-40:], line[len(line)-40:])
 	}
 }
 
