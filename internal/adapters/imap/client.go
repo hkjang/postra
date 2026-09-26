@@ -156,6 +156,47 @@ const drainChunk = 1 << 20
 // re-idle window rather than the 60-second command timeout.
 const maxLineBytes = 1 << 20
 
+// maxResponseBytes caps how much protocol text one command's response may
+// accumulate. maxLineBytes bounds a single line, but nothing bounds how many
+// lines a response contains, and readLine refreshes the command deadline on
+// every one of them — so a server that keeps sending short untagged lines and
+// never sends the tagged completion grows exec's collected lines for as long as
+// it cares to, with no deadline left to stop it. What is counted against the
+// bound is each line's bytes plus responseLineOverhead, so the cap tracks what
+// the response really costs rather than only its visible text. The largest
+// response the adapter legitimately asks for is a full enumerateBatch of FETCH
+// metadata, charged at 117,994 bytes for 2000 messages by
+// TestIMAPFullEnumerateBatchStaysUnderResponseBound; 8 MiB leaves that seventy
+// times over for longer UIDs, flags and envelopes while still bounding a
+// runaway response.
+const maxResponseBytes = 8 << 20
+
+// responseLineOverhead is what every line of a response costs on top of the
+// bytes readBoundedLine returns, and without it maxResponseBytes does not hold.
+// A line arrives with its CRLF already stripped, so a bare "\r\n" measures zero:
+// counting only len(line), a server that answers with nothing but blank lines
+// never advances the total at all and exec appends "" for ever, which is the
+// runaway maxResponseBytes exists to stop. A retained line also costs a 16-byte
+// string header in untagged, so at one byte per line an 8 MiB total would sit on
+// upwards of 130 MiB of live heap. Charging the two bytes the server really sent
+// plus that header closes both: the worst case is now bounded at roughly
+// maxResponseBytes of residency however short the lines are. Literal
+// continuations are folded into the line they continue rather than retained
+// separately, so charging them the same constant over-counts by at most
+// maxResponseLiterals headers — a rounding error against the bound, and not
+// worth a second constant.
+const responseLineOverhead = 2 + 16
+
+// maxResponseLiterals caps how many literals one command's response may deliver.
+// maxResponseBytes cannot see this: announcing a literal costs about thirty
+// bytes of line text, so a server could hand over gigabytes of s.literals while
+// staying far inside the byte bound. The count is deliberately what is bounded
+// and not the literal bytes — an account with no configured size limit
+// (refusalThreshold() == 0) is entitled to a single body of any size. Retrieve
+// and Top read one literal (firstLiteral) and ensureIndex reads none, so the
+// legitimate count is 1.
+const maxResponseLiterals = 64
+
 func (s *session) deadline() { s.conn.SetDeadline(time.Now().Add(s.commandTO)) }
 
 // readLine reads one CRLF-terminated protocol line (without the CRLF).
@@ -216,10 +257,19 @@ func (s *session) exec(format string, args ...any) ([]string, error) {
 	// tagged completion, so the failure costs this one command and not the
 	// framing of every command after it.
 	var refused error
+	// What this one response has cost so far. Unlike a refused literal, an
+	// over-long response cannot be resynchronized — the server is still mid-reply
+	// and owes a tagged completion it is not going to send — so tripping either
+	// bound abandons the session rather than failing just this command.
+	var respBytes int64
+	var literals int
 	for {
 		line, err := s.readLine()
 		if err != nil {
 			return nil, err
+		}
+		if respBytes += int64(len(line)) + responseLineOverhead; respBytes > maxResponseBytes {
+			return nil, s.abandon(fmt.Errorf("%w: response exceeds %d bytes of protocol text", errUnframed, int64(maxResponseBytes)))
 		}
 		// A line ending in {n} announces an n-byte literal that follows on the
 		// wire. Read it exactly, capture it, and continue with the rest of the
@@ -238,6 +288,12 @@ func (s *session) exec(format string, args ...any) ([]string, error) {
 			n, err := strconv.ParseInt(m[1], 10, 64)
 			if err != nil {
 				return nil, s.abandon(fmt.Errorf("%w: unreadable literal length %q: %w", errUnframed, m[1], err))
+			}
+			// Counted on the announcement rather than on s.literals, so a run of
+			// refused literals — which are drained, not kept — is bounded too:
+			// each one costs a drain of up to the resync budget.
+			if literals++; literals > maxResponseLiterals {
+				return nil, s.abandon(fmt.Errorf("%w: response announces more than %d literals", errUnframed, maxResponseLiterals))
 			}
 			// Reject an oversized literal before allocating for it. Allow a
 			// small margin over MaxMessageBytes for envelope/header framing so
@@ -259,6 +315,9 @@ func (s *session) exec(format string, args ...any) ([]string, error) {
 			cont, err := s.readLine()
 			if err != nil {
 				return nil, err
+			}
+			if respBytes += int64(len(cont)) + responseLineOverhead; respBytes > maxResponseBytes {
+				return nil, s.abandon(fmt.Errorf("%w: response exceeds %d bytes of protocol text", errUnframed, int64(maxResponseBytes)))
 			}
 			line = strings.TrimSuffix(line, m[0]) + cont
 		}
