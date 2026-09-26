@@ -161,13 +161,31 @@ const maxLineBytes = 1 << 20
 // lines a response contains, and readLine refreshes the command deadline on
 // every one of them — so a server that keeps sending short untagged lines and
 // never sends the tagged completion grows exec's collected lines for as long as
-// it cares to, with no deadline left to stop it. The largest response the
-// adapter legitimately asks for is a full enumerateBatch of FETCH metadata,
-// measured at 81,994 bytes for 2000 messages by
-// TestIMAPFullEnumerateBatchStaysUnderResponseBound; 8 MiB leaves that a
-// hundredfold of headroom for longer UIDs, flags and envelopes while still
-// bounding a runaway response.
+// it cares to, with no deadline left to stop it. What is counted against the
+// bound is each line's bytes plus responseLineOverhead, so the cap tracks what
+// the response really costs rather than only its visible text. The largest
+// response the adapter legitimately asks for is a full enumerateBatch of FETCH
+// metadata, charged at 117,994 bytes for 2000 messages by
+// TestIMAPFullEnumerateBatchStaysUnderResponseBound; 8 MiB leaves that seventy
+// times over for longer UIDs, flags and envelopes while still bounding a
+// runaway response.
 const maxResponseBytes = 8 << 20
+
+// responseLineOverhead is what every line of a response costs on top of the
+// bytes readBoundedLine returns, and without it maxResponseBytes does not hold.
+// A line arrives with its CRLF already stripped, so a bare "\r\n" measures zero:
+// counting only len(line), a server that answers with nothing but blank lines
+// never advances the total at all and exec appends "" for ever, which is the
+// runaway maxResponseBytes exists to stop. A retained line also costs a 16-byte
+// string header in untagged, so at one byte per line an 8 MiB total would sit on
+// upwards of 130 MiB of live heap. Charging the two bytes the server really sent
+// plus that header closes both: the worst case is now bounded at roughly
+// maxResponseBytes of residency however short the lines are. Literal
+// continuations are folded into the line they continue rather than retained
+// separately, so charging them the same constant over-counts by at most
+// maxResponseLiterals headers — a rounding error against the bound, and not
+// worth a second constant.
+const responseLineOverhead = 2 + 16
 
 // maxResponseLiterals caps how many literals one command's response may deliver.
 // maxResponseBytes cannot see this: announcing a literal costs about thirty
@@ -250,7 +268,7 @@ func (s *session) exec(format string, args ...any) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		if respBytes += int64(len(line)); respBytes > maxResponseBytes {
+		if respBytes += int64(len(line)) + responseLineOverhead; respBytes > maxResponseBytes {
 			return nil, s.abandon(fmt.Errorf("%w: response exceeds %d bytes of protocol text", errUnframed, int64(maxResponseBytes)))
 		}
 		// A line ending in {n} announces an n-byte literal that follows on the
@@ -298,7 +316,7 @@ func (s *session) exec(format string, args ...any) ([]string, error) {
 			if err != nil {
 				return nil, err
 			}
-			if respBytes += int64(len(cont)); respBytes > maxResponseBytes {
+			if respBytes += int64(len(cont)) + responseLineOverhead; respBytes > maxResponseBytes {
 				return nil, s.abandon(fmt.Errorf("%w: response exceeds %d bytes of protocol text", errUnframed, int64(maxResponseBytes)))
 			}
 			line = strings.TrimSuffix(line, m[0]) + cont

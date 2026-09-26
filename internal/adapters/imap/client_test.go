@@ -605,13 +605,14 @@ func TestIMAPLongLineAtBoundIsReturnedWhole(t *testing.T) {
 	}
 }
 
-// endlessUntaggedServer answers every command after login with short untagged
-// lines and never sends the tagged completion. exec's collection loop has no
-// reason of its own to stop there: each line is well inside the line-length
-// bound, and readLine refreshes the command deadline on every one of them. The
-// writes are throttled so the pre-bound behaviour (accumulate until the test
-// binary's own timeout) is observable without exhausting the test machine.
-func endlessUntaggedServer(t *testing.T) string {
+// endlessUntaggedServer answers every command after login by repeating one
+// untagged line for ever and never sending the tagged completion. exec's
+// collection loop has no reason of its own to stop there: each line is well
+// inside the line-length bound, and readLine refreshes the command deadline on
+// every one of them. The writes are throttled so the pre-bound behaviour
+// (accumulate until the test binary's own timeout) is observable without
+// exhausting the test machine.
+func endlessUntaggedServer(t *testing.T, repeated string) string {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -621,7 +622,7 @@ func endlessUntaggedServer(t *testing.T) string {
 	t.Cleanup(func() { close(stop); ln.Close() })
 	var batch strings.Builder
 	for batch.Len() < 4096 {
-		batch.WriteString("* 1 FETCH (UID 1 RFC822.SIZE 20)\r\n")
+		batch.WriteString(repeated)
 	}
 	go func() {
 		conn, err := ln.Accept()
@@ -672,7 +673,7 @@ func endlessUntaggedServer(t *testing.T) string {
 // cared to — and because readLine refreshes the command deadline per line, that
 // is forever, not sixty seconds.
 func TestIMAPEndlessUntaggedResponseAbandonsSession(t *testing.T) {
-	sess := dialMax(t, endlessUntaggedServer(t), 50<<20)
+	sess := dialMax(t, endlessUntaggedServer(t, "* 1 FETCH (UID 1 RFC822.SIZE 20)\r\n"), 50<<20)
 	defer sess.Close()
 	ctx := context.Background()
 
@@ -682,6 +683,36 @@ func TestIMAPEndlessUntaggedResponseAbandonsSession(t *testing.T) {
 
 	if !errors.Is(err, errUnframed) {
 		t.Fatalf("enumerate over an endless response = %v, want an error wrapping errUnframed", err)
+	}
+	if !strings.Contains(err.Error(), "response exceeds") {
+		t.Fatalf("enumerate error = %v, want it to name the response-size bound", err)
+	}
+	if elapsed > 30*time.Second {
+		t.Fatalf("enumerate took %v to give up; want the bound to stop it in seconds", elapsed)
+	}
+	if _, err := sess.Retrieve(ctx, 1); !errors.Is(err, errUnframed) {
+		t.Fatalf("second command = %v, want the session to stay unusable", err)
+	}
+}
+
+// TestIMAPEndlessBlankLinesAbandonSession is the same attack with the cheapest
+// line there is. readBoundedLine returns a line with its CRLF already stripped,
+// so a bare "\r\n" measures zero bytes: an accounting that charges only
+// len(line) never advances at all against a server that sends nothing else, and
+// exec appends "" to untagged for ever while readLine keeps pushing the command
+// deadline out. Charging every line the terminator and the header it costs in
+// untagged is what makes the bound reachable here.
+func TestIMAPEndlessBlankLinesAbandonSession(t *testing.T) {
+	sess := dialMax(t, endlessUntaggedServer(t, "\r\n"), 50<<20)
+	defer sess.Close()
+	ctx := context.Background()
+
+	started := time.Now()
+	_, err := sess.UIDL(ctx)
+	elapsed := time.Since(started)
+
+	if !errors.Is(err, errUnframed) {
+		t.Fatalf("enumerate over an endless run of blank lines = %v, want an error wrapping errUnframed", err)
 	}
 	if !strings.Contains(err.Error(), "response exceeds") {
 		t.Fatalf("enumerate error = %v, want it to name the response-size bound", err)
@@ -834,7 +865,9 @@ func batchServer(t *testing.T, count int) (string, int) {
 // the bound's value: the largest response the adapter legitimately asks for is a
 // full enumerateBatch of FETCH metadata, and it must pass with room to spare. A
 // bound tuned low enough to break this would abandon the session on every large
-// mailbox instead of on a runaway server.
+// mailbox instead of on a runaway server. The margin is measured on what exec
+// actually charges — the wire text plus responseLineOverhead per line — so
+// raising the overhead cannot quietly eat the headroom.
 func TestIMAPFullEnumerateBatchStaysUnderResponseBound(t *testing.T) {
 	addr, size := batchServer(t, enumerateBatch)
 	sess := dialMax(t, addr, 0)
@@ -850,9 +883,11 @@ func TestIMAPFullEnumerateBatchStaysUnderResponseBound(t *testing.T) {
 	if msgs[0].UIDL != "777.101" || msgs[enumerateBatch-1].Size != int64(2048+enumerateBatch) {
 		t.Fatalf("enumerate edges = %+v / %+v, want 777.101 first and %d bytes last", msgs[0], msgs[enumerateBatch-1], 2048+enumerateBatch)
 	}
-	t.Logf("a full %d-message enumeration is %d bytes of protocol text (bound %d)", enumerateBatch, size, int64(maxResponseBytes))
-	if int64(size)*8 > maxResponseBytes {
-		t.Fatalf("a full %d-message enumeration is %d bytes, within 8x of the %d-byte bound; the bound leaves no margin for longer FETCH lines", enumerateBatch, size, int64(maxResponseBytes))
+	charged := int64(size) + int64(enumerateBatch)*responseLineOverhead
+	t.Logf("a full %d-message enumeration is %d bytes of protocol text, charged %d (bound %d)",
+		enumerateBatch, size, charged, int64(maxResponseBytes))
+	if charged*8 > maxResponseBytes {
+		t.Fatalf("a full %d-message enumeration is charged %d bytes, within 8x of the %d-byte bound; the bound leaves no margin for longer FETCH lines", enumerateBatch, charged, int64(maxResponseBytes))
 	}
 }
 
