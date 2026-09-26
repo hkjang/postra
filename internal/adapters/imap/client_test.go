@@ -605,6 +605,283 @@ func TestIMAPLongLineAtBoundIsReturnedWhole(t *testing.T) {
 	}
 }
 
+// endlessUntaggedServer answers every command after login with short untagged
+// lines and never sends the tagged completion. exec's collection loop has no
+// reason of its own to stop there: each line is well inside the line-length
+// bound, and readLine refreshes the command deadline on every one of them. The
+// writes are throttled so the pre-bound behaviour (accumulate until the test
+// binary's own timeout) is observable without exhausting the test machine.
+func endlessUntaggedServer(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stop := make(chan struct{})
+	t.Cleanup(func() { close(stop); ln.Close() })
+	var batch strings.Builder
+	for batch.Len() < 4096 {
+		batch.WriteString("* 1 FETCH (UID 1 RFC822.SIZE 20)\r\n")
+	}
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		br := bufio.NewReader(conn)
+		io.WriteString(conn, "* OK IMAP4rev1 ready\r\n")
+		for {
+			line, err := br.ReadString('\n')
+			if err != nil {
+				return
+			}
+			sp := strings.SplitN(strings.TrimRight(line, "\r\n"), " ", 3)
+			if len(sp) < 2 {
+				continue
+			}
+			tag, cmd := sp[0], strings.ToUpper(sp[1])
+			switch cmd {
+			case "LOGIN":
+				fmt.Fprintf(conn, "%s OK\r\n", tag)
+			case "SELECT":
+				io.WriteString(conn, "* 1 EXISTS\r\n* OK [UIDVALIDITY 11] ok\r\n")
+				fmt.Fprintf(conn, "%s OK\r\n", tag)
+			default:
+				for {
+					select {
+					case <-stop:
+						return
+					default:
+					}
+					if _, err := io.WriteString(conn, batch.String()); err != nil {
+						return
+					}
+					time.Sleep(time.Millisecond)
+				}
+			}
+		}
+	}()
+	return ln.Addr().String()
+}
+
+// TestIMAPEndlessUntaggedResponseAbandonsSession pins the bound on how much one
+// response may accumulate. maxLineBytes bounds a single line; nothing bounded
+// how many lines a response may contain, so a server that keeps sending short
+// untagged lines and never completes the tag grew `untagged` for as long as it
+// cared to — and because readLine refreshes the command deadline per line, that
+// is forever, not sixty seconds.
+func TestIMAPEndlessUntaggedResponseAbandonsSession(t *testing.T) {
+	sess := dialMax(t, endlessUntaggedServer(t), 50<<20)
+	defer sess.Close()
+	ctx := context.Background()
+
+	started := time.Now()
+	_, err := sess.UIDL(ctx)
+	elapsed := time.Since(started)
+
+	if !errors.Is(err, errUnframed) {
+		t.Fatalf("enumerate over an endless response = %v, want an error wrapping errUnframed", err)
+	}
+	if !strings.Contains(err.Error(), "response exceeds") {
+		t.Fatalf("enumerate error = %v, want it to name the response-size bound", err)
+	}
+	if elapsed > 30*time.Second {
+		t.Fatalf("enumerate took %v to give up; want the bound to stop it in seconds", elapsed)
+	}
+	if _, err := sess.Retrieve(ctx, 1); !errors.Is(err, errUnframed) {
+		t.Fatalf("second command = %v, want the session to stay unusable", err)
+	}
+}
+
+// endlessLiteralServer answers FETCH with a response that never stops handing
+// over literals: every continuation line ends in another {n} announcement, so
+// exec's inner literal loop never breaks out. Each literal costs only about
+// thirty bytes of protocol text, which is what makes a bound on response *bytes*
+// blind to it.
+func endlessLiteralServer(t *testing.T, literal string) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stop := make(chan struct{})
+	t.Cleanup(func() { close(stop); ln.Close() })
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		br := bufio.NewReader(conn)
+		io.WriteString(conn, "* OK IMAP4rev1 ready\r\n")
+		for {
+			line, err := br.ReadString('\n')
+			if err != nil {
+				return
+			}
+			sp := strings.SplitN(strings.TrimRight(line, "\r\n"), " ", 3)
+			if len(sp) < 2 {
+				continue
+			}
+			tag, cmd := sp[0], strings.ToUpper(sp[1])
+			switch cmd {
+			case "SELECT":
+				io.WriteString(conn, "* 1 EXISTS\r\n* OK [UIDVALIDITY 12] ok\r\n")
+				fmt.Fprintf(conn, "%s OK\r\n", tag)
+			case "FETCH":
+				fmt.Fprintf(conn, "* 1 FETCH (UID 1 BODY[] {%d}\r\n", len(literal))
+				for {
+					select {
+					case <-stop:
+						return
+					default:
+					}
+					if _, err := io.WriteString(conn, literal); err != nil {
+						return
+					}
+					if _, err := fmt.Fprintf(conn, " X-Part: {%d}\r\n", len(literal)); err != nil {
+						return
+					}
+					time.Sleep(time.Millisecond)
+				}
+			default:
+				fmt.Fprintf(conn, "%s OK\r\n", tag)
+			}
+		}
+	}()
+	return ln.Addr().String()
+}
+
+// TestIMAPEndlessLiteralsAbandonSession pins the second bound: a response that
+// keeps announcing literals grows s.literals without ever coming near the
+// response-size bound, because the announcement itself is a few dozen bytes of
+// line text. Retrieve and Top read exactly one literal and ensureIndex reads
+// none, so a response carrying dozens is already a server the client cannot use.
+func TestIMAPEndlessLiteralsAbandonSession(t *testing.T) {
+	sess := dialMax(t, endlessLiteralServer(t, strings.Repeat("z", 4096)), 0)
+	defer sess.Close()
+	ctx := context.Background()
+
+	started := time.Now()
+	_, err := sess.Retrieve(ctx, 1)
+	elapsed := time.Since(started)
+
+	if !errors.Is(err, errUnframed) {
+		t.Fatalf("fetch of an endless literal run = %v, want an error wrapping errUnframed", err)
+	}
+	if !strings.Contains(err.Error(), "literals") {
+		t.Fatalf("fetch error = %v, want it to name the literal-count bound", err)
+	}
+	if elapsed > 30*time.Second {
+		t.Fatalf("fetch took %v to give up; want the bound to stop it in seconds", elapsed)
+	}
+	if _, err := sess.Retrieve(ctx, 1); !errors.Is(err, errUnframed) {
+		t.Fatalf("second fetch = %v, want the session to stay unusable", err)
+	}
+}
+
+// batchServer models a mailbox of count messages: SELECT reports them all and
+// every FETCH answers with one metadata line per message, the shape ensureIndex
+// meets on a real server at the enumerateBatch size. It returns the exact size
+// of that response so the test can pin the margin the bound leaves it.
+func batchServer(t *testing.T, count int) (string, int) {
+	t.Helper()
+	var payload strings.Builder
+	for i := 1; i <= count; i++ {
+		fmt.Fprintf(&payload, "* %d FETCH (UID %d RFC822.SIZE %d)\r\n", i, 100+i, 2048+i)
+	}
+	body := payload.String()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		br := bufio.NewReader(conn)
+		io.WriteString(conn, "* OK IMAP4rev1 ready\r\n")
+		for {
+			line, err := br.ReadString('\n')
+			if err != nil {
+				return
+			}
+			sp := strings.SplitN(strings.TrimRight(line, "\r\n"), " ", 3)
+			if len(sp) < 2 {
+				continue
+			}
+			tag, cmd := sp[0], strings.ToUpper(sp[1])
+			switch cmd {
+			case "SELECT":
+				fmt.Fprintf(conn, "* %d EXISTS\r\n* OK [UIDVALIDITY 777] ok\r\n", count)
+				fmt.Fprintf(conn, "%s OK\r\n", tag)
+			case "FETCH":
+				io.WriteString(conn, body)
+				fmt.Fprintf(conn, "%s OK\r\n", tag)
+			default:
+				fmt.Fprintf(conn, "%s OK\r\n", tag)
+			}
+		}
+	}()
+	return ln.Addr().String(), len(body)
+}
+
+// TestIMAPFullEnumerateBatchStaysUnderResponseBound is the regression guard on
+// the bound's value: the largest response the adapter legitimately asks for is a
+// full enumerateBatch of FETCH metadata, and it must pass with room to spare. A
+// bound tuned low enough to break this would abandon the session on every large
+// mailbox instead of on a runaway server.
+func TestIMAPFullEnumerateBatchStaysUnderResponseBound(t *testing.T) {
+	addr, size := batchServer(t, enumerateBatch)
+	sess := dialMax(t, addr, 0)
+	defer sess.Close()
+
+	msgs, err := sess.UIDL(context.Background())
+	if err != nil {
+		t.Fatalf("enumerate a full %d-message batch (%d bytes of protocol text): %v", enumerateBatch, size, err)
+	}
+	if len(msgs) != enumerateBatch {
+		t.Fatalf("enumerate returned %d messages, want %d", len(msgs), enumerateBatch)
+	}
+	if msgs[0].UIDL != "777.101" || msgs[enumerateBatch-1].Size != int64(2048+enumerateBatch) {
+		t.Fatalf("enumerate edges = %+v / %+v, want 777.101 first and %d bytes last", msgs[0], msgs[enumerateBatch-1], 2048+enumerateBatch)
+	}
+	t.Logf("a full %d-message enumeration is %d bytes of protocol text (bound %d)", enumerateBatch, size, int64(maxResponseBytes))
+	if int64(size)*8 > maxResponseBytes {
+		t.Fatalf("a full %d-message enumeration is %d bytes, within 8x of the %d-byte bound; the bound leaves no margin for longer FETCH lines", enumerateBatch, size, int64(maxResponseBytes))
+	}
+}
+
+// TestIMAPLargeBodyWithoutLimitIsNotCapped pins what the new bounds deliberately
+// do not count: literal *bytes*. On an account with no configured size limit a
+// single body larger than the response-size bound must still arrive whole —
+// bounding literal bytes here would break exactly the accounts that turned the
+// limit off on purpose.
+func TestIMAPLargeBodyWithoutLimitIsNotCapped(t *testing.T) {
+	const bodySize = 12 << 20 // past maxResponseBytes
+	sess := dialMax(t, refusedLiteralServer(t, bodySize), 0)
+	defer sess.Close()
+
+	rc, err := sess.Retrieve(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("fetch a %d-byte body on an account with no size limit: %v", bodySize, err)
+	}
+	got, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if len(got) != bodySize {
+		t.Fatalf("body = %d bytes, want %d", len(got), bodySize)
+	}
+	if !strings.HasPrefix(string(got), trapHeader) {
+		t.Fatalf("body prefix = %.30q, want the trapped header intact", got)
+	}
+}
+
 func dial(t *testing.T, addr string) domain.InboundSession {
 	t.Helper()
 	return dialMax(t, addr, 0)
