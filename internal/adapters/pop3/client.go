@@ -20,6 +20,36 @@ import (
 	"postra/internal/domain"
 )
 
+// maxListBytes caps how much of one multi-line response (LIST, UIDL) readList
+// may accumulate. Nothing else bounds it: readList collects lines until the
+// server sends the terminating ".", and it refreshes the command deadline on
+// every line it reads, so a server that keeps dribbling short lines and never
+// terminates the response holds the collecting worker for ever with no deadline
+// left to stop it. That is worse here than on the IMAP side, where the same
+// shape was closed in v0.23.7: readList runs in the enumeration step (the sync
+// loop's UIDL, then LIST), so one such maildrop stalls a whole account's sync
+// before the first message is touched.
+//
+// The bound has to clear the biggest legitimate maildrop, which arrives in a
+// single response: a UIDL line is a message number, a space and a unique-id of
+// at most 70 characters (RFC 1939 §7), charged at 92 bytes per message by
+// TestPOP3FullMaildropStaysUnderListBound. 32 MiB therefore leaves room for
+// roughly 364,000 messages in one maildrop while still bounding a runaway
+// response — 8 MiB, the IMAP figure, would refuse a maildrop of 91,000.
+const maxListBytes = 32 << 20
+
+// listLineOverhead is what every line of a multi-line response costs on top of
+// the bytes textproto.ReadLine returns, and without it maxListBytes does not
+// hold. A line arrives with its CRLF already stripped, so a bare "\r\n" measures
+// zero: charging only len(line), a server that answers with nothing but blank
+// lines never advances the total at all and readList appends "" for ever, which
+// is the runaway the bound exists to stop. A retained line also costs a 16-byte
+// string header in lines, so at one byte per line a 32 MiB total would sit on
+// far more live heap than the bound suggests. Charging the two bytes the server
+// really sent plus that header closes both. The IMAP adapter carries the same
+// constant as responseLineOverhead, added for exactly this bypass.
+const listLineOverhead = 2 + 16
+
 type Dialer struct{}
 
 func (Dialer) Dial(ctx context.Context, opts domain.POP3DialOptions) (domain.POP3Session, error) {
@@ -127,8 +157,11 @@ func (s *session) cmd(format string, args ...any) (string, error) {
 	return s.readResponse()
 }
 
+// readList collects a multi-line response up to its "." terminator, bounded by
+// maxListBytes so an unterminated response cannot hold the session for ever.
 func (s *session) readList() ([]string, error) {
 	var lines []string
+	var charged int64
 	for {
 		s.deadline()
 		line, err := s.text.ReadLine()
@@ -137,6 +170,15 @@ func (s *session) readList() ([]string, error) {
 		}
 		if line == "." {
 			return lines, nil
+		}
+		charged += int64(len(line)) + listLineOverhead
+		if charged > maxListBytes {
+			// The rest of the response is still on the wire and its length is
+			// unknown, so the offset the next command would read at is
+			// unknowable: discard the session rather than let a later command
+			// mistake those bytes for its own reply.
+			s.conn.Close()
+			return nil, fmt.Errorf("pop3 multi-line response exceeds %d bytes", int64(maxListBytes))
 		}
 		lines = append(lines, strings.TrimPrefix(line, "."))
 	}
