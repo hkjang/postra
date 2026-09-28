@@ -3,10 +3,17 @@ package imap
 import (
 	"bufio"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"errors"
 	"fmt"
 	"io"
 	"math"
+	"math/big"
 	"net"
 	"runtime"
 	"strconv"
@@ -991,5 +998,164 @@ func TestIMAPAuthError(t *testing.T) {
 	var ae *domain.AuthError
 	if !errors.As(err, &ae) {
 		t.Fatalf("expected *domain.AuthError, got %T (%v)", err, err)
+	}
+}
+
+// selfSigned builds a throwaway server certificate for the STARTTLS fixture.
+// Ported from internal/adapters/smtp/client_test.go, which upgrades the same way.
+func selfSigned(t *testing.T) *tls.Config {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "127.0.0.1"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}}, MinVersion: tls.VersionTLS12}
+}
+
+// starttlsServer answers STARTTLS and upgrades, then serves LOGIN, SELECT and
+// FETCH over TLS from the same loop. inject is appended to the tagged STARTTLS
+// completion in the same write, so the injected plaintext reaches the client
+// together with the response it is already reading — the shape of a STARTTLS
+// command-injection attempt. The returned channel is closed when the server's
+// connection handler returns, which is how the tests observe the client hanging
+// up.
+func starttlsServer(t *testing.T, inject string) (string, <-chan struct{}) {
+	t.Helper()
+	tlsCfg := selfSigned(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		conn.SetDeadline(time.Now().Add(20 * time.Second))
+		br := bufio.NewReader(conn)
+		var w io.Writer = conn
+		io.WriteString(w, "* OK IMAP4rev1 ready\r\n")
+		for {
+			line, err := br.ReadString('\n')
+			if err != nil {
+				return
+			}
+			line = strings.TrimRight(line, "\r\n")
+			sp := strings.SplitN(line, " ", 3)
+			if len(sp) < 2 {
+				continue
+			}
+			tag, cmd := sp[0], strings.ToUpper(sp[1])
+			switch cmd {
+			case "STARTTLS":
+				if _, err := fmt.Fprintf(w, "%s OK Begin TLS negotiation now\r\n%s", tag, inject); err != nil {
+					return
+				}
+				tconn := tls.Server(conn, tlsCfg)
+				if err := tconn.Handshake(); err != nil {
+					return
+				}
+				br = bufio.NewReader(tconn)
+				w = tconn
+			case "LOGIN":
+				fmt.Fprintf(w, "%s OK LOGIN completed\r\n", tag)
+			case "SELECT":
+				io.WriteString(w, "* 2 EXISTS\r\n")
+				io.WriteString(w, "* OK [UIDVALIDITY 777] ok\r\n")
+				fmt.Fprintf(w, "%s OK [READ-WRITE] SELECT completed\r\n", tag)
+			case "FETCH":
+				io.WriteString(w, "* 1 FETCH (UID 101 RFC822.SIZE 20)\r\n")
+				io.WriteString(w, "* 2 FETCH (UID 102 RFC822.SIZE 40)\r\n")
+				fmt.Fprintf(w, "%s OK FETCH completed\r\n", tag)
+			case "LOGOUT":
+				io.WriteString(w, "* BYE\r\n")
+				fmt.Fprintf(w, "%s OK LOGOUT completed\r\n", tag)
+				return
+			default:
+				fmt.Fprintf(w, "%s OK\r\n", tag)
+			}
+		}
+	}()
+	return ln.Addr().String(), done
+}
+
+// dialStartTLS drives the real Dialer through a STARTTLS upgrade. The fixture's
+// certificate is self-signed, so verification is skipped here and only here —
+// the production default stays false.
+func dialStartTLS(t *testing.T, addr string) (domain.InboundSession, error) {
+	t.Helper()
+	host, portStr, _ := net.SplitHostPort(addr)
+	var port int
+	fmt.Sscanf(portStr, "%d", &port)
+	return Dialer{}.Dial(context.Background(), domain.InboundDialOptions{
+		Host: host, Port: port, Security: domain.SecurityStartTLS, InsecureSkipVerify: true,
+		Username: "me", Password: domain.NewSecretHandle([]byte("pw")),
+	})
+}
+
+// TestIMAPStartTLSInjectedPlaintextRefusesUpgrade is the POP3 case on the other
+// inbound adapter, and both must answer the same input the same way. TLS is
+// client-speaks-first, so a server with anything left to say after its tagged
+// STARTTLS completion is injecting plaintext. Without the check the upgrade
+// replaces the reader and those bytes are dropped silently, so Dial succeeds and
+// nothing records that the server broke the protocol.
+func TestIMAPStartTLSInjectedPlaintextRefusesUpgrade(t *testing.T) {
+	addr, done := starttlsServer(t, "* OK injected\r\n")
+
+	sess, err := dialStartTLS(t, addr)
+	if err == nil {
+		sess.Close()
+		t.Fatal("Dial accepted a server that injected plaintext before the STARTTLS handshake")
+	}
+	if !strings.Contains(err.Error(), "before TLS handshake") {
+		t.Fatalf("Dial error = %v, want it to name the pre-handshake bytes", err)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("server connection still open after the refused upgrade; want the client to have closed it")
+	}
+}
+
+// TestIMAPStartTLSUpgradeRunsCommandsOverTLS is the false-positive guard: a
+// refusal on a well-behaved server would stop mail collection outright. A clean
+// upgrade must still log in, select INBOX and enumerate over the encrypted
+// connection.
+func TestIMAPStartTLSUpgradeRunsCommandsOverTLS(t *testing.T) {
+	addr, _ := starttlsServer(t, "")
+
+	sess, err := dialStartTLS(t, addr)
+	if err != nil {
+		t.Fatalf("Dial over a clean STARTTLS upgrade: %v", err)
+	}
+	defer sess.Close()
+
+	msgs, err := sess.UIDL(context.Background())
+	if err != nil {
+		t.Fatalf("enumerate after the upgrade: %v", err)
+	}
+	if len(msgs) != 2 || msgs[0].UIDL != "777.101" || msgs[1].UIDL != "777.102" {
+		t.Fatalf("UIDs = %+v, want 777.101 and 777.102", msgs)
+	}
+	if _, ok := sess.(*session).conn.(*tls.Conn); !ok {
+		t.Fatalf("session connection is %T after STARTTLS, want *tls.Conn", sess.(*session).conn)
 	}
 }

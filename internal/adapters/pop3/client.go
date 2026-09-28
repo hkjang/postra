@@ -94,6 +94,22 @@ func (Dialer) Dial(ctx context.Context, opts domain.POP3DialOptions) (domain.POP
 			conn.Close()
 			return nil, fmt.Errorf("STLS: %w", err)
 		}
+		// TLS is client-speaks-first: after the "+OK" that grants the upgrade a
+		// conforming server sends nothing until it has seen the ClientHello. So
+		// anything already sitting in the reader is plaintext the server pushed
+		// ahead of the handshake — a STARTTLS command injection (CVE-2011-0411
+		// and the 2021 "NO STARTTLS" survey), whose payload the upgrade below
+		// would otherwise discard along with the old reader, leaving the session
+		// to continue as if nothing had happened. Refusing is the safe verdict,
+		// and it cannot cost a well-behaved server anything.
+		//
+		// Best-effort by construction: only bytes that reached this buffer are
+		// visible, so an injection still in flight in the kernel or on the wire
+		// goes unseen. It narrows the window rather than closing it.
+		if n := s.text.R.Buffered(); n > 0 {
+			conn.Close()
+			return nil, fmt.Errorf("STLS: server sent %d bytes before TLS handshake", n)
+		}
 		tconn := tls.Client(conn, tlsCfg)
 		if err := tconn.HandshakeContext(ctx); err != nil {
 			conn.Close()
