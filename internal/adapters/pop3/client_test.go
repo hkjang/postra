@@ -3,8 +3,15 @@ package pop3
 import (
 	"bufio"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"strconv"
 	"strings"
@@ -76,6 +83,167 @@ func maildropServer(t *testing.T, uidl, list string) string {
 		}
 	}()
 	return ln.Addr().String()
+}
+
+// selfSigned builds a throwaway server certificate for the STLS fixtures. Ported
+// from internal/adapters/smtp/client_test.go, which upgrades the same way.
+func selfSigned(t *testing.T) *tls.Config {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "127.0.0.1"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}}, MinVersion: tls.VersionTLS12}
+}
+
+// stlsServer answers STLS and upgrades, then serves UIDL and LIST over TLS from
+// the same loop. inject is appended to the STLS "+OK" in the same write, so the
+// injected plaintext reaches the client together with the response it is
+// already reading — the shape of a STARTTLS command-injection attempt. The
+// returned channel is closed when the server's connection handler returns,
+// which is how the tests observe the client hanging up.
+func stlsServer(t *testing.T, inject, uidl, list string) (string, <-chan struct{}) {
+	t.Helper()
+	tlsCfg := selfSigned(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		conn.SetDeadline(time.Now().Add(20 * time.Second))
+		br := bufio.NewReader(conn)
+		var w io.Writer = conn
+		io.WriteString(w, "+OK POP3 ready\r\n")
+		for {
+			line, err := br.ReadString('\n')
+			if err != nil {
+				return
+			}
+			fields := strings.Fields(line)
+			if len(fields) == 0 {
+				continue
+			}
+			switch strings.ToUpper(fields[0]) {
+			case "STLS":
+				if _, err := io.WriteString(w, "+OK begin TLS negotiation\r\n"+inject); err != nil {
+					return
+				}
+				tconn := tls.Server(conn, tlsCfg)
+				if err := tconn.Handshake(); err != nil {
+					return
+				}
+				br = bufio.NewReader(tconn)
+				w = tconn
+			case "UIDL":
+				io.WriteString(w, "+OK\r\n"+uidl+".\r\n")
+			case "LIST":
+				io.WriteString(w, "+OK\r\n"+list+".\r\n")
+			case "QUIT":
+				io.WriteString(w, "+OK bye\r\n")
+				return
+			default:
+				io.WriteString(w, "+OK\r\n")
+			}
+		}
+	}()
+	return ln.Addr().String(), done
+}
+
+// dialStartTLS drives the real Dialer through an STLS upgrade. The fixture's
+// certificate is self-signed, so verification is skipped here and only here —
+// the production default stays false.
+func dialStartTLS(t *testing.T, addr string) (domain.POP3Session, error) {
+	t.Helper()
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return Dialer{}.Dial(context.Background(), domain.POP3DialOptions{
+		Host: host, Port: port, Security: domain.SecurityStartTLS, InsecureSkipVerify: true,
+	})
+}
+
+// TestPOP3STLSInjectedPlaintextRefusesUpgrade pins the pre-handshake check. TLS
+// is client-speaks-first, so a server that has anything left to say after its
+// STLS "+OK" is injecting plaintext into the session. Without the check the
+// upgrade replaces the reader and the injected bytes are dropped silently, so
+// Dial succeeds and nothing records that the server broke the protocol.
+func TestPOP3STLSInjectedPlaintextRefusesUpgrade(t *testing.T) {
+	addr, done := stlsServer(t, "+OK injected\r\n", "1 abc\r\n", "1 10\r\n")
+
+	sess, err := dialStartTLS(t, addr)
+	if err == nil {
+		sess.Close()
+		t.Fatal("Dial accepted a server that injected plaintext before the STLS handshake")
+	}
+	if !strings.Contains(err.Error(), "before TLS handshake") {
+		t.Fatalf("Dial error = %v, want it to name the pre-handshake bytes", err)
+	}
+
+	// The connection must be gone, not left dangling in plaintext.
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("server connection still open after the refused upgrade; want the client to have closed it")
+	}
+}
+
+// TestPOP3STLSUpgradeRunsCommandsOverTLS is the false-positive guard: a refusal
+// on a well-behaved server would stop mail collection outright. A clean upgrade
+// must still authenticate nothing, negotiate TLS, and answer UIDL and LIST on
+// the encrypted connection.
+func TestPOP3STLSUpgradeRunsCommandsOverTLS(t *testing.T) {
+	addr, _ := stlsServer(t, "", "1 uid-one\r\n2 uid-two\r\n", "1 2048\r\n2 4096\r\n")
+
+	sess, err := dialStartTLS(t, addr)
+	if err != nil {
+		t.Fatalf("Dial over a clean STLS upgrade: %v", err)
+	}
+	defer sess.Close()
+	ctx := context.Background()
+
+	msgs, err := sess.UIDL(ctx)
+	if err != nil {
+		t.Fatalf("UIDL after the upgrade: %v", err)
+	}
+	if len(msgs) != 2 || msgs[0].UIDL != "uid-one" || msgs[1].UIDL != "uid-two" {
+		t.Fatalf("UIDL = %+v, want uid-one and uid-two", msgs)
+	}
+	sizes, err := sess.List(ctx)
+	if err != nil {
+		t.Fatalf("LIST after the upgrade: %v", err)
+	}
+	if len(sizes) != 2 || sizes[0].Size != 2048 || sizes[1].Size != 4096 {
+		t.Fatalf("LIST = %+v, want sizes 2048 and 4096", sizes)
+	}
+	if _, ok := sess.(*session).conn.(*tls.Conn); !ok {
+		t.Fatalf("session connection is %T after STLS, want *tls.Conn", sess.(*session).conn)
+	}
 }
 
 // endlessListServer accepts a command, answers +OK, and then repeats one line
