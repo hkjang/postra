@@ -3,3 +3,21 @@
 .auth-form small {font-weight:400}
 .auth-form .button {width:100%;justify-content:center}
 .login-panel .error-state {text-align:left;margin:16px 0;overflow-wrap:anywhere}
+/* Sign-in methods, after the internal app store: organisation SSO leads, the
+   local form folds behind a toggle while SSO is available. */
+.auth-page .login-panel {width:min(460px,100%)}
+.auth-methods {width:100%;display:flex;flex-direction:column;gap:14px;text-align:left;margin:24px 0 8px}
+.auth-methods .auth-form {margin:4px 0 0}
+.auth-sso.button {width:100%;justify-content:center;min-height:44px}
+.auth-notice {display:flex;gap:10px;align-items:flex-start;padding:12px 14px;border-radius:8px;background:var(--muted);color:var(--muted-foreground);font-size:var(--font-body);line-height:1.45}
+.auth-notice svg {flex:none;margin-top:1px}
+.auth-notice-danger {background:color-mix(in srgb,var(--danger) 10%,transparent);color:var(--danger)}
+.local-login-toggle {display:flex;align-items:center;gap:8px;width:100%;margin-top:6px;padding:14px 0 0;border:0;border-top:1px solid var(--border);background:transparent;color:var(--muted-foreground);font:inherit;font-size:var(--font-control);font-weight:500;cursor:pointer}
+.local-login-toggle:hover {color:var(--foreground)}
+.local-login-toggle:focus-visible {outline:2px solid var(--primary);outline-offset:4px;border-radius:2px}
+.local-login-toggle span {flex:1;text-align:left}
+.local-login-toggle svg:last-child {transition:transform .2s ease}
+.local-login-toggle[aria-expanded=true] svg:last-child {transform:rotate(180deg)}
+@media (prefers-reduced-motion:reduce) {.local-login-toggle svg:last-child {transition:none}}
+/* Korean wraps at word boundaries, so a line never ends on a lone syllable. */
+.login-panel p, .auth-notice span {word-break:keep-all}

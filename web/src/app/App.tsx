@@ -7,7 +7,7 @@ import {SessionContext} from './session'
 import {UserDataProvider} from './providers'
 import {Workspace} from '@/components/layout/Workspace'
 import {Button, EmptyState, Loading} from '@/components/ui'
-import {authReturnTo, claimSilentSSO, markSignedOut, notifyAuthChange, receiveAuthChange, resetSSOFlags} from '@/lib/auth-events'
+import {authReturnTo, claimSilentSSO, isSilentSSOScreen, markSignedOut, notifyAuthChange, receiveAuthChange, resetSSOFlags} from '@/lib/auth-events'
 import {AuthErrorPage, LoginPage, SetupPage} from '@/features/auth'
 import {parseBrowserSession} from '@/features/auth/response'
 import {BrowserTracking} from '@/features/tracking'
@@ -69,7 +69,7 @@ export function App() {
     if (session.data?.authenticated) return
     const params = new URLSearchParams(location.search)
     if (params.get('sso') === 'signed_out') markSignedOut()
-    if (session.error || session.data?.authenticated !== false || !session.data.oidc_auto_login || !session.data.oidc_url || session.data.setup_url) return
+    if (session.error || session.data?.authenticated !== false || !session.data.oidc_auto_login || !session.data.oidc_url || session.data.setup_url || !isSilentSSOScreen(location.pathname)) return
     const target = claimSilentSSO(authReturnTo(location.pathname, location.search), location.search)
     if (target) window.location.assign(target)
   }, [session.data?.authenticated, session.data?.principal?.user_id, session.data?.oidc_auto_login, session.data?.oidc_url, session.data?.setup_url, session.error, location.pathname, location.search])

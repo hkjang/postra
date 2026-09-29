@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { authReturnTo, claimSilentSSO, markSignedOut, notifyAuthChange, receiveAuthChange, resetSSOFlags } from './auth-events'
+import { authReturnTo, claimSilentSSO, isSilentSSOScreen, markSignedOut, notifyAuthChange, receiveAuthChange, resetSSOFlags } from './auth-events'
 
 beforeEach(() => { resetSSOFlags(); window.localStorage.removeItem('postra-auth-change') })
 afterEach(() => { vi.restoreAllMocks(); resetSSOFlags() })
@@ -66,11 +66,29 @@ describe('silent SSO tab guards shared with legacy UI', () => {
 
   it('clears both legacy guards after a successful login', () => {
     window.sessionStorage.setItem('postra.sso.silentAttempted', 'true')
+    window.sessionStorage.setItem('postra.sso.signedOut', 'true')
     markSignedOut()
     resetSSOFlags()
     expect(window.sessionStorage.getItem('postra.sso.silentAttempted')).toBeNull()
     expect(window.sessionStorage.getItem('postra.sso.signedOut')).toBeNull()
+    expect(window.localStorage.getItem('postra.sso.signedOut')).toBeNull()
     expect(claimSilentSSO('/app/', '')).toBeDefined()
+  })
+
+  // Keycloak's session outlives Postra's. A per-tab marker let the next tab
+  // sign straight back in through prompt=none, so logout did not stick.
+  it('keeps a deliberate logout for a tab opened afterwards', async () => {
+    markSignedOut()
+    // A new tab: a fresh module and an empty sessionStorage, same localStorage.
+    window.sessionStorage.clear()
+    vi.resetModules()
+    const newTab = await import('./auth-events')
+    expect(newTab.claimSilentSSO('/app/', '')).toBeUndefined()
+  })
+
+  it('fails closed when the browser-wide logout marker cannot be read', () => {
+    vi.spyOn(window, 'localStorage', 'get').mockImplementation(() => { throw new DOMException('Denied', 'SecurityError') })
+    expect(claimSilentSSO('/app/', '')).toBeUndefined()
   })
 
   it.each(['https://evil.example/app/', '//evil.example/app/', '/ui/', '/app/../../outside', '/app\\evil'])('does not accept a non-SPA return destination %s', path => {
@@ -79,7 +97,7 @@ describe('silent SSO tab guards shared with legacy UI', () => {
 
   it('blocks auto login in another tab after a deliberate logout event', () => {
     expect(receiveAuthChange(new StorageEvent('storage', { key: 'postra-auth-change', newValue: '123:signed_out' }))).toBe(true)
-    expect(window.sessionStorage.getItem('postra.sso.signedOut')).toBe('true')
+    expect(window.localStorage.getItem('postra.sso.signedOut')).toBe('true')
     expect(claimSilentSSO('/app/', '')).toBeUndefined()
     // A subsequent ordinary session notification cannot undo explicit logout.
     receiveAuthChange(new StorageEvent('storage', { key: 'postra-auth-change', newValue: '124' }))
@@ -97,6 +115,11 @@ describe('silent SSO tab guards shared with legacy UI', () => {
     expect(receiveAuthChange(new StorageEvent('storage', { key: 'unrelated', newValue: '123:signed_out' }))).toBe(false)
     expect(claimSilentSSO('/app/', '')).toBeDefined()
   })
+})
+
+describe('screens that start a silent attempt', () => {
+  it.each(['/login', '/setup', '/error'])('never starts one on %s', path => expect(isSilentSSOScreen(path)).toBe(false))
+  it.each(['/', '/mail', '/messages/m1'])('starts one on a workspace route %s', path => expect(isSilentSSOScreen(path)).toBe(true))
 })
 
 describe('standalone auth deep links', () => {
