@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"path"
@@ -356,12 +357,9 @@ func (a *App) AuthenticateMCPOAuthTokenReason(ctx context.Context, raw string) (
 	if !slices.Contains(o.AllowedClientIDs, claims.ClientID) {
 		return fail("the token was issued to client " + claims.ClientID + ", which mcp.oauth.allowed_client_ids does not list")
 	}
-	user, err := a.Store.GetUserByOIDC(ctx, o.Issuer, token.Subject)
-	if err != nil {
-		return fail("no Postra user is linked to this Keycloak subject; the user must sign in to Postra once in the browser with SSO before connecting over MCP")
-	}
-	if user.Status != domain.UserActive {
-		return fail("the linked Postra user is not active")
+	user, reason := a.mcpOAuthUser(ctx, o.Issuer, token)
+	if user == nil {
+		return fail(reason)
 	}
 	principal := principalFor(user, "mcp_oauth")
 	principal.OAuthClientID = claims.ClientID
@@ -378,4 +376,47 @@ func (a *App) AuthenticateMCPOAuthTokenReason(ctx context.Context, raw string) (
 			"); the Keycloak client scopes must be defined with Include in token scope on", nil
 	}
 	return principal, "", nil
+}
+
+// mcpOAuthUser resolves the Postra user an MCP access token stands for. The
+// linked user is the fast path, taken on every request. A subject not linked
+// yet goes through the browser SSO rules — link the local account it clearly
+// owns, or create one when SSO users may be created — so someone already
+// signed in to Keycloak is connected on their first MCP request instead of
+// having to open the web UI once. Called only after every token check passed.
+func (a *App) mcpOAuthUser(ctx context.Context, issuer string, token *oidc.IDToken) (*domain.User, string) {
+	if u, err := a.Store.GetUserByOIDC(ctx, issuer, token.Subject); err == nil && u.Status == domain.UserActive {
+		return u, ""
+	}
+	var claims oidcClaims
+	if token.Claims(&claims) != nil {
+		return nil, "the token claims could not be read"
+	}
+	claims.Subject = token.Subject
+	values, err := a.SystemSettings(ctx)
+	if err != nil {
+		return nil, "the SSO account policy could not be read"
+	}
+	// The identity policy alone, not oidcRuntime: that also unseals the web
+	// client secret, which this path has no use for.
+	rt := oidcRuntime{Issuer: issuer, AdminGroup: strings.TrimSpace(values[SettingOIDCAdminGroup]),
+		AutoProvision: boolSetting(values, SettingOIDCAutoProvision, a.Cfg.Auth.OIDCAutoProvision)}
+	actor := WithActor(ctx, "mcp_oauth")
+	u, first, err := a.resolveOIDCIdentity(actor, rt, claims, "mcp_oauth")
+	switch {
+	case errors.Is(err, errOIDCNoAccount):
+		return nil, "no Postra user is linked to this Keycloak subject, none can be linked by its username or email, and creating SSO users (auth.oidc.auto_provision) is off; an administrator must create or link the account, or turn automatic creation on"
+	case errors.Is(err, errOIDCUserDisabled):
+		return nil, "the linked Postra user is not active"
+	case err != nil:
+		slog.Warn("MCP OAuth could not resolve the Postra user for a Keycloak identity", "error", err)
+		return nil, "the Postra account for this Keycloak subject could not be resolved"
+	}
+	if first {
+		slog.Info("MCP OAuth connected a Keycloak identity to a Postra user", "user", u.ID, "login", u.LoginID)
+		if strings.TrimSpace(claims.Email) != "" {
+			a.tryAutoProvisionOIDCMail(actor, u)
+		}
+	}
+	return u, ""
 }
