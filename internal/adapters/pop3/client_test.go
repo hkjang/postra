@@ -2,6 +2,7 @@ package pop3
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -9,12 +10,15 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
 	"net"
+	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -418,5 +422,231 @@ func TestPOP3FullMaildropStaysUnderListBound(t *testing.T) {
 	if perMessage*wantMessages > maxListBytes {
 		t.Fatalf("at %d charged bytes per message the %d-byte bound admits only %d messages, fewer than the %d a large maildrop holds",
 			perMessage, int64(maxListBytes), int64(maxListBytes)/perMessage, wantMessages)
+	}
+}
+
+// Each exchange is an exact command and its wire response. The final read is
+// reported separately: only an actual EOF with no bytes proves a peer hangup.
+type pop3Exchange struct {
+	command, response string
+}
+
+type pop3ScriptResult struct {
+	commands []string
+	err      error
+}
+
+func pop3ScriptServer(t *testing.T, greeting string, exchanges []pop3Exchange, wantEOF bool) (string, <-chan pop3ScriptResult) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	results := make(chan pop3ScriptResult, 1)
+	finished := make(chan struct{})
+	var mu sync.Mutex
+	var accepted net.Conn
+	t.Cleanup(func() {
+		ln.Close()
+		mu.Lock()
+		if accepted != nil {
+			accepted.Close()
+		}
+		mu.Unlock()
+		select {
+		case <-finished:
+		case <-time.After(10 * time.Second):
+			t.Error("script server did not stop")
+		}
+	})
+	go func() {
+		defer close(finished)
+		var result pop3ScriptResult
+		defer func() { results <- result }()
+		conn, err := ln.Accept()
+		if err != nil {
+			result.err = err
+			return
+		}
+		defer conn.Close()
+		mu.Lock()
+		accepted = conn
+		mu.Unlock()
+		if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+			result.err = err
+			return
+		}
+		if _, err := io.WriteString(conn, greeting); err != nil {
+			result.err = err
+			return
+		}
+		br := bufio.NewReader(conn)
+		for _, exchange := range exchanges {
+			line, err := br.ReadString('\n')
+			result.commands = append(result.commands, line)
+			if err != nil {
+				result.err = fmt.Errorf("read command: %w", err)
+				return
+			}
+			if line != exchange.command {
+				result.err = fmt.Errorf("command = %q, want %q", line, exchange.command)
+				return
+			}
+			if _, err := io.WriteString(conn, exchange.response); err != nil {
+				result.err = err
+				return
+			}
+		}
+		if wantEOF {
+			line, err := br.ReadString('\n')
+			if line != "" || err != io.EOF {
+				result.err = fmt.Errorf("after rejection read = (%q, %v), want empty data and EOF", line, err)
+			}
+		}
+	}()
+	return ln.Addr().String(), results
+}
+
+func checkPOP3Script(t *testing.T, results <-chan pop3ScriptResult, exchanges []pop3Exchange) {
+	t.Helper()
+	select {
+	case result := <-results:
+		if result.err != nil {
+			t.Fatalf("script server: %v (commands: %q)", result.err, result.commands)
+		}
+		var want []string
+		for _, exchange := range exchanges {
+			want = append(want, exchange.command)
+		}
+		if !reflect.DeepEqual(result.commands, want) {
+			t.Fatalf("commands = %q, want %q", result.commands, want)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for script server result")
+	}
+}
+
+func TestPOP3DialAuthenticationContracts(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		greeting  string
+		exchanges []pop3Exchange
+		refused   bool
+		authError bool
+	}{
+		{
+			name: "USER rejection", greeting: "+OK ready\r\n", refused: true, authError: true,
+			exchanges: []pop3Exchange{{"USER test-user\r\n", "-ERR unknown user\r\n"}},
+		},
+		{
+			name: "PASS rejection", greeting: "+OK ready\r\n", refused: true, authError: true,
+			exchanges: []pop3Exchange{
+				{"USER test-user\r\n", "+OK user accepted\r\n"},
+				{"PASS test-password\r\n", "-ERR password rejected\r\n"},
+			},
+		},
+		{name: "greeting rejection", greeting: "-ERR unavailable\r\n", refused: true},
+		{
+			name: "successful login", greeting: "+OK ready\r\n",
+			exchanges: []pop3Exchange{
+				{"USER test-user\r\n", "+OK user accepted\r\n"},
+				{"PASS test-password\r\n", "+OK authenticated\r\n"},
+				{"LIST\r\n", "+OK\r\n1 123\r\n2 456\r\n.\r\n"},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			addr, results := pop3ScriptServer(t, tc.greeting, tc.exchanges, tc.refused)
+			host, portStr, err := net.SplitHostPort(addr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			port, err := strconv.Atoi(portStr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			password := domain.NewSecretHandle([]byte("test-password"))
+			t.Cleanup(password.Zero)
+			sess, err := (Dialer{}).Dial(context.Background(), domain.POP3DialOptions{
+				Host: host, Port: port, Security: domain.SecurityNone,
+				Username: "test-user", Password: password,
+				ConnectTimeoutSec: 5, CommandTimeoutSec: 5,
+			})
+			if sess != nil {
+				t.Cleanup(func() { sess.Close() })
+			}
+			if tc.refused {
+				if sess != nil || err == nil {
+					t.Fatalf("Dial = (%v, %v), want nil session and error", sess, err)
+				}
+				var authErr *domain.AuthError
+				if got := errors.As(err, &authErr); got != tc.authError {
+					t.Fatalf("AuthError classification = %v, want %v (error: %v)", got, tc.authError, err)
+				}
+				// No client cleanup runs until after this observes the actual EOF.
+				checkPOP3Script(t, results, tc.exchanges)
+				return
+			}
+			if err != nil || sess == nil {
+				t.Fatalf("Dial = (%v, %v), want authenticated session", sess, err)
+			}
+			msgs, err := sess.List(context.Background())
+			want := []domain.RemoteMessage{{Number: 1, Size: 123}, {Number: 2, Size: 456}}
+			if err != nil || !reflect.DeepEqual(msgs, want) {
+				t.Fatalf("LIST = (%+v, %v), want %+v", msgs, err, want)
+			}
+			checkPOP3Script(t, results, tc.exchanges)
+		})
+	}
+}
+
+func TestPOP3BodyDotUnstuffingPreservesFraming(t *testing.T) {
+	const wire = "Subject: dot-stuffed message\r\nX-Test: framing\r\n\r\nordinary body\r\n..foo\r\n..\r\n...bar\r\n.\r\n"
+	const wantBody = "Subject: dot-stuffed message\r\nX-Test: framing\r\n\r\nordinary body\r\n.foo\r\n.\r\n..bar\r\n"
+	for _, tc := range []struct {
+		name    string
+		command string
+		read    func(domain.POP3Session) (io.ReadCloser, error)
+	}{
+		{
+			name: "RETR", command: "RETR 7\r\n",
+			read: func(sess domain.POP3Session) (io.ReadCloser, error) {
+				return sess.Retrieve(context.Background(), 7)
+			},
+		},
+		{
+			name: "TOP", command: "TOP 7 4\r\n",
+			read: func(sess domain.POP3Session) (io.ReadCloser, error) {
+				return sess.Top(context.Background(), 7, 4)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			exchanges := []pop3Exchange{
+				{tc.command, "+OK message follows\r\n" + wire},
+				{"LIST\r\n", "+OK\r\n7 321\r\n9 654\r\n.\r\n"},
+			}
+			addr, results := pop3ScriptServer(t, "+OK ready\r\n", exchanges, false)
+			sess := dial(t, addr)
+			t.Cleanup(func() { sess.Close() })
+			body, err := tc.read(sess)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { body.Close() })
+			got, err := io.ReadAll(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got, []byte(wantBody)) {
+				t.Fatalf("body = %q, want %q", got, wantBody)
+			}
+			msgs, err := sess.List(context.Background())
+			want := []domain.RemoteMessage{{Number: 7, Size: 321}, {Number: 9, Size: 654}}
+			if err != nil || !reflect.DeepEqual(msgs, want) {
+				t.Fatalf("LIST after body = (%+v, %v), want %+v", msgs, err, want)
+			}
+			checkPOP3Script(t, results, exchanges)
+		})
 	}
 }
