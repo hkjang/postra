@@ -86,9 +86,10 @@ func waitForJob(t *testing.T, app *App, jobID string) *domain.Job {
 // fastRetries keeps the retry tests to milliseconds.
 func fastRetries(t *testing.T) {
 	t.Helper()
-	original := syncDialBackoff
+	normal, limited := syncDialBackoff, syncDialLimitBackoff
 	syncDialBackoff = []time.Duration{time.Millisecond, time.Millisecond}
-	t.Cleanup(func() { syncDialBackoff = original })
+	syncDialLimitBackoff = []time.Duration{time.Millisecond}
+	t.Cleanup(func() { syncDialBackoff, syncDialLimitBackoff = normal, limited })
 }
 
 func scriptedApp(t *testing.T, d *scriptedInbound) (*App, *domain.MailAccount) {
@@ -109,12 +110,13 @@ func greetingTimeout() error {
 func TestSyncFailureNamesTheStepAndKeepsNoServerText(t *testing.T) {
 	fastRetries(t)
 	app, acc := scriptedApp(t, &scriptedInbound{failures: []error{greetingTimeout(), greetingTimeout(), greetingTimeout()}})
+	// A silent server is not hammered: one further attempt, not two.
 	job := syncAndWait(t, app, acc.ID)
 	if job.Status != domain.JobFailed || job.Error != syncStoppedTimeout {
 		t.Fatalf("job = %s %q", job.Status, job.Error)
 	}
 	d := job.Diagnostic
-	if d == nil || d.Stage != domain.StageGreeting || d.Class != "timeout" || d.Attempts != syncDialAttempts {
+	if d == nil || d.Stage != domain.StageGreeting || d.Class != "timeout" || d.Attempts != 2 {
 		t.Fatalf("diagnostic = %+v", d)
 	}
 	if d.Protocol != "pop3" || d.Host != "127.0.0.1" || d.ElapsedMS != 60000 || d.TimeoutMS != 60000 {
@@ -125,7 +127,7 @@ func TestSyncFailureNamesTheStepAndKeepsNoServerText(t *testing.T) {
 	if d.HostSessions < 1 || d.AccountSessions < 1 {
 		t.Fatalf("sessions not counted: %+v", d)
 	}
-	for _, want := range []string{"서버 환영 메시지 수신", "제한 시간 안에 응답이 없었습니다", "연결 시도 3회", "동시 접속 제한"} {
+	for _, want := range []string{"서버 환영 메시지 수신", "제한 시간 안에 응답이 없었습니다", "연결 시도 2회", "동시 접속 제한"} {
 		if !strings.Contains(d.Summary, want) {
 			t.Fatalf("summary %q lacks %q", d.Summary, want)
 		}
@@ -134,19 +136,23 @@ func TestSyncFailureNamesTheStepAndKeepsNoServerText(t *testing.T) {
 		t.Fatalf("the server's own text reached a screen: %q / %q", d.Summary, job.Error)
 	}
 	// A failed sync is the most serious thing this service reports, so it
-	// files an incident carrying the same rendering.
-	incidents, err := app.AdminListIncidents(settingsAdmin(), domain.IncidentFilter{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	found := false
-	for _, inc := range incidents {
-		if inc.Component == "sync" && inc.Detail == d.Summary && inc.Severity == domain.SeverityError {
-			found = true
+	// files an incident carrying the same rendering. The job row is written
+	// first, so the incident is looked for rather than assumed present.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		incidents, err := app.AdminListIncidents(settingsAdmin(), domain.IncidentFilter{})
+		if err != nil {
+			t.Fatal(err)
 		}
-	}
-	if !found {
-		t.Fatalf("no sync incident carried the diagnostic: %+v", incidents)
+		for _, inc := range incidents {
+			if inc.Component == "sync" && inc.Severity == domain.SeverityError && inc.Detail == d.Summary {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no sync incident carried the diagnostic: %+v", incidents)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

@@ -86,8 +86,11 @@ func (Dialer) Dial(ctx context.Context, opts domain.POP3DialOptions) (domain.POP
 		text:      textproto.NewConn(conn),
 		commandTO: secondsOr(opts.CommandTimeoutSec, 60),
 	}
+	// The greeting gets the connect budget, not the command budget: a server
+	// that accepts the connection and never greets (connection limit,
+	// middlebox, TLS port addressed in plaintext) is reported in seconds.
 	greetStart := time.Now()
-	if _, err := s.readResponse(); err != nil {
+	if _, err := s.readGreeting(connectTO); err != nil {
 		conn.Close()
 		return nil, domain.WrapInbound(domain.StageGreeting, "", fmt.Errorf("pop3 greeting: %w", err), time.Since(greetStart), s.commandTO)
 	}
@@ -201,6 +204,20 @@ type session struct {
 }
 
 func (s *session) deadline() { s.conn.SetDeadline(time.Now().Add(s.commandTO)) }
+
+// readGreeting reads the server's opening line under its own deadline, which
+// readResponse would otherwise reset to the command budget.
+func (s *session) readGreeting(timeout time.Duration) (string, error) {
+	_ = s.conn.SetDeadline(time.Now().Add(timeout))
+	line, err := s.text.ReadLine()
+	if err != nil {
+		return "", err
+	}
+	if !strings.HasPrefix(line, "+OK") {
+		return "", fmt.Errorf("%w: server: %s", &domain.InboundRejected{Code: domain.InboundResponseCode(line)}, line)
+	}
+	return line, nil
+}
 
 func (s *session) readResponse() (string, error) {
 	s.deadline()

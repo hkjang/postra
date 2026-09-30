@@ -146,6 +146,15 @@ type IdleCapable interface {
 	Idle(ctx context.Context) error
 }
 
+// MailboxCounter reports how many messages the selected mailbox held when it
+// was last selected. Servers never renumber downward while a session watches a
+// mailbox that nothing deletes from, so a higher count on the next connection
+// means mail arrived in between — which is how the IDLE watch notices mail that
+// landed while it had handed its connection to a sync.
+type MailboxCounter interface {
+	MessageCount() int
+}
+
 // AuthError distinguishes credential failures from transient faults so the
 // sync layer can move an account to credential_error instead of retrying
 // forever (POP-011). Both the POP3 and IMAP adapters return it on login

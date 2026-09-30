@@ -181,6 +181,7 @@ func buildSettingsDefinitions() []SettingDefinition {
 		{Key: "mail.imap_enabled", Label: "IMAP 연결 허용", Category: "mail", Type: "bool", Default: "true", Scope: "admin", Apply: "live", Lockable: false},
 		{Key: "mail.pop3_enabled", Label: "POP3 연결 허용", Category: "mail", Type: "bool", Default: "true", Scope: "admin", Apply: "live", Lockable: false},
 		{Key: "mail.smtp_enabled", Label: "SMTP 발송 허용", Category: "mail", Type: "bool", Default: "true", Scope: "admin", Apply: "live", Lockable: false},
+		{Key: SettingMailIdleEnabled, Label: "IMAP 실시간 수신(IDLE) 사용", Category: "mail", Type: "bool", Default: "true", Scope: "admin", Apply: "live", Lockable: false, Help: "IMAP 계정마다 연결 하나를 상시 유지해 새 메일을 즉시 가져옵니다. 계정당 동시 접속을 1개만 허용하는 서버라면 꺼서 주기적 동기화만 쓰세요. 끄면 자동 동기화 주기에 따라 수신이 늦어집니다."},
 		{Key: "mail.tls_required", Label: "메일 TLS 필수", Category: "mail", Type: "bool", Default: "false", Scope: "admin", Apply: "live", Lockable: false},
 		{Key: "mail.smtp_auth_required", Label: "SMTP 인증 필수", Category: "mail", Type: "bool", Default: "false", Scope: "admin", Apply: "live", Lockable: false},
 		{Key: "mail.html_enabled", Label: "HTML 메일 허용", Category: "mail", Type: "bool", Default: "true", Scope: "admin", Apply: "live", Lockable: false},

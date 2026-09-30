@@ -35,6 +35,10 @@ type SyncOptions struct {
 	// and every new message wakes it, so these syncs read the Sent folder at
 	// most every sentFolderIdleInterval instead of on every arrival.
 	fromIdle bool
+	// done, when set, is closed once the worker has finished. The IDLE watch
+	// waits on it before reconnecting, so one account never holds two server
+	// connections at once.
+	done chan struct{}
 }
 
 // sentFolderIdleInterval bounds how often IDLE-started syncs enumerate the
@@ -93,6 +97,9 @@ func (a *App) StartSync(ctx context.Context, accountID string, opts SyncOptions)
 			}
 		}()
 		defer a.workerGroup.Done()
+		if opts.done != nil {
+			defer close(opts.done)
+		}
 		defer a.syncLocks.Delete(accountID)
 		defer a.jobCancels.Delete(job.ID)
 		a.runSync(jobCtx, job, acc, opts)

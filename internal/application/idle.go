@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"runtime/debug"
@@ -9,6 +10,11 @@ import (
 
 	"postra/internal/domain"
 )
+
+// idleSyncWait bounds how long a watch waits for the sync it handed its
+// connection to. A sync that runs longer is fetching a large mailbox, and the
+// account is better watched than left unwatched.
+var idleSyncWait = 10 * time.Minute
 
 // idleReconcileInterval is how often the supervisor re-reads the account list
 // and restarts watches that ended. A leadership change reconciles at once.
@@ -90,7 +96,10 @@ func (a *App) RunIdleWorker(ctx context.Context) {
 	}
 
 	reconcile := func() {
-		if !a.IsLeader() {
+		// A server that allows only one IMAP connection per account cannot host
+		// a permanent watch next to a sync, so operators can switch the watch
+		// off and fall back to scheduled syncs.
+		if !a.IsLeader() || !a.SettingBool(SettingMailIdleEnabled) {
 			stopAll()
 			return
 		}
@@ -182,13 +191,21 @@ func (a *App) idleLoop(ctx context.Context, acc domain.MailAccount) {
 	const baseBackoff = 5 * time.Second
 	const maxBackoff = 2 * time.Minute
 	backoff := baseBackoff
+	seen := -1 // no connection yet
 	for {
 		if ctx.Err() != nil || !a.IsLeader() {
 			return
 		}
-		err := a.idleOnce(ctx, &acc)
+		count, err := a.idleOnce(ctx, &acc, seen)
+		seen = count
 		if ctx.Err() != nil || !a.IsLeader() {
 			return
+		}
+		if errors.Is(err, errIdleYielded) {
+			// The connection went to a sync that has now finished; take it back
+			// immediately. This is the normal path, not a fault.
+			backoff = baseBackoff
+			continue
 		}
 		if err != nil {
 			slog.Debug("idle worker: session error, will reconnect", "account", acc.ID, "err", err, "backoff", backoff)
@@ -206,42 +223,83 @@ func (a *App) idleLoop(ctx context.Context, acc domain.MailAccount) {
 	}
 }
 
-// idleOnce opens one inbound session and idles until an event or fault, kicking
-// a sync on connect (to catch anything missed while disconnected) and on every
-// activity notification.
-func (a *App) idleOnce(ctx context.Context, acc *domain.MailAccount) error {
+// errIdleYielded ends a watch that handed its connection to a sync. It is not
+// a fault: the loop reconnects at once, without backoff.
+var errIdleYielded = errors.New("idle watch yielded its connection to a sync")
+
+// idleOnce opens one inbound session and idles until an event or fault.
+//
+// A mail server counts connections, and many allow only one or two per
+// account, answering the next one by accepting the TCP connection and then
+// never greeting it. So the watch does not hold its connection while the sync
+// it triggered runs: it closes the session, waits for that sync, and returns
+// errIdleYielded so the loop reconnects. An account therefore uses one inbound
+// connection at a time, not two.
+//
+// seen is the INBOX message count this watch last saw; a negative value means
+// it has not connected yet. Because nothing here deletes server-side, a higher
+// count means mail arrived while the connection was away — the one thing a
+// watch would otherwise miss by yielding — and only then is a sync started on
+// connect. A server that reports no count syncs on the first connection only.
+func (a *App) idleOnce(ctx context.Context, acc *domain.MailAccount, seen int) (count int, err error) {
 	sess, err := a.dialInbound(ctx, acc, domain.PurposePOP3Auth)
 	if err != nil {
-		return err
+		return seen, err
 	}
 	defer sess.Close()
 
 	idler, ok := sess.(domain.IdleCapable)
 	if !ok {
-		return userErrf("inbound session for account %s does not support IDLE", acc.ID)
+		return seen, userErrf("inbound session for account %s does not support IDLE", acc.ID)
+	}
+	count = 0
+	if counter, ok := sess.(domain.MailboxCounter); ok {
+		count = counter.MessageCount()
 	}
 
-	// Reconnected: sync anything that arrived while we were down.
-	a.triggerIdleSync(ctx, acc)
+	// Freshly connected: sync what arrived while no watch was listening. After
+	// a yield the sync has just run, so this repeats only when the mailbox grew
+	// during it — never as a loop of its own.
+	if seen < 0 || count > seen {
+		sess.Close()
+		a.runIdleSync(ctx, acc)
+		return count, errIdleYielded
+	}
 
 	for {
 		if ctx.Err() != nil || !a.IsLeader() {
-			return ctx.Err()
+			return count, ctx.Err()
 		}
 		if err := idler.Idle(ctx); err != nil {
-			return err
+			return count, err
 		}
-		a.triggerIdleSync(ctx, acc)
+		// Activity: hand the account's connection to the sync.
+		sess.Close()
+		a.runIdleSync(ctx, acc)
+		return count, errIdleYielded
 	}
 }
 
-// triggerIdleSync launches a best-effort sync for the account. The per-account
-// syncLock in StartSync coalesces this with any in-flight sync.
-func (a *App) triggerIdleSync(ctx context.Context, acc *domain.MailAccount) {
+// runIdleSync starts a sync for the account and waits for it, so the watch does
+// not reconnect while that sync still holds the account's server connection.
+// The per-account syncLock in StartSync coalesces this with any in-flight sync;
+// when it is already running, this returns at once and the watch reconnects —
+// the running sync ends on its own.
+func (a *App) runIdleSync(ctx context.Context, acc *domain.MailAccount) {
 	uctx := WithPrincipal(WithActor(ctx, "idle-worker"), domain.Principal{
 		UserID: acc.UserID, Role: domain.RoleUser, AuthMethod: "idle-worker",
 	})
-	if _, err := a.StartSync(uctx, acc.ID, SyncOptions{fromIdle: true}); err != nil {
+	done := make(chan struct{})
+	if _, err := a.StartSync(uctx, acc.ID, SyncOptions{fromIdle: true, done: done}); err != nil {
 		slog.Debug("idle worker: sync skipped", "account", acc.ID, "reason", err)
+		return
+	}
+	select {
+	case <-done:
+	case <-ctx.Done():
+	case <-time.After(idleSyncWait):
+		// The sync outlives this wait only if it is fetching a great deal;
+		// reconnecting then is better than leaving the account unwatched.
+		slog.Warn("idle worker: sync still running; resuming the watch", "account", acc.ID, "waited", idleSyncWait)
 	}
 }

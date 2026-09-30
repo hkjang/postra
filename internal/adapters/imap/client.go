@@ -70,12 +70,20 @@ func (Dialer) Dial(ctx context.Context, opts domain.InboundDialOptions) (domain.
 	}
 
 	s := &session{conn: conn, r: bufio.NewReader(conn), commandTO: secondsOr(opts.CommandTimeoutSec, 60), maxLiteral: opts.MaxMessageBytes}
+	// The greeting is the server's first move and healthy servers send it at
+	// once, so it gets the connect budget rather than the command budget. A
+	// server that accepts the connection and then says nothing — a per-account
+	// connection limit, a middlebox, or a TLS port addressed in plaintext — is
+	// then reported in seconds instead of holding a sync slot for a minute.
 	start = time.Now()
-	greeting, err := s.readLine()
+	_ = conn.SetDeadline(start.Add(connectTO))
+	greeting, err := s.readBoundedLine()
 	if err != nil {
 		conn.Close()
 		return nil, s.failed(domain.StageGreeting, "", fmt.Errorf("imap greeting: %w", err), start)
 	}
+	// Every command sets its own deadline before writing (execRaw), so the
+	// greeting's shorter one does not leak into the session.
 	preAuth := strings.HasPrefix(greeting, "* PREAUTH")
 	if strings.HasPrefix(greeting, "* BYE") {
 		// Refused before any command — typically a connection limit.
@@ -586,6 +594,9 @@ func (s *session) Quit(ctx context.Context) error {
 }
 
 func (s *session) Close() error { return s.conn.Close() }
+
+// MessageCount reports EXISTS from the last SELECT.
+func (s *session) MessageCount() int { return s.exists }
 
 // ListMailboxes returns the list of IMAP folder names available (§P1 IMAP 폴더 동기화).
 func (s *session) ListMailboxes(ctx context.Context) ([]string, error) {

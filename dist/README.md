@@ -2,16 +2,16 @@
 
 Docker 데몬 없이 빌드한, 오프라인망에서 바로 사용 가능한 산출물입니다.
 
-> **v0.25.0 — 동기화 실패 진단·재시도**: 동기화 실패가 멈춘 단계·유형·시간·재시도·연결 수와 함께 기록되고, 일시적 연결 실패는 재시도하며, 전부 가져오지 못한 동기화는 성공으로 보고하지 않습니다. DB 마이그레이션 3건이 기동 시 자동 적용됩니다. [릴리즈 내용](../docs/releases/v0.25.0.md)과 [진단 읽는 법](../docs/SYNC_DIAGNOSTICS.md)을 확인하세요.
+> **v0.25.1 — IMAP 계정당 연결 하나**: 실시간 수신(IDLE) 감시가 동기화에 연결을 넘겨, 계정당 동시 접속이 적은 서버에서 "서버가 세션을 시작하지 않았습니다"로 실패하던 문제를 고쳤습니다. `mail.idle_enabled` 로 감시를 끌 수 있고 DB 마이그레이션은 없습니다. [릴리즈 내용](../docs/releases/v0.25.1.md) · [진단 읽는 법](../docs/SYNC_DIAGNOSTICS.md)
 
 기존 SSO·메일 프로비저닝·비밀값 암호화·승인·멱등 발송은 유지합니다. 런타임 Node 서버나 외부 CDN은 필요 없으며 서체와 시간대 데이터도 실행 파일에 포함됩니다.
 
 | 파일 | 설명 |
 | --- | --- |
-| `postra-0.25.0.tar.gz` | `docker load` 로 불러오는 컨테이너 이미지 (`postra:0.25.0`, linux/amd64) |
-| `postra-0.25.0-linux-amd64` | 정적 링크 단일 실행 파일 (CGO 없음, 의존성 없음) |
-| `postra-0.25.0-sbom.cdx.json` | CycloneDX 소프트웨어 자재명세서 |
-| `postra-0.25.0-frontend-sbom.cdx.json` | 프런트엔드 의존성 CycloneDX 명세서 |
+| `postra-0.25.1.tar.gz` | `docker load` 로 불러오는 컨테이너 이미지 (`postra:0.25.1`, linux/amd64) |
+| `postra-0.25.1-linux-amd64` | 정적 링크 단일 실행 파일 (CGO 없음, 의존성 없음) |
+| `postra-0.25.1-sbom.cdx.json` | CycloneDX 소프트웨어 자재명세서 |
+| `postra-0.25.1-frontend-sbom.cdx.json` | 프런트엔드 의존성 CycloneDX 명세서 |
 | `SHA256SUMS.txt` | 모든 릴리즈 파일의 SHA-256 체크섬 |
 
 이미지는 순수 Go 정적 바이너리 + CA 인증서 + 최소 rootfs 로만 구성됩니다(scratch 기반).
@@ -20,7 +20,7 @@ Docker 데몬 없이 빌드한, 오프라인망에서 바로 사용 가능한 �
 
 ```bash
 # 폐쇄망 호스트로 tar.gz 를 옮긴 뒤:
-docker load -i postra-0.25.0.tar.gz     # gzip 자동 인식
+docker load -i postra-0.25.1.tar.gz     # gzip 자동 인식
 docker image ls postra
 
 # 오프라인망(평문 POP3/SMTP 허용) 실행 예시
@@ -30,7 +30,7 @@ docker run -d --name postra \
   -e POSTRA_HTTP_ADDR=0.0.0.0:8480 \
   -e POSTRA_ALLOW_INSECURE_MAIL=true \
   -e POSTRA_API_TOKEN=change-me \
-  postra:0.25.0
+  postra:0.25.1
 
 # CLI 사용 (같은 컨테이너)
 docker exec -it postra postra account list
@@ -42,9 +42,9 @@ REST API는 `/api/v1/`(기존 `/api/` 호환), 유일한 공식 Web UI는 `/app/
 ## 2) 바이너리 단독 실행 (Docker 불필요)
 
 ```bash
-chmod +x postra-0.25.0-linux-amd64
-./postra-0.25.0-linux-amd64 init
-POSTRA_BOOTSTRAP_ADMIN_PASSWORD='replace-with-a-long-secret' ./postra-0.25.0-linux-amd64 serve
+chmod +x postra-0.25.1-linux-amd64
+./postra-0.25.1-linux-amd64 init
+POSTRA_BOOTSTRAP_ADMIN_PASSWORD='replace-with-a-long-secret' ./postra-0.25.1-linux-amd64 serve
 ```
 
 ## 데이터 / 비밀값
@@ -58,6 +58,6 @@ Docker 없이 이미지를 다시 만들려면:
 
 ```bash
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o postra ./cmd/postra
-go run scripts/mkimage.go postra postra-image.tar postra:0.25.0
+go run scripts/mkimage.go postra postra-image.tar postra:0.25.1
 gzip -9 postra-image.tar
 ```

@@ -316,13 +316,20 @@ func syncSessions(d *domain.SyncDiagnostic) string {
 // the connection census together point at it.
 func syncHint(d *domain.SyncDiagnostic) string {
 	connecting := d.Stage == domain.StageTCPConnect || d.Stage == domain.StageGreeting || d.Stage == domain.StageLogin
+	// A port that expects TLS from the first byte leaves a plaintext client
+	// waiting for a greeting that will never come, while the server waits for a
+	// handshake: both sides time out and nothing is logged. It looks exactly
+	// like a connection limit, so it is named first.
+	implicitTLS := d.Port == 993 || d.Port == 995
 	switch {
 	case d.Class == "rejected" && domain.TemporaryRefusal(d.Code):
 		return "서버가 일시적인 사유로 거부했습니다. 비밀번호 문제가 아니며 계정 상태는 바꾸지 않았습니다"
+	case d.Stage == domain.StageGreeting && implicitTLS && d.Security != string(domain.SecurityTLS):
+		return "이 포트는 접속 직후 TLS를 요구합니다. 계정의 보안 모드를 TLS로 바꾸세요(현재 " + d.Security + ")"
 	case connecting && d.AccountSessions > 1:
-		return "이 계정의 동시 접속 허용 수를 확인하세요. 실시간 대기(IDLE) 연결과 동기화 연결을 함께 사용합니다"
+		return "이 계정의 동시 접속 허용 수를 확인하세요. 실시간 대기(IDLE) 연결과 동기화 연결을 함께 사용합니다. 계정당 1개만 허용하는 서버라면 관리자 설정에서 IMAP 실시간 수신(IDLE)을 끄세요"
 	case d.Stage == domain.StageGreeting && (d.Class == "timeout" || d.Class == "closed" || d.Class == "reset"):
-		return "TCP 연결은 되었으나 서버가 세션을 시작하지 않았습니다. 동시 접속 제한·차단 목록·프록시를 확인하세요"
+		return "TCP 연결은 되었으나 서버가 세션을 시작하지 않았습니다. 동시 접속 제한·접속 빈도 제한·차단 목록·프록시를 확인하세요"
 	case d.Stage == domain.StageTLS && d.Class == "timeout":
 		return "보안 모드(TLS/STARTTLS)와 포트 조합을 확인하세요"
 	case d.Stage == domain.StageFetch && d.Class == "timeout":
@@ -479,15 +486,45 @@ func (c *inboundCensus) count(acc *domain.MailAccount) (hosts, accounts int64) {
 
 // ---------- connecting ----------
 
-// syncDialAttempts is how many times one sync opens a session before giving
-// up. A mail server that is briefly busy, throttling, or closing sessions at a
-// connection limit is the common cause of repeated sync failures, and a single
-// attempt turns it into a failed sync every time.
+// syncDialAttempts bounds the attempts whatever the pacing says. A mail server
+// that is briefly busy, throttling, or closing sessions at a connection limit
+// is the common cause of repeated sync failures, and a single attempt turns it
+// into a failed sync every time — but so does hammering one that is at a limit.
 const syncDialAttempts = 3
 
 // syncDialBackoff waits between attempts. It is short: the sync already holds
 // its concurrency slot, and the scheduler will come round again.
 var syncDialBackoff = []time.Duration{2 * time.Second, 5 * time.Second}
+
+// syncDialLimitBackoff is used when the failure looks like a connection limit:
+// the server accepted the connection and never greeted it, or refused for load.
+// Retrying quickly then adds pressure to the very thing that failed, so there is
+// one further attempt, later, giving the other connection time to close.
+var syncDialLimitBackoff = []time.Duration{10 * time.Second}
+
+// limitShaped reports a failure that reads like a server refusing another
+// connection rather than a network fault.
+func limitShaped(d *domain.SyncDiagnostic) bool {
+	if d == nil {
+		return false
+	}
+	if d.Class == "rejected" {
+		return domain.TemporaryRefusal(d.Code)
+	}
+	switch d.Stage {
+	case domain.StageGreeting, domain.StageLogin:
+		return d.Class == "timeout" || d.Class == "closed" || d.Class == "reset"
+	}
+	return false
+}
+
+// syncDialWaits picks the pacing for the attempts after the first failure.
+func syncDialWaits(d *domain.SyncDiagnostic) []time.Duration {
+	if limitShaped(d) {
+		return syncDialLimitBackoff
+	}
+	return syncDialBackoff
+}
 
 // retryableInbound reports a failure that another attempt may get past. A
 // rejected password, a policy refusal, a missing host and an untrusted
@@ -546,10 +583,11 @@ func (a *App) dialInboundForSync(ctx context.Context, acc *domain.MailAccount, d
 		}
 		syncDiagnosticStage(d, domain.StageTCPConnect, err)
 		d.HostSessions, d.AccountSessions = a.inbound.count(acc)
-		if attempt == syncDialAttempts || !retryableInbound(err) || ctx.Err() != nil {
+		waits := syncDialWaits(d)
+		if attempt > len(waits) || !retryableInbound(err) || ctx.Err() != nil {
 			return nil, err
 		}
-		wait := syncDialBackoff[min(attempt, len(syncDialBackoff))-1]
+		wait := waits[attempt-1]
 		slog.Debug("sync: retrying the inbound connection", "account", acc.ID, "attempt", attempt, "class", d.Class, "stage", d.Stage, "wait", wait)
 		select {
 		case <-ctx.Done():

@@ -64,7 +64,8 @@ const (
 	SettingVectorMilvusToken      = "vector.milvus_token"     // #nosec G101 -- legacy write-only input field, never persisted
 	SettingVectorMilvusTokenRef   = "vector.milvus_token_ref" // #nosec G101 -- encrypted-secret reference setting key
 	SettingVectorMilvusCollection = "vector.milvus_collection"
-	SettingMCPPolicy              = "mcp.policy" // JSON gateway policy for MCP tools
+	SettingMCPPolicy              = "mcp.policy"        // JSON gateway policy for MCP tools
+	SettingMailIdleEnabled        = "mail.idle_enabled" // keep an IMAP IDLE connection per account
 )
 
 var allowedSettings = map[string]bool{
