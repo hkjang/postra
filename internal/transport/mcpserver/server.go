@@ -130,7 +130,7 @@ func toolCatalogSummary() map[string]any {
 			"mail_account_update", "mail_account_test", "mail_account_disable",
 			"secret_registration_begin", "secret_rotation_begin", "secret_revoke"},
 		"sync": {"mail_sync_start", "mail_events", "job_list", "job_status", "job_cancel"},
-		"query": {"mail_search", "mail_message_get", "mail_thread_get", "mail_thread_timeline",
+		"query": {"mail_search", "mail_sent_search", "mail_message_get", "mail_thread_get", "mail_thread_timeline",
 			"mail_attachment_list", "mail_hybrid_search", "mail_batch_update", "mail_work_inbox"},
 		"ai": {"mail_summarize", "mail_classify", "mail_action_items_extract",
 			"mail_entities_extract", "mail_phishing_inspect", "mail_auth_inspect", "mail_thread_summarize",
@@ -456,6 +456,36 @@ func registerQueryTools(s *mcp.Server, app *application.App) {
 		Annotations: readOnly,
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in domain.SearchQuery) (*mcp.CallToolResult, any, error) {
 		res, err := app.Search(ctx, in)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, res, nil
+	})
+
+	// The input has no folder on purpose: this tool can only ever return mail
+	// the caller sent, however it is called.
+	type sentSearchInput struct {
+		AccountID     string `json:"account_id,omitempty" jsonschema:"limit to one mail account"`
+		Text          string `json:"text,omitempty" jsonschema:"keywords in the subject, sender or body"`
+		To            string `json:"to,omitempty" jsonschema:"recipient address, or part of one"`
+		Subject       string `json:"subject,omitempty" jsonschema:"text the subject contains"`
+		Since         int64  `json:"since,omitempty" jsonschema:"sent on or after, unix seconds (the message Date header)"`
+		Until         int64  `json:"until,omitempty" jsonschema:"sent on or before, unix seconds"`
+		HasAttachment *bool  `json:"has_attachment,omitempty" jsonschema:"only mail with, or without, attachments"`
+		Limit         int    `json:"limit,omitempty" jsonschema:"page size, at most 200 (default 50)"`
+		Cursor        string `json:"cursor,omitempty" jsonschema:"next_cursor from the previous page"`
+	}
+	addTool(s, &mcp.Tool{
+		Name: "mail_sent_search",
+		Description: "List or search only the mail you sent, newest first; with no filters it lists all of it. " +
+			"Covers mail sent through Postra and, for IMAP accounts, the server's Sent folder. " +
+			"Use mail_message_get with a returned id for the body. Cursor-paginated.",
+		Annotations: readOnly,
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in sentSearchInput) (*mcp.CallToolResult, any, error) {
+		res, err := app.Search(ctx, domain.SearchQuery{
+			Folder: "sent", AccountID: in.AccountID, Text: in.Text, To: in.To, Subject: in.Subject,
+			Since: in.Since, Until: in.Until, HasAttachment: in.HasAttachment, Limit: in.Limit, Cursor: in.Cursor,
+		})
 		if err != nil {
 			return nil, nil, err
 		}

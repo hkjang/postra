@@ -237,7 +237,7 @@ CREATE TABLE IF NOT EXISTS messages (
   created_at INTEGER NOT NULL,
   is_archived INTEGER NOT NULL DEFAULT 0, is_important INTEGER NOT NULL DEFAULT 0,
   snoozed_until INTEGER NOT NULL DEFAULT 0, labels_json TEXT NOT NULL DEFAULT '',
-  legal_hold INTEGER NOT NULL DEFAULT 0);
+  legal_hold INTEGER NOT NULL DEFAULT 0, mailbox TEXT NOT NULL DEFAULT 'inbox');
 CREATE INDEX IF NOT EXISTS idx_messages_account_date ON messages(account_id, date DESC);
 -- Serves the periodic background queries, which filter by owner and arrival
 -- time: triage runs every few minutes forever, so an unindexed scan here is a
@@ -365,6 +365,7 @@ CREATE INDEX IF NOT EXISTS idx_message_notes_msg ON message_notes(message_id);
 		`ALTER TABLE messages ADD COLUMN snoozed_until INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE messages ADD COLUMN labels_json TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE messages ADD COLUMN legal_hold INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE messages ADD COLUMN mailbox TEXT NOT NULL DEFAULT 'inbox'`,
 	} {
 		if _, err := s.db.Exec(alt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return fmt.Errorf("migrate attachments: %w", err)
@@ -372,6 +373,10 @@ CREATE INDEX IF NOT EXISTS idx_message_notes_msg ON message_notes(message_id);
 	}
 	if _, err := s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_oidc ON users(oidc_issuer, oidc_subject) WHERE oidc_subject != ''`); err != nil {
 		return fmt.Errorf("migrate users oidc index: %w", err)
+	}
+	// After the mailbox column exists: every listing now filters on it.
+	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_user_mailbox_date ON messages(user_id, mailbox, date DESC)`); err != nil {
+		return fmt.Errorf("migrate messages mailbox index: %w", err)
 	}
 
 	// Full-text index; fall back to LIKE search when FTS5 is unavailable.
@@ -1103,14 +1108,17 @@ func (s *Store) InsertMessage(ctx context.Context, m *domain.Message, body *doma
 	}
 	defer tx.Rollback()
 	m.CreatedAt = now()
+	if m.Mailbox == "" {
+		m.Mailbox = domain.MailboxInbox
+	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO messages
 	 (id,user_id,account_id,uidl,message_id_hdr,subject,from_name,from_email,to_json,cc_json,reply_to_json,
-	  date,size,raw_hash,raw_uri,thread_id,has_attachments,in_reply_to,refs,auth_results,parse_error,created_at)
-	 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+	  date,size,raw_hash,raw_uri,thread_id,has_attachments,in_reply_to,refs,auth_results,parse_error,created_at,mailbox)
+	 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		m.ID, m.UserID, m.AccountID, m.UIDL, m.MessageID, m.Subject, m.From.Name, m.From.Email,
 		addrJSON(m.To), addrJSON(m.Cc), addrJSON(m.ReplyTo),
 		m.Date, m.Size, m.RawHash, m.RawURI, m.ThreadID, boolInt(m.HasAttachments),
-		m.InReplyTo, m.References, m.AuthResults, m.ParseError, m.CreatedAt)
+		m.InReplyTo, m.References, m.AuthResults, m.ParseError, m.CreatedAt, m.Mailbox)
 	if err != nil {
 		return err
 	}
@@ -1257,13 +1265,29 @@ func (s *Store) IsDuplicateHash(ctx context.Context, accountID, rawHash string) 
 	return err == nil, err
 }
 
+// HasSentCopy reports whether the account already holds a sent message with
+// this Message-ID. A message sent through Postra is recorded at send time and
+// may later reappear in the server's Sent folder with different bytes.
+func (s *Store) HasSentCopy(ctx context.Context, accountID, messageIDHdr string) (bool, error) {
+	if messageIDHdr == "" {
+		return false, nil
+	}
+	var one int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT 1 FROM messages WHERE account_id=? AND mailbox='sent' AND message_id_hdr=? LIMIT 1`, accountID, messageIDHdr).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 const msgCols = `id,user_id,account_id,uidl,message_id_hdr,subject,from_name,from_email,to_json,cc_json,reply_to_json,
  date,size,raw_hash,raw_uri,thread_id,has_attachments,in_reply_to,refs,auth_results,parse_error,created_at`
 
 // msgSelectCols extends the insert column set with the mutable UX-state columns
 // (archive/important/snooze/labels). It is used for every SELECT + scanMessage;
 // msgCols stays the immutable ingest set used by InsertMessage.
-const msgSelectCols = msgCols + `,is_archived,is_important,snoozed_until,labels_json,legal_hold,is_read`
+const msgSelectCols = msgCols + `,is_archived,is_important,snoozed_until,labels_json,legal_hold,is_read,mailbox`
 
 func labelsFromJSON(s string) []string {
 	if s == "" {
@@ -1285,7 +1309,7 @@ func scanMessage(row interface{ Scan(...any) error }) (*domain.Message, error) {
 		&m.From.Name, &m.From.Email, &toJ, &ccJ, &rtJ,
 		&m.Date, &m.Size, &m.RawHash, &m.RawURI, &threadID, &hasAtt,
 		&m.InReplyTo, &m.References, &authRes, &parseErr, &m.CreatedAt,
-		&isArch, &isImp, &m.SnoozedUntil, &labelsJSON, &legalHold, &isRead)
+		&isArch, &isImp, &m.SnoozedUntil, &labelsJSON, &legalHold, &isRead, &m.Mailbox)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -1517,6 +1541,13 @@ func (s *Store) Search(ctx context.Context, q domain.SearchQuery) (*domain.Searc
 	}
 	if q.Label != "" {
 		conds, args = append(conds, "m.labels_json LIKE ?"), append(args, `%"`+q.Label+`"%`)
+	}
+	// Sent mail is its own view; every other view, the default included, is
+	// received mail only, so no existing listing starts showing sent mail.
+	if q.Folder == "sent" {
+		conds, args = append(conds, "m.mailbox = ?"), append(args, domain.MailboxSent)
+	} else {
+		conds, args = append(conds, "m.mailbox = ?"), append(args, domain.MailboxInbox)
 	}
 	switch q.Folder {
 	case "inbox":
@@ -2203,7 +2234,7 @@ func (s *Store) UpdateJob(ctx context.Context, j *domain.Job) error {
 // re-examining the whole mailbox.
 func (s *Store) MessagesNeedingTriage(ctx context.Context, userID string, sinceTS int64, limit int) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id FROM messages WHERE user_id=? AND created_at >= ?
+		`SELECT id FROM messages WHERE user_id=? AND created_at >= ? AND mailbox='inbox'
 		 AND labels_json NOT LIKE '%"`+aiTriageLabelPrefix+`%'
 		 ORDER BY date DESC LIMIT ?`, userID, sinceTS, limit)
 	if err != nil {

@@ -91,6 +91,9 @@ type Storage interface {
 
 	InsertMessage(ctx context.Context, m *domain.Message, body *domain.MessageBody, atts []domain.Attachment) error
 	IsDuplicateHash(ctx context.Context, accountID, rawHash string) (bool, error)
+	// HasSentCopy reports whether the account already holds a sent message
+	// with this Message-ID (recorded at send time or synced from Sent).
+	HasSentCopy(ctx context.Context, accountID, messageIDHdr string) (bool, error)
 	DeleteMessage(ctx context.Context, userID, id string) ([]string, error)
 	GetMessage(ctx context.Context, userID, id string) (*domain.Message, error)
 	GetBody(ctx context.Context, userID, messageID string) (*domain.MessageBody, error)

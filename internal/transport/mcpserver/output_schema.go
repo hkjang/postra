@@ -49,7 +49,7 @@ func outputTypes() map[string]reflect.Type {
 	add(struct {
 		Jobs []domain.Job `json:"jobs"`
 	}{}, "job_list")
-	add(domain.SearchResult{}, "mail_search")
+	add(domain.SearchResult{}, "mail_search", "mail_sent_search")
 	add(application.MessageView{}, "mail_message_get")
 	add(application.ThreadView{}, "mail_thread_get")
 	add(struct {

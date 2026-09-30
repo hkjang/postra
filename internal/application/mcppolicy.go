@@ -88,6 +88,7 @@ var toolAccess = map[string]accessLevel{
 	"mail_account_test":            AccessRead,
 	"job_status":                   AccessRead,
 	"mail_search":                  AccessRead,
+	"mail_sent_search":             AccessRead,
 	"mail_hybrid_search":           AccessRead,
 	"mail_work_inbox":              AccessRead,
 	"mail_message_get":             AccessRead,

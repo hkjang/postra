@@ -40,7 +40,18 @@ type Message struct {
 	// LegalHold, when set, blocks local deletion of the message for compliance
 	// / e-discovery retention (§규정 준수 보존·법적 보류).
 	LegalHold bool `json:"legal_hold,omitempty"`
+	// Mailbox is where the message came from: MailboxInbox for received mail,
+	// MailboxSent for mail the account owner sent. Every listing, search and
+	// AI feature that means "my mail" reads the inbox only; sent mail is
+	// reached through its own view.
+	Mailbox string `json:"mailbox"`
 }
+
+// Stored mailbox values. An empty Mailbox on insert means MailboxInbox.
+const (
+	MailboxInbox = "inbox"
+	MailboxSent  = "sent"
+)
 
 // EmailAuthResult is the structured interpretation of a message's
 // Authentication-Results header (SPF/DKIM/DMARC/ARC) plus an alignment check
@@ -153,7 +164,7 @@ type SearchQuery struct {
 	HasAttachment *bool  `json:"has_attachment,omitempty"`
 	Limit         int    `json:"limit,omitempty"`
 	Cursor        string `json:"cursor,omitempty"`
-	Folder        string `json:"folder,omitempty"` // "inbox", "important", "archive", "snoozed"
+	Folder        string `json:"folder,omitempty"` // received-mail views "inbox", "important", "archive", "snoozed" (and ""); "sent" is sent mail
 	Label         string `json:"label,omitempty"`
 	IsImportant   *bool  `json:"is_important,omitempty"`
 	IsArchived    *bool  `json:"is_archived,omitempty"`

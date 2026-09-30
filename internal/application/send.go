@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"mime"
 	"mime/multipart"
 	"mime/quotedprintable"
@@ -17,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"postra/internal/adapters/mailparse"
 	"postra/internal/adapters/persistence"
 	"postra/internal/domain"
 	"postra/internal/platform/mailhtml"
@@ -415,12 +417,42 @@ func (a *App) deliver(ctx context.Context, out *domain.OutboundMessage, acc *dom
 		a.Store.TouchCredential(ctx, acc.SMTPSecret)
 	}
 	rcpts := append(append(emails(v.To), emails(v.Cc)...), emails(v.Bcc)...)
-	return a.SMTP.Send(ctx, domain.SMTPSendOptions{
+	receipt, err := a.SMTP.Send(ctx, domain.SMTPSendOptions{
 		Host: acc.SMTPHost, Port: acc.SMTPPort, Security: acc.SMTPSecurity,
 		AuthMethod: acc.SMTPAuth, Username: acc.SMTPUsername, Password: secret,
 		InsecureSkipVerify: acc.InsecureSkipVerify,
 		ConnectTimeoutSec:  a.EffectiveConfig().Sync.ConnectTimeoutSec,
 	}, domain.Envelope{From: acc.Email, To: rcpts}, bytes.NewReader(raw))
+	if err == nil && !receipt.Uncertain {
+		// Delivered: the request may end now, but the record must not.
+		a.recordSentCopy(context.WithoutCancel(ctx), acc, out, raw)
+	}
+	return receipt, err
+}
+
+// recordSentCopy keeps what Postra delivered as the account's sent mail, so
+// sent mail exists for POP3 accounts — POP3 has no Sent folder to sync — and
+// for servers that do not save SMTP submissions to Sent. If the server does
+// save it, the Sent-folder sync later finds the same Message-ID and skips it.
+// Best-effort: the message was already delivered.
+func (a *App) recordSentCopy(ctx context.Context, acc *domain.MailAccount, out *domain.OutboundMessage, raw []byte) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("send: recording the sent copy panicked", "outbound", out.ID)
+		}
+	}()
+	sum := sha256.Sum256(raw)
+	rawHash := hex.EncodeToString(sum[:])
+	if dup, _ := a.Store.IsDuplicateHash(ctx, acc.ID, rawHash); dup {
+		return
+	}
+	parsed := mailparse.Parse(raw)
+	if dup, _ := a.Store.HasSentCopy(ctx, acc.ID, parsed.MessageID); dup {
+		return
+	}
+	if _, _, _, err := a.storeMessage(ctx, acc, raw, rawHash, parsed, sentCheckpointPrefix+"outbound:"+out.ID, domain.MailboxSent); err != nil {
+		slog.Warn("send: sent copy not recorded", "outbound", out.ID, "err", err)
+	}
 }
 
 func (a *App) replyContext(ctx context.Context, draftID string) (*domain.Message, error) {

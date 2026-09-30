@@ -147,6 +147,12 @@ Postgres 어댑터 통합 테스트는 `POSTRA_TEST_PG` DSN이 설정된 경우�
 
 인바운드 수집은 **POP3**(기본)와 **IMAP** 을 지원합니다. 계정 등록 시 `--inbound-protocol imap` 로 선택하며, 이후 수집·검색·분석·삭제 경로는 동일합니다(IMAP 세션이 동일 인바운드 포트를 구현). 포트 미지정 시 프로토콜·보안 모드에 따라 기본값이 정해집니다(POP3 995/110, IMAP 993/143). IMAP은 `UIDVALIDITY.UID` 를 중복 제거 체크포인트로 사용합니다.
 
+### 보낸 메일
+
+- **IMAP 계정**은 받은편지함 다음에 서버의 보낸편지함도 가져옵니다. 폴더는 RFC 6154 `\Sent` 속성을 먼저 찾고, 없으면 `Sent`·`Sent Items`·`Sent Messages`·`Sent Mail`·`보낸편지함` 같은 흔한 이름을 찾습니다(`INBOX.Sent`, `[Gmail]/Sent Mail`, modified UTF-7로 인코딩된 한글 이름 포함). 폴더마다 UID 공간이 따로이므로 보낸편지함 체크포인트는 `sent:` 접두사로 분리합니다. 보낸편지함이 없거나 열리지 않아도 받은 메일 동기화는 성공합니다. 작업 통계에는 `sent_new`·`sent_duplicate` 가 따로 남습니다.
+- **Postra에서 보낸 메일**은 발송이 확인된 순간 보낸 메일로 기록됩니다. POP3에는 보낸편지함이 없으므로 POP3 계정은 이것이 유일한 출처입니다. 결과가 불확실한 발송(`uncertain`)은 기록하지 않습니다. 서버가 제출된 메일을 보낸편지함에 저장하는 경우에도 같은 Message-ID로 알아보고 두 번 저장하지 않습니다.
+- 보낸 메일은 받은 메일 기능에 섞이지 않습니다. 받은편지함·중요·보관·스누즈 목록과 검색의 기본 보기, 자동화 규칙, AI 분류, 임베딩(따라서 시맨틱 검색)은 받은 메일만 다룹니다. 보낸 메일은 검색 `folder=sent` 와 MCP `mail_sent_search` 로 조회하며, 답장은 원래 메일과 같은 스레드로 묶여 스레드 보기에 함께 나타납니다.
+
 ```bash
 ./postra account add --name Work --email me@corp.local \
   --inbound-protocol imap --pop3-host imap.corp.local --pop3-security tls \

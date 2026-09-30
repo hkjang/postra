@@ -64,7 +64,7 @@ func (s *Store) MessagesMissingEmbeddings(ctx context.Context, userID, accountID
 	}
 	args := []any{userID}
 	q := `SELECT m.id FROM messages m
-	 WHERE m.user_id=? AND NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.message_id=m.id)`
+	 WHERE m.user_id=? AND m.mailbox='inbox' AND NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.message_id=m.id)`
 	if accountID != "" {
 		q += ` AND m.account_id=?`
 		args = append(args, accountID)
