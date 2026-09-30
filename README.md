@@ -11,7 +11,7 @@ Go로 작성한 개인/사내 구축형 메일 서비스입니다. 사용자의 
 
 v0.20.0의 검색 가능한 운영 콘솔은 환경변수 초기값 위에 관리자 설정과 강제 정책을 적용합니다. 개인·계정 설정과 복수 서명도 웹에서 관리합니다. [설정 관리](docs/SETTINGS.md) · [HTML 메일](docs/MAIL_RENDERING.md) · [Ask Postra](docs/ASK_POSTRA.md) · [MCP 계약](docs/MCP_CONVERGENCE.md) · [API 스키마](docs/API_CONTRACTS.md) · [릴리즈 및 이전 주의사항](docs/releases/v0.20.0.md)
 
-최신 릴리즈 [v0.23.9](docs/releases/v0.23.9.md)는 POP3 `STLS`·IMAP `STARTTLS` 업그레이드 직전에 서버가 미리 보낸 평문을 감지해 연결을 거부하는 패치 릴리즈입니다. 예전에는 그 평문이 옛 리더와 함께 조용히 버려져 규약 위반이 어디에도 기록되지 않았습니다. 설정 키·DB 변경은 없고 v0.23.8의 POP3 다중행 응답 상한, v0.23.7의 IMAP 응답 누적 상한, v0.23.6의 프로토콜 줄 길이 상한, v0.23.5의 리터럴 길이 안전 처리, v0.23.4의 과대 리터럴 거부 후 스트림 재동기화, v0.23.3의 MCP 도구 오류 스키마 수정, v0.23.2의 MCP OAuth 세션 유지, v0.23.0의 DCR 호환 OAuth 프록시, v0.22.0의 Keycloak OAuth MCP 연결, 기존 API Key·메일·AI·개인화·승인 기반 발송은 그대로 유지합니다.
+최신 릴리즈 [v0.24.0](docs/releases/v0.24.0.md)은 IMAP 보낸편지함과 Postra 발송분을 보낸 메일로 가져오고 MCP `mail_sent_search` 로 보낸 메일만 조회하게 하며, IMAP IDLE 감시가 멈춘 채 돌아오지 않던 문제와 리더 lease 갱신 결함을 고친 릴리즈입니다. 로그인 화면은 조직 계정(SSO) 중심으로 바뀌고 silent SSO 로그아웃이 브라우저 단위로 유지되며, Keycloak에 로그인한 사용자는 첫 MCP 요청에서 Postra 계정이 연결됩니다. `messages.mailbox` 컬럼이 추가되는 DB 마이그레이션이 있습니다(기동 시 자동). v0.23.x의 MCP OAuth·DCR 프록시·프로토콜 안전 처리, 기존 API Key·메일·AI·개인화·승인 기반 발송은 그대로 유지합니다.
 
 ## 설계 핵심
 
