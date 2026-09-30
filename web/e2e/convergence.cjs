@@ -17,15 +17,25 @@ const {chromium, expect} = require('@playwright/test');
   });
   page.on('pageerror',error=>errors.push(error.message));
   page.on('dialog',dialog=>dialog.type()==='beforeunload'?dialog.accept():dialog.dismiss());
+  // This server has SSO configured, so the login screen leads with the
+  // organisation account and folds the local form behind a toggle.
   const login=async(target,who,password)=>{
+    const toggle=target.getByRole('button',{name:'로컬 계정으로 로그인',exact:true});
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-expanded','true');
     await target.getByLabel('로그인 ID',{exact:true}).fill(who);
     await target.getByLabel('비밀번호',{exact:true}).fill(password);
     await target.getByRole('button',{name:'계정으로 로그인',exact:true}).click();
   };
+  const loginScreen=async(target)=>{
+    await expect(target.getByRole('link',{name:'조직 계정으로 로그인',exact:true})).toBeVisible();
+    await expect(target.getByRole('button',{name:'로컬 계정으로 로그인',exact:true})).toHaveAttribute('aria-expanded','false');
+    await expect(target.getByLabel('로그인 ID',{exact:true})).toHaveCount(0);
+  };
   const logout=async(target)=>{
     await target.getByRole('button',{name:'로그아웃',exact:true}).click();
     await target.waitForURL(url=>url.searchParams.get('sso')==='signed_out');
-    await expect(target.getByRole('button',{name:'계정으로 로그인',exact:true})).toBeVisible();
+    await loginScreen(target);
   };
   const save=async()=>{
     await page.getByRole('button',{name:'변경 확인',exact:true}).click();
@@ -113,7 +123,6 @@ const {chromium, expect} = require('@playwright/test');
     assert.equal(sso.principal.login_id,'oidc-browser');
     assert.doesNotMatch(page.url(),/[?&](code|state)=/,'callback must strip provider credentials');
     await logout(page);
-    await expect(page.getByRole('button',{name:'계정으로 로그인',exact:true})).toBeVisible();
     await page.setViewportSize({width:390,height:844});await viewportCheck();
     const storage=await page.evaluate(()=>({local:{...localStorage},session:{...sessionStorage}}));
     assert.doesNotMatch(JSON.stringify(storage),new RegExp(process.env.POSTRA_TEST_PASSWORD));
