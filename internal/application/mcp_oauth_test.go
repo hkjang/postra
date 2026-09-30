@@ -133,7 +133,7 @@ func TestMCPOAuthAccessTokenValidation(t *testing.T) {
 	cases := map[string]map[string]any{
 		"id-token": {"typ": "ID"}, "no-type": {"typ": nil}, "dpop": {"typ": "DPoP"}, "confirmation": {"cnf": map[string]any{"jkt": "bound-key"}}, "null-confirmation": {"cnf": json.RawMessage("null")},
 		"wrong-issuer": {"iss": "https://wrong.test"}, "wrong-aud": {"aud": "postra-web"}, "missing-aud": {"aud": nil}, "client-not-audience": {"aud": "desktop"}, "wrong-client": {"azp": "unregistered"}, "web-client": {"azp": "postra-web"}, "missing-client": {"azp": nil},
-		"expired": {"exp": time.Now().Add(-time.Second).Unix()}, "missing-exp": {"exp": nil}, "future-nbf": {"nbf": time.Now().Add(30 * time.Second).Unix()}, "no-sub": {"sub": nil}, "blank-sub": {"sub": " "}, "unlinked-sub": {"sub": "unlinked-subject", "email": "owner@example.test", "email_verified": true},
+		"expired": {"exp": time.Now().Add(-time.Second).Unix()}, "missing-exp": {"exp": nil}, "future-nbf": {"nbf": time.Now().Add(30 * time.Second).Unix()}, "no-sub": {"sub": nil}, "blank-sub": {"sub": " "},
 	}
 	for name, claims := range cases {
 		t.Run(name, func(t *testing.T) {

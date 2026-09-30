@@ -471,7 +471,6 @@ func TestMCPOAuthProxyRejectsUpstreamTokensTheResourceWouldNotAccept(t *testing.
 		reason string
 	}{
 		"missing audience": {map[string]any{"aud": "postra-web"}, "audience"},
-		"unlinked subject": {map[string]any{"sub": "someone-else"}, "no Postra user is linked"},
 		"id token":         {map[string]any{"typ": "ID"}, "not a usable bearer access token"},
 	} {
 		up.mu.Lock()
@@ -482,6 +481,27 @@ func TestMCPOAuthProxyRejectsUpstreamTokensTheResourceWouldNotAccept(t *testing.
 		if tok != nil || e.Code != "invalid_grant" || !strings.Contains(e.Description, test.reason) {
 			t.Fatalf("%s: token handed out or unhelpful error: %+v", name, e)
 		}
+	}
+	// An unlinked Keycloak identity is connected at the token endpoint by the
+	// browser SSO rules: refused while SSO users may not be created, and given
+	// an account — so the first MCP request already works — once they may.
+	up.mu.Lock()
+	up.claims = map[string]any{"sub": "someone-else", "preferred_username": "someone"}
+	up.mu.Unlock()
+	if _, err := app.AdminPatchSettings(settingsAdmin(), SettingsPatch{Values: map[string]string{SettingOIDCAutoProvision: "false"}}); err != nil {
+		t.Fatal(err)
+	}
+	if tok, err := exchange(t, "unlinked-off"); tok != nil || !strings.Contains(proxyErr(t, err).Description, "auth.oidc.auto_provision") {
+		t.Fatalf("an unlinkable identity was not refused with the policy that blocks it: %v", err)
+	}
+	if _, err := app.AdminPatchSettings(settingsAdmin(), SettingsPatch{Values: map[string]string{SettingOIDCAutoProvision: "true"}}); err != nil {
+		t.Fatal(err)
+	}
+	if tok, err := exchange(t, "unlinked-on"); err != nil || tok.AccessToken == "" {
+		t.Fatalf("an unlinked identity was not connected at the token endpoint: %v", err)
+	}
+	if u, err := app.Store.GetUserByOIDC(ctx, app.MCPOAuthConnection().OAuth.Issuer, "someone-else"); err != nil || u.LoginID != "someone" || u.AuthProvider != "oidc" {
+		t.Fatalf("no linked Postra user after the exchange: %+v %v", u, err)
 	}
 	up.mu.Lock()
 	up.claims = nil

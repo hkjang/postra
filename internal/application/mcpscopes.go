@@ -151,7 +151,7 @@ func MCPToolScopes(tool string) []string {
 		return []string{"mail.work"}
 	case "mail_capabilities", "mail_identity", "mail_system_info":
 		return []string{}
-	case "mail_search":
+	case "mail_search", "mail_sent_search":
 		return []string{"mail.search"}
 	case "mail_hybrid_search", "mail_semantic_search":
 		return []string{"mail.search", "mail.ai"}

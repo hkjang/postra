@@ -303,13 +303,16 @@ func (s *Store) migrate(ctx context.Context) error {
 			created_at BIGINT NOT NULL, search_tsv tsvector,
 			is_archived BOOL NOT NULL DEFAULT false, is_important BOOL NOT NULL DEFAULT false,
 			snoozed_until BIGINT NOT NULL DEFAULT 0, labels_json TEXT NOT NULL DEFAULT '',
-			legal_hold BOOL NOT NULL DEFAULT false)`,
+			legal_hold BOOL NOT NULL DEFAULT false, mailbox TEXT NOT NULL DEFAULT 'inbox')`,
 		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_archived BOOL NOT NULL DEFAULT false`,
 		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_important BOOL NOT NULL DEFAULT false`,
 		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_read BOOL NOT NULL DEFAULT false`,
 		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS snoozed_until BIGINT NOT NULL DEFAULT 0`,
 		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS labels_json TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS legal_hold BOOL NOT NULL DEFAULT false`,
+		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS mailbox TEXT NOT NULL DEFAULT 'inbox'`,
+		// Every listing filters on the mailbox.
+		`CREATE INDEX IF NOT EXISTS idx_messages_user_mailbox_date ON messages(user_id, mailbox, date DESC)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_hash ON messages(account_id, raw_hash)`,
 		`CREATE INDEX IF NOT EXISTS idx_messages_account_date ON messages(account_id, date DESC)`,
 		// Serves the periodic background queries (triage sweep, digest window),
@@ -1085,7 +1088,7 @@ const msgCols = `id,user_id,account_id,uidl,message_id_hdr,subject,from_name,fro
 // msgSelectCols extends the immutable ingest set (msgCols, used by
 // InsertMessage's fixed placeholder list) with the mutable UX-state columns
 // used by every SELECT + scanMessage.
-const msgSelectCols = msgCols + `,is_archived,is_important,snoozed_until,labels_json,legal_hold,is_read`
+const msgSelectCols = msgCols + `,is_archived,is_important,snoozed_until,labels_json,legal_hold,is_read,mailbox`
 
 func labelsFromJSON(s string) []string {
 	if s == "" {
@@ -1103,16 +1106,19 @@ func (s *Store) InsertMessage(ctx context.Context, m *domain.Message, body *doma
 	}
 	defer tx.Rollback(ctx)
 	m.CreatedAt = now()
+	if m.Mailbox == "" {
+		m.Mailbox = domain.MailboxInbox
+	}
 	text := ""
 	if body != nil {
 		text = body.TextBody
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO messages (`+msgCols+`,search_tsv)
+	_, err = tx.Exec(ctx, `INSERT INTO messages (`+msgCols+`,search_tsv,mailbox)
 	 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,
-	  to_tsvector('simple', coalesce($6,'')||' '||coalesce($8,'')||' '||$23))`,
+	  to_tsvector('simple', coalesce($6,'')||' '||coalesce($8,'')||' '||$23),$24)`,
 		m.ID, m.UserID, m.AccountID, m.UIDL, m.MessageID, m.Subject, m.From.Name, m.From.Email,
 		addrJSON(m.To), addrJSON(m.Cc), addrJSON(m.ReplyTo), m.Date, m.Size, m.RawHash, m.RawURI, m.ThreadID,
-		m.HasAttachments, m.InReplyTo, m.References, m.AuthResults, m.ParseError, m.CreatedAt, text)
+		m.HasAttachments, m.InReplyTo, m.References, m.AuthResults, m.ParseError, m.CreatedAt, text, m.Mailbox)
 	if err != nil {
 		return err
 	}
@@ -1159,13 +1165,28 @@ func (s *Store) IsDuplicateHash(ctx context.Context, accountID, rawHash string) 
 	return err == nil, err
 }
 
+// HasSentCopy reports whether the account already holds a sent message with
+// this Message-ID. A message sent through Postra is recorded at send time and
+// may later reappear in the server's Sent folder with different bytes.
+func (s *Store) HasSentCopy(ctx context.Context, accountID, messageIDHdr string) (bool, error) {
+	if messageIDHdr == "" {
+		return false, nil
+	}
+	var one int
+	err := s.pool.QueryRow(ctx, `SELECT 1 FROM messages WHERE account_id=$1 AND mailbox='sent' AND message_id_hdr=$2 LIMIT 1`, accountID, messageIDHdr).Scan(&one)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 func scanMessage(row pgx.Row) (*domain.Message, error) {
 	var m domain.Message
 	var toJ, ccJ, rtJ, threadID, parseErr, authRes, inReplyTo, refs, labelsJSON *string
 	err := row.Scan(&m.ID, &m.UserID, &m.AccountID, &m.UIDL, &m.MessageID, &m.Subject, &m.From.Name, &m.From.Email,
 		&toJ, &ccJ, &rtJ, &m.Date, &m.Size, &m.RawHash, &m.RawURI, &threadID,
 		&m.HasAttachments, &inReplyTo, &refs, &authRes, &parseErr, &m.CreatedAt,
-		&m.IsArchived, &m.IsImportant, &m.SnoozedUntil, &labelsJSON, &m.LegalHold, &m.IsRead)
+		&m.IsArchived, &m.IsImportant, &m.SnoozedUntil, &labelsJSON, &m.LegalHold, &m.IsRead, &m.Mailbox)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -1399,6 +1420,13 @@ func (s *Store) Search(ctx context.Context, q domain.SearchQuery) (*domain.Searc
 	}
 	if q.Label != "" {
 		add("m.labels_json LIKE $%d", `%"`+q.Label+`"%`)
+	}
+	// Sent mail is its own view; every other view, the default included, is
+	// received mail only, so no existing listing starts showing sent mail.
+	if q.Folder == "sent" {
+		add("m.mailbox = $%d", domain.MailboxSent)
+	} else {
+		add("m.mailbox = $%d", domain.MailboxInbox)
 	}
 	switch q.Folder {
 	case "inbox":
@@ -2029,7 +2057,7 @@ func (s *Store) UpdateJob(ctx context.Context, j *domain.Job) error {
 // MessagesNeedingTriage lists recent messages with no AI triage label yet.
 func (s *Store) MessagesNeedingTriage(ctx context.Context, userID string, sinceTS int64, limit int) ([]string, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id FROM messages WHERE user_id=$1 AND created_at >= $2
+		`SELECT id FROM messages WHERE user_id=$1 AND created_at >= $2 AND mailbox='inbox'
 		 AND labels_json NOT LIKE '%"'||$3||'%'
 		 ORDER BY date DESC LIMIT $4`, userID, sinceTS, aiTriageLabelPrefix, limit)
 	if err != nil {
@@ -2307,7 +2335,7 @@ func (s *Store) MessagesMissingEmbeddings(ctx context.Context, userID, accountID
 		limit = 200
 	}
 	args := []any{userID}
-	q := `SELECT m.id FROM messages m WHERE m.user_id=$1 AND NOT EXISTS (SELECT 1 FROM embedding_meta e WHERE e.message_id=m.id)`
+	q := `SELECT m.id FROM messages m WHERE m.user_id=$1 AND m.mailbox='inbox' AND NOT EXISTS (SELECT 1 FROM embedding_meta e WHERE e.message_id=m.id)`
 	if accountID != "" {
 		args = append(args, accountID)
 		q += fmt.Sprintf(" AND m.account_id=$%d", len(args))

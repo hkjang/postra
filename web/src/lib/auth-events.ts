@@ -10,6 +10,16 @@ export function notifyAuthChange(kind?: 'signed_out'): void {
   }
 }
 
+// The two guards need different lifetimes, so they live in different storages.
+//
+// "Already attempted" belongs to one tab: a fresh tab should try again, while
+// a reload after a refusal must not bounce, so it is in sessionStorage.
+//
+// "Signed out" is a decision about this browser. Keycloak's session outlives
+// Postra's (logout does not end it), so a per-tab marker let the very next tab
+// — or the same one reopened — sign the user straight back in through
+// prompt=none: logout did not stick. It is in localStorage and is lifted only
+// when a session exists again. The legacy per-tab marker is still honoured.
 const attemptedKey = 'postra.sso.silentAttempted'
 const signedOutKey = 'postra.sso.signedOut'
 let claimedInThisPage = false
@@ -17,18 +27,26 @@ let signedOutInThisPage = false
 
 export function markSignedOut(): void {
   signedOutInThisPage = true
-  try { window.sessionStorage.setItem(signedOutKey, 'true') } catch { /* URL marker and fail-closed storage guards remain. */ }
+  try { window.localStorage.setItem(signedOutKey, 'true') } catch { /* URL marker and fail-closed storage guards remain. */ }
 }
 
 // Match the legacy authenticated layout: only successful login clears the
-// tab's failed-attempt and deliberate-signout guards.
+// failed-attempt and deliberate-signout guards.
 export function resetSSOFlags(): void {
   claimedInThisPage = false
   signedOutInThisPage = false
+  try { window.localStorage.removeItem(signedOutKey) } catch { /* Storage denial must never break a successful login. */ }
   try {
     window.sessionStorage.removeItem(attemptedKey)
     window.sessionStorage.removeItem(signedOutKey)
   } catch { /* Storage denial must never break a successful login. */ }
+}
+
+// Screens that never start a silent attempt. A person who opened the login
+// screen asked to see it, and the error and setup screens are where a loop
+// would come from. Paths are relative to the /app router base.
+export function isSilentSSOScreen(pathname: string): boolean {
+  return !['/login', '/setup', '/error'].includes(pathname)
 }
 
 // Returns a navigation target only after atomically claiming this tab's one
@@ -40,6 +58,7 @@ export function claimSilentSSO(returnTo: string, search: string): string | undef
   const target = new URL(returnTo, window.location.origin)
   if (target.origin !== window.location.origin || !/^\/app(?:\/|$)/.test(target.pathname)) return
   try {
+    if (window.localStorage.getItem(signedOutKey) === 'true') return
     const storage = window.sessionStorage
     if (storage.getItem(signedOutKey) === 'true' || storage.getItem(attemptedKey) === 'true') return
     claimedInThisPage = true

@@ -11,11 +11,12 @@ const mockAPI = vi.mocked(api)
 const session: BrowserSession = {authenticated: false, auth_enabled: true, local_auth: true, login_url: '/app/login'}
 beforeEach(() => {mockAPI.mockReset(); localStorage.clear(); sessionStorage.clear()})
 afterEach(() => {cleanup(); vi.restoreAllMocks()})
-function mount(element: React.ReactNode) {
+function mount(element: React.ReactNode, at = '/') {
   const cache = new QueryClient({defaultOptions: {queries: {retry: false}}})
-  render(<QueryClientProvider client={cache}><MemoryRouter>{element}</MemoryRouter></QueryClientProvider>)
+  render(<QueryClientProvider client={cache}><MemoryRouter initialEntries={[at]}>{element}</MemoryRouter></QueryClientProvider>)
   return cache
 }
+const ssoSession: BrowserSession = {...session, oidc_url: '/auth/oidc/start?return_to=%2Fapp%2F'}
 
 it('submits local credentials only through the new JSON bridge and keeps a deep return target', async () => {
   const user = userEvent.setup()
@@ -45,14 +46,55 @@ it('shows a token-only form without persisting an API credential', async () => {
 })
 
 it('uses the standalone SSO route, escapes signed error text and gates bootstrap', () => {
-  const view = mount(<LoginPage session={{...session, oidc_url: '/auth/oidc/start?return_to=%2Fapp%2F', sso_error: '<script>unsafe()</script>'}} returnTo="/app/mail?q=contract"/>)
-  expect(screen.getByRole('link', {name: '회사 SSO로 로그인'})).toHaveAttribute('href', '/auth/oidc/start?return_to=%2Fapp%2Fmail%3Fq%3Dcontract')
+  const view = mount(<LoginPage session={{...ssoSession, sso_error: '<script>unsafe()</script>'}} returnTo="/app/mail?q=contract"/>)
+  expect(screen.getByRole('link', {name: '조직 계정으로 로그인'})).toHaveAttribute('href', '/auth/oidc/start?return_to=%2Fapp%2Fmail%3Fq%3Dcontract')
   expect(screen.getByText('<script>unsafe()</script>')).toBeInTheDocument()
   expect(document.querySelector('script')).toBeNull()
   view.clear(); cleanup()
   mount(<LoginPage session={{...session, setup_url: '/app/setup'}} returnTo="/app/"/>)
   expect(screen.getByRole('link', {name: '최초 관리자 설정'})).toHaveAttribute('href', '/setup')
   expect(screen.queryByLabelText('로그인 ID')).not.toBeInTheDocument()
+})
+
+it('leads with organisation SSO and folds the local form behind a toggle', async () => {
+  const user = userEvent.setup()
+  mount(<LoginPage session={ssoSession} returnTo="/app/"/>)
+  const links = screen.getAllByRole('link')
+  expect(links[0]).toHaveAccessibleName('조직 계정으로 로그인')
+  expect(screen.queryByLabelText('로그인 ID')).not.toBeInTheDocument()
+  const toggle = screen.getByRole('button', {name: '로컬 계정으로 로그인'})
+  expect(toggle).toHaveAttribute('aria-expanded', 'false')
+  expect(toggle).toHaveAttribute('aria-controls', 'local-login-form')
+  await user.click(toggle)
+  expect(toggle).toHaveAttribute('aria-expanded', 'true')
+  expect(document.getElementById('local-login-form')).toContainElement(screen.getByLabelText('로그인 ID'))
+  expect(screen.getByLabelText('비밀번호')).toBeInTheDocument()
+  expect(screen.getByRole('button', {name: '계정으로 로그인'})).toBeInTheDocument()
+  await user.click(toggle)
+  expect(screen.queryByLabelText('로그인 ID')).not.toBeInTheDocument()
+})
+
+it('shows the local form at once when SSO is not configured', () => {
+  mount(<LoginPage session={session} returnTo="/app/"/>)
+  expect(screen.getByLabelText('로그인 ID')).toBeInTheDocument()
+  expect(screen.queryByRole('link', {name: '조직 계정으로 로그인'})).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', {name: '로컬 계정으로 로그인'})).not.toBeInTheDocument()
+})
+
+it('explains a refused silent sign-in without changing where the button goes', () => {
+  mount(<LoginPage session={ssoSession} returnTo="/app/"/>, '/login?sso=none&return_to=%2Fapp%2F')
+  expect(screen.getByRole('status')).toHaveTextContent('조직 계정 세션이 없어 자동으로 로그인하지 않았습니다')
+  expect(screen.getByRole('link', {name: '조직 계정으로 로그인'})).toHaveAttribute('href', '/auth/oidc/start?return_to=%2Fapp%2F')
+})
+
+it('does not explain a silent refusal on an ordinary visit', () => {
+  mount(<LoginPage session={ssoSession} returnTo="/app/"/>, '/login?sso=signed_out')
+  expect(screen.queryByRole('status')).not.toBeInTheDocument()
+})
+
+it('says so when no sign-in method is available', () => {
+  mount(<LoginPage session={{...session, local_auth: false}} returnTo="/app/"/>)
+  expect(screen.getByRole('alert')).toHaveTextContent('사용 가능한 로그인 방식이 없습니다')
 })
 
 it.each([{required: false, allowed: false}, {required: true, allowed: false}])('never renders a bootstrap form when state rejects it: %s', async state => {

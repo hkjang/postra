@@ -402,30 +402,52 @@ func (a *App) CompleteOIDC(ctx context.Context, code string, flow OIDCFlow) (*do
 	if idToken.Nonce != flow.Nonce {
 		return nil, userErrf("OIDC nonce mismatch")
 	}
-	u, err := a.Store.GetUserByOIDC(ctx, rt.Issuer, claims.Subject)
+	u, first, err := a.resolveOIDCIdentity(ctx, rt, claims, "oidc")
+	if err != nil {
+		return nil, err
+	}
+	if !first {
+		u.LastLoginAt = time.Now().Unix()
+		_ = a.Store.UpdateUser(ctx, u)
+	}
+	if strings.TrimSpace(claims.Email) != "" {
+		a.tryAutoProvisionOIDCMail(ctx, u)
+	}
+	return u, nil
+}
+
+// errOIDCUserDisabled refuses an identity linked to a disabled user.
+var errOIDCUserDisabled = userErrf("user is disabled")
+
+// errOIDCNoAccount refuses an identity that is neither linked nor linkable
+// while the administrator has not allowed SSO users to be created.
+var errOIDCNoAccount = userErrf("OIDC 사용자 자동 생성이 비활성화되어 있고, 연결할 기존 계정도 없습니다. 관리자에게 문의하세요 (사용자명/이메일이 기존 계정과 일치하는지 확인).")
+
+// resolveOIDCIdentity finds the Postra user for a verified Keycloak identity,
+// links it to the local account it clearly owns, or — when auto-provisioning
+// is on — creates one. Browser SSO and MCP OAuth share it, so an access token
+// can never reach or create an account a browser login would refuse. first
+// reports whether this call linked or created the user; per-login effects
+// (last-login time, mail provisioning) are the caller's.
+func (a *App) resolveOIDCIdentity(ctx context.Context, rt oidcRuntime, claims oidcClaims, via string) (u *domain.User, first bool, err error) {
+	u, err = a.Store.GetUserByOIDC(ctx, rt.Issuer, claims.Subject)
 	if err == nil {
-		if u.Status == domain.UserDeleted {
-			// Compatibility with users deleted before identity tombstoning:
-			// release the old subject/email, then continue as a fresh login.
-			tombstoneUserIdentity(u)
-			if updateErr := a.Store.UpdateUser(ctx, u); updateErr != nil {
-				return nil, updateErr
-			}
-			err = domain.ErrNotFound
-		} else {
+		if u.Status != domain.UserDeleted {
 			if u.Status != domain.UserActive {
-				return nil, userErrf("user is disabled")
+				return nil, false, errOIDCUserDisabled
 			}
-			u.LastLoginAt = time.Now().Unix()
-			_ = a.Store.UpdateUser(ctx, u)
-			if strings.TrimSpace(claims.Email) != "" {
-				a.tryAutoProvisionOIDCMail(ctx, u)
-			}
-			return u, nil
+			return u, false, nil
 		}
+		// Compatibility with users deleted before identity tombstoning:
+		// release the old subject/email, then continue as a fresh login.
+		tombstoneUserIdentity(u)
+		if updateErr := a.Store.UpdateUser(ctx, u); updateErr != nil {
+			return nil, false, updateErr
+		}
+		err = domain.ErrNotFound
 	}
 	if !errors.Is(err, domain.ErrNotFound) {
-		return nil, err
+		return nil, false, err
 	}
 
 	// No (issuer,subject) match yet. Before treating this as a brand-new user,
@@ -434,14 +456,11 @@ func (a *App) CompleteOIDC(ctx context.Context, code string, flow OIDCFlow) (*do
 	// creating a duplicate. This runs even when auto-provision is off, because
 	// linking an existing account is not provisioning a new one.
 	if linked := a.linkExistingLocalUser(ctx, rt, claims); linked != nil {
-		if strings.TrimSpace(claims.Email) != "" {
-			a.tryAutoProvisionOIDCMail(ctx, linked)
-		}
-		return linked, nil
+		return linked, true, nil
 	}
 
 	if !rt.AutoProvision {
-		return nil, userErrf("OIDC 사용자 자동 생성이 비활성화되어 있고, 연결할 기존 계정도 없습니다. 관리자에게 문의하세요 (사용자명/이메일이 기존 계정과 일치하는지 확인).")
+		return nil, false, errOIDCNoAccount
 	}
 	loginID := strings.TrimSpace(claims.PreferredUsername)
 	if loginID == "" {
@@ -462,13 +481,20 @@ func (a *App) CompleteOIDC(ctx context.Context, code string, flow OIDCFlow) (*do
 		u.DisplayName = loginID
 	}
 	if err := a.Store.CreateUser(ctx, u, ""); err != nil {
-		return nil, err
+		// Two first requests for one identity race here — an MCP client
+		// sends several at once. The unique (issuer, subject) index lets
+		// exactly one create win; the other uses that account.
+		if winner, lookupErr := a.Store.GetUserByOIDC(ctx, rt.Issuer, claims.Subject); lookupErr == nil && winner.Status == domain.UserActive {
+			return winner, false, nil
+		}
+		return nil, false, err
 	}
-	a.audit(WithPrincipal(ctx, principalFor(u, "oidc")), "user_provision", "user:"+u.ID, "ok", rt.Issuer)
-	if strings.TrimSpace(claims.Email) != "" {
-		a.tryAutoProvisionOIDCMail(ctx, u)
+	detail := rt.Issuer
+	if via != "oidc" {
+		detail += " via " + via
 	}
-	return u, nil
+	a.audit(WithPrincipal(ctx, principalFor(u, via)), "user_provision", "user:"+u.ID, "ok", detail)
+	return u, true, nil
 }
 
 // oidcDiscover fetches the provider metadata for both the start and the

@@ -121,12 +121,18 @@ func (a *App) runSync(ctx context.Context, job *domain.Job, acc *domain.MailAcco
 		telemetry.Attr("account.id", acc.ID), telemetry.Attr("inbound.protocol", acc.InboundProtocol))
 	defer span.End()
 	stats := domain.SyncStats{}
+	// Sent mail is counted apart, so "new" still means new mail received.
+	sentStats := domain.SyncStats{}
 	finish := func(status domain.JobStatus, errMsg string) {
 		job.Status = status
 		job.Error = jobDiagnostic(job.Type, status, errMsg)
 		job.Stats = map[string]int64{
 			"seen": stats.Seen, "new": stats.New, "duplicate": stats.Duplicate,
 			"failed": stats.Failed, "oversize": stats.Oversize, "parse_error": stats.ParseError,
+		}
+		if sentStats.Seen > 0 {
+			job.Stats["sent_seen"], job.Stats["sent_new"] = sentStats.Seen, sentStats.New
+			job.Stats["sent_duplicate"], job.Stats["sent_failed"] = sentStats.Duplicate, sentStats.Failed
 		}
 		_ = a.Store.UpdateJob(context.Background(), job)
 		metrics.SyncTotal.WithLabelValues(string(status)).Inc()
@@ -259,7 +265,7 @@ func (a *App) runSync(ctx context.Context, job *domain.Job, acc *domain.MailAcco
 			stats.Oversize++
 			continue
 		}
-		if err := a.ingestOne(ctx, sess, acc, rm, uidlSupported, &stats); err != nil {
+		if err := a.ingestOne(ctx, sess, acc, rm, uidlSupported, &stats, domain.MailboxInbox); err != nil {
 			stats.Failed++
 			continue
 		}
@@ -270,8 +276,81 @@ func (a *App) runSync(ctx context.Context, job *domain.Job, acc *domain.MailAcco
 		job.Progress = fmt.Sprintf("%d/%d", fetched, len(remote))
 		_ = a.Store.UpdateJob(ctx, job)
 	}
+	if sent, ok := sess.(domain.SentFolderCapable); ok {
+		if a.syncSentFolder(ctx, sess, sent, acc, job, &sentStats, maxN) {
+			finish(domain.JobCancelled, "cancelled")
+			return
+		}
+	}
 	_ = sess.Quit(ctx)
 	finish(domain.JobSucceeded, "")
+}
+
+// sentCheckpointPrefix namespaces Sent-folder UIDs in the dedup checkpoints.
+// Each IMAP folder has its own UID space, and two folders may even share a
+// UIDVALIDITY, so an unprefixed Sent UID could collide with an INBOX one and
+// be skipped as already seen.
+const sentCheckpointPrefix = "sent:"
+
+// syncSentFolder ingests the account's Sent folder after the inbox, on the
+// same session. It is best-effort: a server without a Sent folder, or one
+// that refuses it, never fails the inbox sync. It reports whether the sync
+// was cancelled.
+func (a *App) syncSentFolder(ctx context.Context, sess domain.POP3Session, sent domain.SentFolderCapable,
+	acc *domain.MailAccount, job *domain.Job, stats *domain.SyncStats, maxN int) (cancelled bool) {
+	name, err := sent.SentMailbox(ctx)
+	if err != nil || name == "" {
+		if err != nil {
+			slog.Warn("sync: sent folder lookup failed; received mail was synced", "account", acc.ID, "err", providerDiagnostic(err))
+		}
+		return false
+	}
+	if err := sent.SelectMailbox(name); err != nil {
+		slog.Warn("sync: sent folder could not be opened; received mail was synced", "account", acc.ID, "err", providerDiagnostic(err))
+		return false
+	}
+	remote, err := sess.UIDL(ctx)
+	if err != nil {
+		slog.Warn("sync: sent folder could not be listed; received mail was synced", "account", acc.ID, "err", providerDiagnostic(err))
+		return false
+	}
+	// Newest first, as for the inbox.
+	for i, j := 0, len(remote)-1; i < j; i, j = i+1, j-1 {
+		remote[i], remote[j] = remote[j], remote[i]
+	}
+	fetched := 0
+	for _, rm := range remote {
+		if ctx.Err() != nil {
+			return true
+		}
+		if maxN > 0 && fetched >= maxN {
+			break
+		}
+		if rm.UIDL == "" {
+			continue // IMAP always has UIDs; nothing stable to dedup on otherwise
+		}
+		stats.Seen++
+		rm.UIDL = sentCheckpointPrefix + rm.UIDL
+		if dup, err := a.Store.HasCheckpoint(ctx, acc.ID, rm.UIDL); err == nil && dup {
+			stats.Duplicate++
+			continue
+		}
+		if maxBytes := a.EffectiveConfig().Sync.MaxMessageBytes; maxBytes > 0 && rm.Size > maxBytes {
+			stats.Oversize++
+			continue
+		}
+		if err := a.ingestOne(ctx, sess, acc, rm, true, stats, domain.MailboxSent); err != nil {
+			stats.Failed++
+			continue
+		}
+		fetched++
+		if fetched%20 == 0 {
+			runtime.GC()
+		}
+		job.Progress = fmt.Sprintf("sent %d/%d", fetched, len(remote))
+		_ = a.Store.UpdateJob(ctx, job)
+	}
+	return false
 }
 
 // runBodyRepair re-fetches messages whose stored body is missing/undecryptable
@@ -337,7 +416,7 @@ func (a *App) fetchRaw(ctx context.Context, sess domain.POP3Session, number int)
 // committed independently so an interruption never loses or duplicates
 // already-stored mail (POP-012, POP-015).
 func (a *App) ingestOne(ctx context.Context, sess domain.POP3Session, acc *domain.MailAccount,
-	rm domain.RemoteMessage, uidlSupported bool, stats *domain.SyncStats) (err error) {
+	rm domain.RemoteMessage, uidlSupported bool, stats *domain.SyncStats, mailbox string) (err error) {
 
 	var raw []byte
 	var parsed *mailparse.Parsed
@@ -380,10 +459,14 @@ func (a *App) ingestOne(ctx context.Context, sess domain.POP3Session, acc *domai
 	if parsed.ParseError != "" {
 		stats.ParseError++ // partial result still stored (MIME-004)
 	}
-
-	rawURI, _, _, err := a.Objects.Put("raw", bytes.NewReader(raw))
-	if err != nil {
-		return err
+	// A message sent through Postra was recorded when it was sent; the
+	// server's Sent copy of it carries the same Message-ID, not the same bytes.
+	if mailbox == domain.MailboxSent {
+		if dup, _ := a.Store.HasSentCopy(ctx, acc.ID, parsed.MessageID); dup {
+			stats.Duplicate++
+			_ = a.Store.AddCheckpoint(ctx, acc.ID, rm.UIDL, "")
+			return nil
+		}
 	}
 
 	uidl := rm.UIDL
@@ -398,6 +481,35 @@ func (a *App) ingestOne(ctx context.Context, sess domain.POP3Session, acc *domai
 		}
 	}
 
+	msg, body, duplicate, err := a.storeMessage(ctx, acc, raw, rawHash, parsed, uidl, mailbox)
+	if err != nil {
+		return err
+	}
+	if duplicate {
+		stats.Duplicate++
+		return nil
+	}
+	stats.New++
+	// Apply the user's automation rules to the freshly ingested message
+	// (§자동화 메일 규칙 엔진). Best-effort: never fails the sync. Rules are
+	// about mail received; sent mail never triggers them.
+	if mailbox != domain.MailboxSent {
+		a.evaluateRulesOnIngest(ctx, msg, body)
+	}
+	return nil
+}
+
+// storeMessage keeps one parsed message — the raw bytes, its thread, its
+// attachments after policy scanning, and the dedup checkpoint under uidl.
+// Sync and the sent-copy record share it. duplicate reports a message the
+// store already held.
+func (a *App) storeMessage(ctx context.Context, acc *domain.MailAccount, raw []byte, rawHash string,
+	parsed *mailparse.Parsed, uidl, mailbox string) (msg *domain.Message, body *domain.MessageBody, duplicate bool, err error) {
+	rawURI, _, _, err := a.Objects.Put("raw", bytes.NewReader(raw))
+	if err != nil {
+		return nil, nil, false, err
+	}
+
 	subjectKey := mailparse.SubjectKey(parsed.Subject)
 	refs := mailparse.ReferenceIDs(parsed.References, parsed.InReplyTo)
 	threadID, err := a.Store.ResolveThread(ctx, acc.UserID, acc.ID, refs, subjectKey, parsed.Date.Unix())
@@ -405,7 +517,7 @@ func (a *App) ingestOne(ctx context.Context, sess domain.POP3Session, acc *domai
 		threadID = ""
 	}
 
-	msg := &domain.Message{
+	msg = &domain.Message{
 		ID: persistence.NewID("msg"), UserID: acc.UserID, AccountID: acc.ID,
 		UIDL: uidl, MessageID: parsed.MessageID, Subject: parsed.Subject,
 		From: parsed.From, To: parsed.To, Cc: parsed.Cc, ReplyTo: parsed.ReplyTo,
@@ -414,8 +526,9 @@ func (a *App) ingestOne(ctx context.Context, sess domain.POP3Session, acc *domai
 		HasAttachments: len(parsed.Attachments) > 0,
 		InReplyTo:      parsed.InReplyTo, References: parsed.References,
 		AuthResults: parsed.AuthResults, ParseError: parsed.ParseError,
+		Mailbox: mailbox,
 	}
-	body := &domain.MessageBody{
+	body = &domain.MessageBody{
 		MessageID: msg.ID, TextBody: parsed.TextBody,
 		HTMLSanitized: parsed.HTMLSafe, Charset: parsed.Charset,
 	}
@@ -447,16 +560,11 @@ func (a *App) ingestOne(ctx context.Context, sess domain.POP3Session, acc *domai
 	}
 	if err := a.Store.InsertMessage(ctx, msg, body, atts); err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
-			stats.Duplicate++
 			_ = a.Store.AddCheckpoint(ctx, acc.ID, uidl, msg.ID)
-			return nil
+			return nil, nil, true, nil
 		}
-		return err
+		return nil, nil, false, err
 	}
 	_ = a.Store.AddCheckpoint(ctx, acc.ID, uidl, msg.ID)
-	stats.New++
-	// Apply the user's automation rules to the freshly ingested message
-	// (§자동화 메일 규칙 엔진). Best-effort: never fails the sync.
-	a.evaluateRulesOnIngest(ctx, msg, body)
-	return nil
+	return msg, body, false, nil
 }

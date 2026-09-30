@@ -132,6 +132,16 @@ const (
 // expunge), the connection's periodic re-idle window elapses, or ctx is
 // cancelled — returning nil on a wake-worthy event and an error on a
 // connection fault. The IMAP adapter implements it; POP3 does not.
+// SentFolderCapable is implemented by inbound sessions that can read the
+// account's sent-mail folder — IMAP; POP3 exposes only the maildrop.
+// SentMailbox names the folder, or returns "" when the server has none;
+// SelectMailbox switches the session to it, after which List, UIDL and
+// Retrieve address that folder.
+type SentFolderCapable interface {
+	SentMailbox(ctx context.Context) (string, error)
+	SelectMailbox(name string) error
+}
+
 type IdleCapable interface {
 	Idle(ctx context.Context) error
 }

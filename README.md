@@ -11,7 +11,7 @@ Go로 작성한 개인/사내 구축형 메일 서비스입니다. 사용자의 
 
 v0.20.0의 검색 가능한 운영 콘솔은 환경변수 초기값 위에 관리자 설정과 강제 정책을 적용합니다. 개인·계정 설정과 복수 서명도 웹에서 관리합니다. [설정 관리](docs/SETTINGS.md) · [HTML 메일](docs/MAIL_RENDERING.md) · [Ask Postra](docs/ASK_POSTRA.md) · [MCP 계약](docs/MCP_CONVERGENCE.md) · [API 스키마](docs/API_CONTRACTS.md) · [릴리즈 및 이전 주의사항](docs/releases/v0.20.0.md)
 
-최신 릴리즈 [v0.23.9](docs/releases/v0.23.9.md)는 POP3 `STLS`·IMAP `STARTTLS` 업그레이드 직전에 서버가 미리 보낸 평문을 감지해 연결을 거부하는 패치 릴리즈입니다. 예전에는 그 평문이 옛 리더와 함께 조용히 버려져 규약 위반이 어디에도 기록되지 않았습니다. 설정 키·DB 변경은 없고 v0.23.8의 POP3 다중행 응답 상한, v0.23.7의 IMAP 응답 누적 상한, v0.23.6의 프로토콜 줄 길이 상한, v0.23.5의 리터럴 길이 안전 처리, v0.23.4의 과대 리터럴 거부 후 스트림 재동기화, v0.23.3의 MCP 도구 오류 스키마 수정, v0.23.2의 MCP OAuth 세션 유지, v0.23.0의 DCR 호환 OAuth 프록시, v0.22.0의 Keycloak OAuth MCP 연결, 기존 API Key·메일·AI·개인화·승인 기반 발송은 그대로 유지합니다.
+최신 릴리즈 [v0.24.0](docs/releases/v0.24.0.md)은 IMAP 보낸편지함과 Postra 발송분을 보낸 메일로 가져오고 MCP `mail_sent_search` 로 보낸 메일만 조회하게 하며, IMAP IDLE 감시가 멈춘 채 돌아오지 않던 문제와 리더 lease 갱신 결함을 고친 릴리즈입니다. 로그인 화면은 조직 계정(SSO) 중심으로 바뀌고 silent SSO 로그아웃이 브라우저 단위로 유지되며, Keycloak에 로그인한 사용자는 첫 MCP 요청에서 Postra 계정이 연결됩니다. `messages.mailbox` 컬럼이 추가되는 DB 마이그레이션이 있습니다(기동 시 자동). v0.23.x의 MCP OAuth·DCR 프록시·프로토콜 안전 처리, 기존 API Key·메일·AI·개인화·승인 기반 발송은 그대로 유지합니다.
 
 ## 설계 핵심
 
@@ -146,6 +146,12 @@ Postgres 어댑터 통합 테스트는 `POSTRA_TEST_PG` DSN이 설정된 경우�
 ## 수집 프로토콜 (POP3 / IMAP)
 
 인바운드 수집은 **POP3**(기본)와 **IMAP** 을 지원합니다. 계정 등록 시 `--inbound-protocol imap` 로 선택하며, 이후 수집·검색·분석·삭제 경로는 동일합니다(IMAP 세션이 동일 인바운드 포트를 구현). 포트 미지정 시 프로토콜·보안 모드에 따라 기본값이 정해집니다(POP3 995/110, IMAP 993/143). IMAP은 `UIDVALIDITY.UID` 를 중복 제거 체크포인트로 사용합니다.
+
+### 보낸 메일
+
+- **IMAP 계정**은 받은편지함 다음에 서버의 보낸편지함도 가져옵니다. 폴더는 RFC 6154 `\Sent` 속성을 먼저 찾고, 없으면 `Sent`·`Sent Items`·`Sent Messages`·`Sent Mail`·`보낸편지함` 같은 흔한 이름을 찾습니다(`INBOX.Sent`, `[Gmail]/Sent Mail`, modified UTF-7로 인코딩된 한글 이름 포함). 폴더마다 UID 공간이 따로이므로 보낸편지함 체크포인트는 `sent:` 접두사로 분리합니다. 보낸편지함이 없거나 열리지 않아도 받은 메일 동기화는 성공합니다. 작업 통계에는 `sent_new`·`sent_duplicate` 가 따로 남습니다.
+- **Postra에서 보낸 메일**은 발송이 확인된 순간 보낸 메일로 기록됩니다. POP3에는 보낸편지함이 없으므로 POP3 계정은 이것이 유일한 출처입니다. 결과가 불확실한 발송(`uncertain`)은 기록하지 않습니다. 서버가 제출된 메일을 보낸편지함에 저장하는 경우에도 같은 Message-ID로 알아보고 두 번 저장하지 않습니다.
+- 보낸 메일은 받은 메일 기능에 섞이지 않습니다. 받은편지함·중요·보관·스누즈 목록과 검색의 기본 보기, 자동화 규칙, AI 분류, 임베딩(따라서 시맨틱 검색)은 받은 메일만 다룹니다. 보낸 메일은 검색 `folder=sent` 와 MCP `mail_sent_search` 로 조회하며, 답장은 원래 메일과 같은 스레드로 묶여 스레드 보기에 함께 나타납니다.
 
 ```bash
 ./postra account add --name Work --email me@corp.local \

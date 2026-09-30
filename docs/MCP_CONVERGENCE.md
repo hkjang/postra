@@ -10,6 +10,7 @@ MCP는 별도 메일 처리기를 두지 않습니다. REST와 동일한 `applic
 - 기존 `mail://` 리소스와 함께 `postra://mail/{id}`, `postra://mail/{id}/raw`, `postra://thread/{id}`, `postra://draft/{id}`, `postra://account/{id}`, `postra://action/{id}`, `postra://job/{id}`를 제공합니다. 리소스 읽기도 도구와 같은 권한 검사를 거치며 권한이 부족하면 원문을 반환하지 않습니다.
 - `mail_render`는 웹과 같은 자동 감지·템플릿·서명을 사용합니다. `smart_format`은 추가 `mail.ai` 권한을 요구하며 명시적으로 요청할 때만 AI를 호출합니다. 선택 문장만 수정하는 `mail_text_rewrite`는 저장된 초안을 바꾸지 않습니다.
 - 초안 목록은 `mail_drafts_list`, 현재 초안은 `mail_draft_get`, 폐기는 `mail_draft_delete`입니다. 폐기에는 `confirm=true`가 필요하고 발송된 초안은 폐기할 수 없습니다.
+- 보낸 메일만 조회할 때는 `mail_sent_search` 를 씁니다. 필터 없이 부르면 보낸 메일 전체를 최신순으로 나열하고, `to`·`subject`·`text`·기간·첨부 여부·계정으로 좁힐 수 있습니다. 입력에 폴더 선택이 없어 받은 메일을 돌려줄 수 없으며, `mail_search` 와 같은 `mail.search` 권한을 요구합니다. 본문은 반환된 id로 `mail_message_get` 을 호출해 봅니다. `mail_search` 의 기본 보기는 전과 같이 받은 메일만 다룹니다. Postra의 발송 작업 상태(재시도·실패 포함)는 계속 `mail_outbound_list` 로 확인합니다.
 - 초안 첨부는 `mail_draft_attachment_add/get/remove`를 사용합니다. 추가·제거는 새 버전을 만들어 승인을 무효화합니다. MCP 파일 입력은 1 MiB로 제한하고 읽기는 기본 메타데이터/인증 REST 다운로드 경로만 반환합니다. `include_content=true`일 때만 최대 1 MiB base64 내용을 반환합니다. 큰 파일은 웹/REST 첨부 기능을 사용합니다.
 - `mail_events`는 [개인 알림](NOTIFICATIONS.md)과 동일한 실제 작업·발송·액션·보안 상태 메타데이터를 반환합니다. 본문·수신자·오류 상세가 포함되지 않으며 조직/개인 알림 설정을 따릅니다.
 - `mail_ask`는 `mail_question_answer`의 별칭이며 같은 Ask 입력·출력으로 검색 조건/기간/시간대와 업무·액션 근거를 사용합니다. `mail_action_card_create`와 확장된 `mail_set_work_status`는 [업무 5단계·수동 액션](WORK_ACTIONS.md) 서비스를 공유합니다.

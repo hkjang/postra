@@ -51,6 +51,8 @@ type App struct {
 	nodeID             string
 	leaderMu           sync.RWMutex
 	isLeader           bool
+	leaseValidUntil    time.Time     // expiry of the lease this node last wrote; past it a leader must step down
+	leaderChanged      chan struct{} // closed and replaced on every leadership change (see leaderEdge)
 	mcpPolicy          mcpPolicyState
 	syncSlotsMu        sync.Mutex
 	syncSlotsInUse     int // live limit changes never cancel already-running syncs
@@ -486,6 +488,10 @@ func (a *App) setLeaderState(state bool) {
 		} else {
 			slog.Info("app: this node is now STANDBY. Pausing background tasks.", "node_id", a.nodeID)
 		}
+		if a.leaderChanged != nil {
+			close(a.leaderChanged)
+		}
+		a.leaderChanged = make(chan struct{})
 	}
 	a.leaderMu.Unlock()
 	// On the standby→leader rising edge, recover jobs a crashed/demoted leader
@@ -495,6 +501,18 @@ func (a *App) setLeaderState(state bool) {
 	if rising {
 		a.onBecameLeader()
 	}
+}
+
+// leaderEdge returns a channel that is closed at the next leadership change.
+// Take it before reading IsLeader, then wait on it: a change in between
+// closes the channel already held, so no edge is missed.
+func (a *App) leaderEdge() <-chan struct{} {
+	a.leaderMu.Lock()
+	defer a.leaderMu.Unlock()
+	if a.leaderChanged == nil {
+		a.leaderChanged = make(chan struct{})
+	}
+	return a.leaderChanged
 }
 
 // guard runs fn with panic recovery. In Go, an unrecovered panic in ANY
@@ -542,7 +560,7 @@ func (a *App) startLeaderElectionLoop() {
 
 		a.guard("leader-election", func() { a.electLeader(context.Background()) })
 
-		ticker := time.NewTicker(8 * time.Second)
+		ticker := time.NewTicker(leaderTick)
 		defer ticker.Stop()
 
 		for {
@@ -568,19 +586,49 @@ func (a *App) ActiveJobIDs() []string {
 	return ids
 }
 
+const (
+	leaderLeaseKey = "internal.leader_lease"
+	leaderLeaseSec = 15
+	leaderTick     = 8 * time.Second
+)
+
+// leaderRenewTimeout bounds a renewal well inside the lease. The SQLite store
+// has a single connection, so an unbounded renewal queued behind a long write
+// used to block the election loop indefinitely: the lease lapsed in the
+// database while this node still believed it led, and the loop never came
+// back to notice.
+var leaderRenewTimeout = 5 * time.Second
+
 func (a *App) electLeader(ctx context.Context) {
 	if !a.Cfg.WorkerEnabled {
 		a.setLeaderState(false)
 		return
 	}
-
-	const leaseKey = "internal.leader_lease"
-	const leaseSec = 15
-
-	acquired, err := a.Store.TryAcquireLease(ctx, leaseKey, a.nodeID, leaseSec)
+	ctx, cancel := context.WithTimeout(ctx, leaderRenewTimeout)
+	defer cancel()
+	now := time.Now()
+	acquired, err := a.Store.TryAcquireLease(ctx, leaderLeaseKey, a.nodeID, leaderLeaseSec)
 	if err != nil {
-		slog.Error("app: leader election check failed", "error", err, "node_id", a.nodeID)
+		// A failed renewal leaves the lease we last wrote in place, so keep
+		// leading only until it expires. Past that another replica may hold
+		// it, and two leaders would both run sync and IDLE for the same
+		// accounts. Before this, an error left the state untouched forever.
+		a.leaderMu.RLock()
+		leading, validUntil := a.isLeader, a.leaseValidUntil
+		a.leaderMu.RUnlock()
+		if leading && !now.Before(validUntil) {
+			slog.Error("app: leader lease expired without a successful renewal; stepping down", "error", err, "node_id", a.nodeID)
+			a.recordIncident(domain.SeverityWarning, "leader-election", "리더 lease 갱신 실패로 대기 상태 전환", "lease 갱신이 만료 시각까지 성공하지 못했습니다: "+err.Error())
+			a.setLeaderState(false)
+			return
+		}
+		slog.Warn("app: leader election check failed", "error", err, "node_id", a.nodeID, "leading", leading)
 		return
+	}
+	if acquired {
+		a.leaderMu.Lock()
+		a.leaseValidUntil = now.Add(leaderLeaseSec * time.Second)
+		a.leaderMu.Unlock()
 	}
 	a.setLeaderState(acquired)
 }
@@ -593,7 +641,7 @@ func (a *App) releaseLease(ctx context.Context) {
 		return
 	}
 
-	const leaseKey = "internal.leader_lease"
+	const leaseKey = leaderLeaseKey
 
 	type Lease struct {
 		NodeID    string `json:"node_id"`

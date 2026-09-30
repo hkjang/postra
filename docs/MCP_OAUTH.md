@@ -13,7 +13,11 @@ Postra의 HTTP MCP는 기존 API Key에 더해 Keycloak의 사용자용 OAuth ac
 
 - 운영에서는 Postra의 인증을 활성화한다(`POSTRA_AUTH_ENABLED=true`, 변경 시 재시작). 인증을 끈 신뢰 로컬 모드의 REST API까지 OAuth MCP 설정이 보호하는 것은 아니다.
 - 기존 Keycloak SSO가 `/app/login`에서 정상 작동해야 한다. OAuth MCP도 같은 `auth.oidc.issuer`를 신뢰한다.
-- 사용자는 **브라우저에서 Postra에 SSO 로그인하여 연결된 Postra 사용자가 먼저 존재**해야 하며, 해당 사용자가 활성 상태여야 한다. MCP Bearer token만으로 사용자를 생성하거나 이메일이 같은 계정을 자동 연결하지 않는다.
+- Keycloak identity에 연결된 Postra 사용자가 아직 없으면, 첫 MCP 요청(또는 DCR 프록시의 토큰 교환)에서 **브라우저 첫 SSO 로그인과 똑같은 규칙**으로 연결한다. 사용자가 먼저 웹 UI에 로그인할 필요는 없다.
+  - 사용자명·이메일로 본인 소유가 분명한 기존 **로컬** 계정이 있으면 그 계정에 연결한다. 이미 다른 Keycloak subject에 연결된 계정은 이메일이 같아도 절대 가져가지 않는다.
+  - 연결할 계정이 없으면 `auth.oidc.auto_provision`(SSO 최초 로그인 시 Postra 사용자 생성)이 켜져 있을 때만 새 사용자를 만든다. 꺼져 있으면 거부하고, 거부 사유가 이 설정을 가리킨다.
+  - 역할은 access token의 `groups` claim이 관리자 그룹(`auth.oidc.admin_group`)을 담을 때만 관리자가 된다. access token에 groups mapper가 없으면 일반 사용자로 만들어진다.
+  - 연결은 모든 토큰 검사(서명·issuer·audience·허용 client·토큰 유형)를 통과한 뒤에만 일어난다. 비활성화된 사용자는 계속 거부한다.
 - 사전 등록 방식에서는 MCP 클라이언트가 OAuth Authorization Code + PKCE와 **사전 등록한 client ID 지정**을 지원해야 한다. client ID를 직접 지정할 수 없고 DCR만 지원하는 클라이언트는 5절의 DCR 호환 프록시를 사용한다. CIMD(client ID metadata document)는 지원하지 않는다.
 - 운영 주소는 브라우저·MCP 클라이언트·Postra가 접근할 수 있는 내부 HTTPS 주소로 정한다. 내부 CA도 각 실행 환경에서 신뢰해야 한다.
 - 관리자는 설정을 바꾸기 전에 현재 로그인 세션과 복구용 자격 증명을 확보한다. API Key를 먼저 폐기할 필요는 없다.
@@ -88,7 +92,7 @@ Scope 이름은 `mail.read`, `mail.search`, `mail.ai`, `mail.draft`, `mail.send`
 
 ## 4. 사용자 연결과 확인
 
-1. 사용자가 브라우저에서 Postra에 **Keycloak SSO로 먼저 로그인**한다. 같은 이메일의 로컬 사용자만 만들거나 로컬 비밀번호로만 로그인한 것은 OIDC 연결을 대신하지 않는다.
+1. 웹 UI 선행 로그인은 필요 없다. 첫 MCP 연결에서 위 "먼저 확인할 사항"의 규칙으로 Postra 사용자가 연결되거나 만들어진다.
 2. MCP 클라이언트에 Postra MCP URL과 사전 등록된 client ID를 설정한다. confidential client만 해당 client secret을 사용한다.
 3. OAuth 연결을 시작하여 Keycloak에서 로그인한다. 기본 요청 scope는 `mail.read mail.search`다. 이미 Keycloak 세션이 있으면 자격 증명 재입력이 생략될 수 있다.
 4. `mail_identity`와 읽기·검색 도구로 올바른 Postra 사용자와 자신의 메일만 보이는지 확인한다.
@@ -161,7 +165,7 @@ access token은 Keycloak의 Bearer JWT 그대로이므로 `/mcp`의 검증(issue
 
 ### 클라이언트 연결 절차
 
-1. 사용자가 브라우저에서 Postra에 SSO로 먼저 로그인해 사용자 연결을 완료한다.
+1. 웹 UI 선행 로그인은 필요 없다. 토큰 교환 시점에 Postra 사용자가 연결되거나 만들어진다(위 "먼저 확인할 사항" 참조).
 2. MCP 클라이언트에 Postra MCP URL(`https://postra.corp.local/mcp`)만 입력한다. client ID·secret은 비워 둔다.
 3. 클라이언트가 자동 등록 후 브라우저를 열면 Postra 동의 화면에서 클라이언트와 콜백 주소를 확인하고 허용한다. 이어서 Keycloak 로그인이 진행된다.
 4. `mail_identity`로 올바른 사용자·scope인지 확인한다. 권한 확장은 4절과 같이 Keycloak scope·Postra 허용 scope·조직 정책을 함께 조정하고 재인증한다.
@@ -198,7 +202,7 @@ Keycloak discovery의 `jwks_uri`는 설정한 issuer와 동일한 scheme·host·
 | 다른 realm/client의 토큰이 동작하지 않음 | 의도된 차단이다. issuer나 audience 검사를 끄지 않고 정확한 client로 재인증 |
 | Keycloak에서 끈 사용자가 잠시 계속 접근 | 이미 발급한 access token의 남은 수명 확인, 긴급하면 Postra 사용자도 비활성화 |
 | 내부 CA 또는 연결 오류 | 각 실행 환경의 CA·DNS·방화벽·시간 확인; endpoint의 비밀값이나 token을 로그로 출력하지 않음 |
-| Keycloak 로그인은 되지만 Postra 사용자가 연결되지 않음 | 먼저 웹 SSO 로그인, issuer·subject 연결 확인; 이메일 기반 Bearer 자동 병합은 수행하지 않음 |
+| Keycloak 로그인은 되지만 Postra 사용자가 연결되지 않음 | 거부 사유가 `auth.oidc.auto_provision`을 가리키면 SSO 사용자 자동 생성이 꺼져 있고 연결할 로컬 계정도 없는 경우다. 설정을 켜거나 관리자가 계정을 만들어 둔다. 다른 Keycloak subject에 이미 연결된 계정은 이메일이 같아도 연결하지 않는다 |
 | DCR 클라이언트 등록이 404 | `mcp.oauth.proxy.enabled`, `mcp.oauth.enabled`, 프록시 client ID, 리버스 프록시의 `/oauth/*`·`/.well-known/oauth-authorization-server` 전달 |
 | 등록은 되지만 동의 화면 대신 오류 페이지나 `error`가 전달됨 | 클라이언트가 보낸 redirect URI가 등록한 것과 다름(loopback은 포트만 가변), PKCE S256 누락, 다른 `resource` 값, 허용 scope가 하나도 없음 |
 | 동의 후 Keycloak이 `invalid_redirect_uri` | 프록시용 Keycloak client의 Valid Redirect URI에 `https://<공개 MCP origin>/oauth/callback`이 정확히 있는지 확인 |

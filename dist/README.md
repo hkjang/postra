@@ -2,16 +2,16 @@
 
 Docker 데몬 없이 빌드한, 오프라인망에서 바로 사용 가능한 산출물입니다.
 
-> **v0.23.9 — TLS 핸드셰이크 전에 서버가 끼워 넣은 평문을 조용히 버리던 문제 수정**: POP3 `STLS`·IMAP `STARTTLS` 업그레이드를 승인하는 응답 뒤에 서버가 평문을 더 보내면(STARTTLS command injection) 예전에는 그 바이트가 옛 리더와 함께 버려지고 세션이 아무 일 없다는 듯 이어졌습니다. 이제 두 어댑터가 핸드셰이크 **전에** 리더 버퍼를 확인해 남은 바이트가 있으면 연결을 닫고 접속을 실패시킵니다. 정상 서버는 승인 응답 뒤 클라이언트를 기다리므로 영향받지 않습니다. 버퍼에 도달한 바이트만 보는 best-effort 탐지이며(커널·전선에 남은 주입은 보이지 않습니다), `net/smtp` 를 쓰는 SMTP 발송 경로는 리더 접근이 불가해 이번 검사에 포함되지 않았습니다. 새 설정 키·DB 마이그레이션·필수 환경변수는 없습니다. [릴리즈 내용](../docs/releases/v0.23.9.md)을 확인하세요. POP3 다중행 응답 상한은 [v0.23.8](../docs/releases/v0.23.8.md), IMAP 응답 누적 상한은 [v0.23.7](../docs/releases/v0.23.7.md), 프로토콜 줄 길이 상한은 [v0.23.6](../docs/releases/v0.23.6.md), 리터럴 길이 안전 처리는 [v0.23.5](../docs/releases/v0.23.5.md), 과대 리터럴 거부 후 스트림 재동기화는 [v0.23.4](../docs/releases/v0.23.4.md), MCP 도구 오류 스키마 수정은 [v0.23.3](../docs/releases/v0.23.3.md), MCP OAuth 세션 유지는 [v0.23.2](../docs/releases/v0.23.2.md), DCR 호환 OAuth 프록시는 [v0.23.0](../docs/releases/v0.23.0.md), Keycloak OAuth MCP 연결은 [v0.22.0](../docs/releases/v0.22.0.md)과 [설정 가이드](../docs/MCP_OAUTH.md)를 참고하세요. v0.19.x 이하에서 업그레이드할 경우 [v0.20.0의 백업·Keycloak 콜백·권한 변경 안내](../docs/releases/v0.20.0.md)도 먼저 확인하세요.
+> **v0.24.0 — 보낸 메일 동기화, 동기화 중단 수정, 조직 계정 로그인**: IMAP 보낸편지함과 Postra에서 보낸 메일을 보낸 메일로 저장하고, MCP `mail_sent_search` 로 보낸 메일만 조회합니다. 보낸 메일은 받은편지함·검색 기본 보기·규칙·AI 기능에 섞이지 않습니다. IMAP IDLE 감시가 패닉이나 짧은 리더 전환 뒤 다시 시작되지 않던 문제, 리더 lease 갱신이 멈추거나 만료 뒤에도 리더로 남던 문제를 고쳤습니다. 로그인 화면은 조직 계정(SSO)이 주 동작이 되고, silent SSO 로그아웃이 새 탭에서도 유지되며, 미연결 Keycloak 사용자는 첫 MCP 요청에서 웹 SSO와 같은 규칙으로 연결됩니다. **`messages.mailbox` 컬럼과 인덱스를 추가하는 DB 마이그레이션**이 기동 시 자동으로 실행됩니다. 보낸 메일이 저장된 뒤 v0.23.x 로 되돌리면 보낸 메일이 받은편지함에 섞이니 백업 DB로 복원하세요. [릴리즈 내용](../docs/releases/v0.24.0.md)을 확인하세요. Keycloak OAuth MCP 연결은 [설정 가이드](../docs/MCP_OAUTH.md)를 참고하세요. v0.19.x 이하에서 업그레이드할 경우 [v0.20.0의 백업·Keycloak 콜백·권한 변경 안내](../docs/releases/v0.20.0.md)도 먼저 확인하세요.
 
 기존 SSO·메일 프로비저닝·비밀값 암호화·승인·멱등 발송은 유지합니다. 런타임 Node 서버나 외부 CDN은 필요 없으며 서체와 시간대 데이터도 실행 파일에 포함됩니다.
 
 | 파일 | 설명 |
 | --- | --- |
-| `postra-0.23.9.tar.gz` | `docker load` 로 불러오는 컨테이너 이미지 (`postra:0.23.9`, linux/amd64) |
-| `postra-0.23.9-linux-amd64` | 정적 링크 단일 실행 파일 (CGO 없음, 의존성 없음) |
-| `postra-0.23.9-sbom.cdx.json` | CycloneDX 소프트웨어 자재명세서 |
-| `postra-0.23.9-frontend-sbom.cdx.json` | 프런트엔드 의존성 CycloneDX 명세서 |
+| `postra-0.24.0.tar.gz` | `docker load` 로 불러오는 컨테이너 이미지 (`postra:0.24.0`, linux/amd64) |
+| `postra-0.24.0-linux-amd64` | 정적 링크 단일 실행 파일 (CGO 없음, 의존성 없음) |
+| `postra-0.24.0-sbom.cdx.json` | CycloneDX 소프트웨어 자재명세서 |
+| `postra-0.24.0-frontend-sbom.cdx.json` | 프런트엔드 의존성 CycloneDX 명세서 |
 | `SHA256SUMS.txt` | 모든 릴리즈 파일의 SHA-256 체크섬 |
 
 이미지는 순수 Go 정적 바이너리 + CA 인증서 + 최소 rootfs 로만 구성됩니다(scratch 기반).
@@ -20,7 +20,7 @@ Docker 데몬 없이 빌드한, 오프라인망에서 바로 사용 가능한 �
 
 ```bash
 # 폐쇄망 호스트로 tar.gz 를 옮긴 뒤:
-docker load -i postra-0.23.9.tar.gz     # gzip 자동 인식
+docker load -i postra-0.24.0.tar.gz     # gzip 자동 인식
 docker image ls postra
 
 # 오프라인망(평문 POP3/SMTP 허용) 실행 예시
@@ -30,7 +30,7 @@ docker run -d --name postra \
   -e POSTRA_HTTP_ADDR=0.0.0.0:8480 \
   -e POSTRA_ALLOW_INSECURE_MAIL=true \
   -e POSTRA_API_TOKEN=change-me \
-  postra:0.23.9
+  postra:0.24.0
 
 # CLI 사용 (같은 컨테이너)
 docker exec -it postra postra account list
@@ -42,9 +42,9 @@ REST API는 `/api/v1/`(기존 `/api/` 호환), 유일한 공식 Web UI는 `/app/
 ## 2) 바이너리 단독 실행 (Docker 불필요)
 
 ```bash
-chmod +x postra-0.23.9-linux-amd64
-./postra-0.23.9-linux-amd64 init
-POSTRA_BOOTSTRAP_ADMIN_PASSWORD='replace-with-a-long-secret' ./postra-0.23.9-linux-amd64 serve
+chmod +x postra-0.24.0-linux-amd64
+./postra-0.24.0-linux-amd64 init
+POSTRA_BOOTSTRAP_ADMIN_PASSWORD='replace-with-a-long-secret' ./postra-0.24.0-linux-amd64 serve
 ```
 
 ## 데이터 / 비밀값
@@ -58,6 +58,6 @@ Docker 없이 이미지를 다시 만들려면:
 
 ```bash
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o postra ./cmd/postra
-go run scripts/mkimage.go postra postra-image.tar postra:0.23.9
+go run scripts/mkimage.go postra postra-image.tar postra:0.24.0
 gzip -9 postra-image.tar
 ```
