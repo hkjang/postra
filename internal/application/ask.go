@@ -30,6 +30,7 @@ type AskSource struct {
 	Subject    string   `json:"subject"`
 	From       string   `json:"from"`
 	Date       int64    `json:"date"`
+	Mailbox    string   `json:"mailbox,omitempty"` // "sent" for the owner's own mail
 	WorkStatus string   `json:"work_status,omitempty"`
 	ActionIDs  []string `json:"action_ids,omitempty"`
 }
@@ -121,10 +122,61 @@ func askPlan(in AskInput, now time.Time) (AskInput, error) {
 	return in, nil
 }
 
+// askMatches applies the explicit filters. The sender filter names the person
+// a conversation is with: the sender of received mail, a recipient of sent
+// mail.
 func askMatches(m domain.Message, in AskInput) bool {
 	return (in.AccountID == "" || m.AccountID == in.AccountID) &&
 		(in.Since == 0 || m.Date >= in.Since) && (in.Until == 0 || m.Date < in.Until) &&
-		(in.From == "" || strings.Contains(strings.ToLower(m.From.Email+" "+m.From.Name), strings.ToLower(in.From)))
+		(in.From == "" || strings.Contains(strings.ToLower(askCorrespondents(m)), strings.ToLower(in.From)))
+}
+
+func askCorrespondents(m domain.Message) string {
+	if m.Mailbox != domain.MailboxSent {
+		return m.From.Email + " " + m.From.Name
+	}
+	var b strings.Builder
+	for _, list := range [][]domain.Address{m.To, m.Cc, m.Bcc} {
+		for _, a := range list {
+			b.WriteString(a.Email + " " + a.Name + " ")
+		}
+	}
+	return b.String()
+}
+
+// askAboutSending reports a question about the owner's own mail — what they
+// sent, whether they replied — which sent mail answers and received mail
+// cannot.
+func askAboutSending(q string) bool {
+	return containsAny(strings.ToLower(q), "보낸", "보냈", "답장했", "답장 했", "회신했", "회신 했", "답했", "내가 쓴", "발송한",
+		"sent", "i replied", "did i reply", "i wrote", "did i answer", "follow up", "follow-up")
+}
+
+// askSentMail retrieves sent mail for Ask. Vectors index received mail only,
+// so sent mail joins through keyword retrieval; with no precise search text,
+// a question about sending reads the owner's recent sent mail in the window.
+func (a *App) askSentMail(ctx context.Context, in AskInput, text string, sending bool) ([]domain.Message, error) {
+	limit := 2
+	if sending {
+		limit = 4
+		if in.SearchText == "" {
+			text = ""
+		}
+	}
+	res, err := a.Search(ctx, domain.SearchQuery{Folder: "sent", AccountID: in.AccountID, Text: text, To: in.From, Since: in.Since, Until: in.Until, Limit: 20})
+	if err != nil {
+		return nil, err
+	}
+	out := []domain.Message{}
+	for _, m := range res.Messages {
+		if len(out) == limit {
+			break
+		}
+		if askMatches(m, in) {
+			out = append(out, m)
+		}
+	}
+	return out, nil
 }
 
 // Ask never searches outside the principal's namespace, including when the
@@ -168,6 +220,7 @@ func (a *App) Ask(ctx context.Context, input AskInput) (*AskResult, error) {
 		}
 	}
 	const candidateLimit = 200
+	var sent []domain.Message
 	switch in.Mode {
 	case "actions":
 		for _, card := range cards {
@@ -228,7 +281,11 @@ func (a *App) Ask(ctx context.Context, input AskInput) (*AskResult, error) {
 				add(m)
 			}
 		}
-		if len(msgs) == 0 && in.SearchText == "" {
+		sent, err = a.askSentMail(ctx, in, text, askAboutSending(in.Question))
+		if err != nil {
+			return nil, err
+		}
+		if len(msgs) == 0 && len(sent) == 0 && in.SearchText == "" {
 			res, err := a.Search(ctx, domain.SearchQuery{AccountID: in.AccountID, From: in.From, Since: in.Since, Until: in.Until, Limit: 20})
 			if err != nil {
 				return nil, err
@@ -242,8 +299,13 @@ func (a *App) Ask(ctx context.Context, input AskInput) (*AskResult, error) {
 	if in.Mode == "work" || in.Mode == "actions" {
 		retrieval.Warnings = append(retrieval.Warnings, "최근 업무/Action 최대 200건에서 찾았습니다. 업무 미완료 상태만으로 실제 미회신 여부를 단정하지 않습니다.")
 	}
-	if len(msgs) > 6 {
-		msgs = msgs[:6]
+	// Sent mail keeps its slots: a busy inbox must not crowd out the owner's
+	// own reply when the question is whether they replied.
+	if keep := 6 - len(sent); len(msgs) > keep {
+		msgs = msgs[:keep]
+	}
+	for _, m := range sent {
+		add(m)
 	}
 	if len(msgs) == 0 {
 		return nil, userErrf("지정한 범위에서 답변의 근거를 찾지 못했습니다. 기간이나 검색 조건을 확인하세요")
@@ -259,8 +321,11 @@ func (a *App) Ask(ctx context.Context, input AskInput) (*AskResult, error) {
 	allowed := map[string]bool{}
 	var contextText strings.Builder
 	for _, m := range msgs {
-		source := AskSource{MessageID: m.ID, Subject: m.Subject, From: m.From.Email, Date: m.Date}
-		evidence := map[string]any{"message_id": m.ID, "subject": truncateRunes(m.Subject, 250), "from": m.From.Email, "date": fmtUnix(m.Date), "text": truncateRunes(bodies[m.ID], 1000)}
+		source := AskSource{MessageID: m.ID, Subject: m.Subject, From: m.From.Email, Date: m.Date, Mailbox: m.Mailbox}
+		evidence := map[string]any{"message_id": m.ID, "mailbox": m.Mailbox, "subject": truncateRunes(m.Subject, 250), "from": m.From.Email, "date": fmtUnix(m.Date), "text": truncateRunes(bodies[m.ID], 1000)}
+		if m.Mailbox == domain.MailboxSent {
+			evidence["to"] = askRecipients(m)
+		}
 		if collab, err := a.GetMessageCollab(ctx, m.ID); err == nil {
 			status, _ := domain.CanonicalCollabStatus(collab.Collab.Status)
 			if in.IncompleteOnly && status == domain.CollabDone {
@@ -297,11 +362,22 @@ func (a *App) Ask(ctx context.Context, input AskInput) (*AskResult, error) {
 		return nil, userErrf("지정한 업무 조건과 일치하는 근거를 찾지 못했습니다")
 	}
 	warnings, _ := json.Marshal(retrieval.Warnings)
-	instruction := "Question: " + in.Question + "\nRetrieval is a bounded sample, not the entire mailbox. Never infer an unanswered mail solely from work status. State missing evidence. Retrieval warnings: " + string(warnings)
+	instruction := "Question: " + in.Question + "\nRetrieval is a bounded sample, not the entire mailbox. Evidence with mailbox \"sent\" is mail the user wrote and sent (see its \"to\"); \"inbox\" is mail the user received. Never infer an unanswered mail solely from work status. State missing evidence. Retrieval warnings: " + string(warnings)
 	an, err := a.runAnalysis(ctx, "question_answer", "query", "adhoc", instruction, contextText.String())
 	if err != nil {
 		return nil, err
 	}
 	a.applyCitationVerification(ctx, an, allowed)
 	return &AskResult{Analysis: an, Retrieval: retrieval}, nil
+}
+
+// askRecipients lists who a sent message went to, for the model's evidence.
+func askRecipients(m domain.Message) []string {
+	out := []string{}
+	for _, list := range [][]domain.Address{m.To, m.Cc, m.Bcc} {
+		for _, a := range list {
+			out = append(out, a.Email)
+		}
+	}
+	return out
 }

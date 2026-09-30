@@ -1,6 +1,8 @@
 export interface Address { name?: string; email: string }
 export interface Message {
-  id: string; account_id: string; subject: string; from: Address; to?: Address[]; cc?: Address[];
+  id: string; account_id: string; subject: string; from: Address; to?: Address[]; cc?: Address[]; bcc?: Address[];
+  /** "sent" for mail the owner sent; received mail is "inbox". */
+  mailbox?: string;
   date: number; created_at: number; has_attachments: boolean; is_important?: boolean;
   is_archived?: boolean; is_read?: boolean; snoozed_until?: number; labels?: string[]; thread_id?: string; auth_results?: string; parse_error?: string;
 }

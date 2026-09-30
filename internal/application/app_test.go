@@ -822,7 +822,7 @@ func TestOIDCLinkRefusesEmailConflict(t *testing.T) {
 	}
 	rt := oidcRuntime{Issuer: "https://kc/realms/x"}
 	got := app.linkExistingLocalUser(ctx, rt,
-		oidcClaims{Subject: "s", PreferredUsername: "bob", Email: "attacker@evil.example", EmailVerified: true})
+		oidcClaims{Subject: "s", PreferredUsername: "bob", Email: "attacker@evil.example", EmailVerified: verified(true)})
 	if got != nil {
 		t.Fatal("linked despite conflicting email — takeover guard failed")
 	}
@@ -1549,3 +1549,6 @@ func TestDraftVersionAuthors(t *testing.T) {
 		t.Fatalf("version 1 lost: %v %+v", err, v1)
 	}
 }
+
+// verified builds the email_verified claim, which is absent unless set.
+func verified(v bool) *bool { return &v }

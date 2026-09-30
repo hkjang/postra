@@ -24,8 +24,10 @@ type Job struct {
 	Stats     map[string]int64  `json:"stats,omitempty"`
 	Error     string            `json:"error,omitempty"`
 	Meta      map[string]string `json:"meta,omitempty"`
-	CreatedAt int64             `json:"created_at"`
-	UpdatedAt int64             `json:"updated_at"`
+	// Diagnostic is how a sync ended, step by step, in a closed vocabulary.
+	Diagnostic *SyncDiagnostic `json:"diagnostic,omitempty"`
+	CreatedAt  int64           `json:"created_at"`
+	UpdatedAt  int64           `json:"updated_at"`
 }
 
 // SyncStats mirrors POP-013: callers get exact new/dup/failed/oversize/
@@ -147,4 +149,41 @@ type Analysis struct {
 	PromptVersion string `json:"prompt_version"`
 	InputHash     string `json:"input_hash"`
 	CreatedAt     int64  `json:"created_at"`
+}
+
+// SyncDiagnostic records where and why a sync ended — and, for one that
+// succeeded, anything worth knowing, such as a connection that needed a
+// second attempt. Every field is Postra's own vocabulary or a number: nothing
+// the mail server wrote is kept, since servers can echo credentials or mail.
+type SyncDiagnostic struct {
+	Stage     string `json:"stage,omitempty"`   // InboundError stage, or policy, secret, host_check, list
+	Command   string `json:"command,omitempty"` // protocol verb at fault, never its arguments
+	Class     string `json:"class,omitempty"`   // ClassifyInbound: timeout, refused, reset, closed, rejected…
+	Code      string `json:"code,omitempty"`    // server response code (RFC 5530 / RFC 3206) when one was sent
+	ElapsedMS int64  `json:"elapsed_ms,omitempty"`
+	TimeoutMS int64  `json:"timeout_ms,omitempty"`
+	Attempts  int    `json:"attempts,omitempty"` // connection attempts this sync made
+	// Recovered is the class of a connection failure a later attempt got past.
+	// A sync that only works on its second try is worth seeing before the day
+	// it stops working at all.
+	Recovered string `json:"recovered,omitempty"`
+
+	Protocol string `json:"protocol,omitempty"`
+	Host     string `json:"host,omitempty"`
+	Port     int    `json:"port,omitempty"`
+	Security string `json:"security,omitempty"`
+
+	// Sessions this node held to the host, and to this account (IDLE
+	// included), when the step failed: a server or firewall that limits
+	// concurrent connections shows up here.
+	HostSessions    int64 `json:"host_sessions,omitempty"`
+	AccountSessions int64 `json:"account_sessions,omitempty"`
+	SlotWaitMS      int64 `json:"slot_wait_ms,omitempty"` // time queued for a sync slot before connecting
+
+	// The Sent-folder pass, which never fails the sync.
+	Sent      string `json:"sent,omitempty"` // synced, incremental, throttled, none, failed
+	SentStage string `json:"sent_stage,omitempty"`
+	SentClass string `json:"sent_class,omitempty"`
+
+	Summary string `json:"summary,omitempty"` // the explanation shown to people
 }

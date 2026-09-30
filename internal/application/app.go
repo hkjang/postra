@@ -38,8 +38,10 @@ type App struct {
 	AI      domain.AIProvider
 	Scanner domain.AttachmentScanner
 
-	syncLocks          sync.Map // accountID -> struct{} (best-effort single-session lock, POP-003)
-	jobCancels         sync.Map // jobID -> context.CancelFunc
+	syncLocks          sync.Map      // accountID -> struct{} (best-effort single-session lock, POP-003)
+	inbound            inboundCensus // inbound sessions this node holds, per host and account
+	sentSyncedAt       sync.Map      // accountID -> time.Time of the last Sent-folder pass (IDLE throttle)
+	jobCancels         sync.Map      // jobID -> context.CancelFunc
 	background         context.Context
 	cancelAll          context.CancelFunc
 	workerGroup        sync.WaitGroup
@@ -328,27 +330,31 @@ func (a *App) dialInbound(ctx context.Context, acc *domain.MailAccount, purpose 
 	if acc.InboundProtocol == domain.InboundIMAP {
 		protocol = "imap"
 	}
+	// The three checks before the dial, the host lookup and the secret are
+	// tagged with their own stage: a sync that stopped here never reached the
+	// mail server, and saying so is the difference between a configuration
+	// problem and an outage. The underlying error is kept for its own message.
 	if !a.SettingBool("mail." + protocol + "_enabled") {
-		return nil, userErrf("관리자 정책에서 %s 연결을 비활성화했습니다", protocol)
+		return nil, stageError(domain.StagePolicy, userErrf("관리자 정책에서 %s 연결을 비활성화했습니다", protocol))
 	}
 	if a.SettingBool("mail.tls_required") && (acc.POP3Security == domain.SecurityNone || acc.InsecureSkipVerify) {
-		return nil, userErrf("조직 정책에서 검증된 TLS 연결을 요구합니다")
+		return nil, stageError(domain.StagePolicy, userErrf("조직 정책에서 검증된 TLS 연결을 요구합니다"))
 	}
 	if !a.EffectiveConfig().AllowInsecureMail && (acc.POP3Security == domain.SecurityNone || acc.InsecureSkipVerify) {
-		return nil, userErrf("평문 또는 인증서 검증 없는 연결은 허용되지 않습니다")
+		return nil, stageError(domain.StagePolicy, userErrf("평문 또는 인증서 검증 없는 연결은 허용되지 않습니다"))
 	}
 	if err := a.validateMailHost(ctx, acc.POP3Host); err != nil {
-		return nil, err
+		return nil, stageError(domain.StageHostCheck, err)
 	}
 	dialer, err := a.inboundDialer(acc)
 	if err != nil {
-		return nil, err
+		return nil, stageError(domain.StagePolicy, err)
 	}
 	var secret *domain.SecretHandle
 	if acc.POP3Secret != "" {
 		secret, err = a.Secrets.Acquire(ctx, acc.POP3Secret, purpose)
 		if err != nil {
-			return nil, err
+			return nil, stageError(domain.StageSecret, err)
 		}
 		a.Store.TouchCredential(ctx, acc.POP3Secret)
 	}
@@ -364,6 +370,16 @@ func (a *App) dialInbound(ctx context.Context, acc *domain.MailAccount, purpose 
 		secret.Zero()
 	}
 	return sess, err
+}
+
+// stageError names the step a pre-connection failure stopped at, leaving the
+// error itself — a policy message, a DNS error, a secret-store failure —
+// intact for callers that inspect or render it.
+func stageError(stage string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &domain.InboundError{Stage: stage, Class: classConfig, Err: err}
 }
 
 // inboundDialer picks the fetch adapter for the account's protocol. Empty

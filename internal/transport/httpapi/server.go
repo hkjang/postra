@@ -782,6 +782,7 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 		b := v == "true" || v == "1"
 		sq.IsRead = &b
 	}
+	sq.AwaitingReply = q.Get("awaiting_reply") == "true" || q.Get("awaiting_reply") == "1"
 	res, err := s.app.Search(r.Context(), sq)
 	if err != nil {
 		writeErr(w, err)

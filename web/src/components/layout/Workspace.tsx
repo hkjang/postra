@@ -3,7 +3,7 @@ import {Link, NavLink, Outlet, useLocation, useNavigate} from 'react-router-dom'
 import {useQuery, useQueryClient} from '@tanstack/react-query'
 import {Command} from 'cmdk'
 import * as Dialog from '@radix-ui/react-dialog'
-import {Bell, BriefcaseBusiness, CheckSquare, ChevronDown, Command as CommandIcon, FilePenLine, Inbox, LayoutList, LogOut, Mail, Menu, Moon, Plus, Search, Settings, ShieldCheck, Sparkles, Star, Sun, Users, X} from 'lucide-react'
+import {Activity, Bell, BriefcaseBusiness, CheckSquare, ChevronDown, Command as CommandIcon, FilePenLine, Inbox, LayoutList, LogOut, Mail, Menu, Moon, Plus, Search, Send, Settings, ShieldCheck, Sparkles, Star, Sun, Users, X} from 'lucide-react'
 import {toast} from 'sonner'
 import {api} from '@/api/client'
 import {useSession} from '@/app/session'
@@ -19,11 +19,23 @@ import './keyboard.css'
 import {PageErrorBoundary} from './PageErrorBoundary'
 
 const navigation = [
-  {label: 'MAIL', items: [{to: '/mail', label: '받은메일', icon: Inbox}, {to: '/mail?folder=important', label: '중요 메일', icon: Star}, {to: '/sent', label: '발송 메일', icon: Mail}, {to: '/drafts', label: '초안', icon: FilePenLine}]},
+  {label: 'MAIL', items: [{to: '/mail', label: '받은메일', icon: Inbox}, {to: '/mail?folder=important', label: '중요 메일', icon: Star}, {to: '/mail?folder=sent', label: '보낸메일', icon: Send}, {to: '/drafts', label: '초안', icon: FilePenLine}, {to: '/sent', label: '발송 현황', icon: Activity}]},
   {label: 'WORK', items: [{to: '/work', label: '내 업무', icon: BriefcaseBusiness}, {to: '/team', label: '팀 업무함', icon: Users}, {to: '/actions', label: '액션 센터', icon: CheckSquare}]},
   {label: 'AI', items: [{to: '/ask', label: 'Ask Postra', icon: Sparkles}, {to: '/digest', label: '브리핑', icon: LayoutList}]},
   {label: 'WORKSPACE', items: [{to: '/accounts', label: '메일 계정', icon: Mail}, {to: '/rules', label: '자동화 규칙', icon: Settings}, {to: '/keys', label: 'MCP 연결 키', icon: ShieldCheck}, {to: '/jobs', label: '작업 상태', icon: LayoutList}, {to: '/settings', label: '개인 설정', icon: Settings}]},
 ]
+// Mail views share one route and differ by ?folder. An item naming a folder
+// is selected on that view — the sent item on both sent views — and the plain
+// inbox item on every other view of the route.
+export function navSelected(to: string, pathname: string, search: string): boolean {
+  const [path, query] = to.split('?')
+  if (pathname !== path) return false
+  const current = new URLSearchParams(search).get('folder') || ''
+  const view = current === 'awaiting' ? 'sent' : current
+  const wanted = new URLSearchParams(query ?? '').get('folder') || ''
+  return wanted ? view === wanted : !['important', 'sent'].includes(view)
+}
+
 type Job = {id: string; type: string; status: string; created_at: number; error?: string; error_message?: string}
 
 export function Workspace() {
@@ -65,7 +77,7 @@ export function Workspace() {
       <Link className="brand" to="/mail"><span className="brand-mark"><Mail size={21}/></span><div>{preferences.data?.runtime?.['general.product_name'] || 'Postra'}<span>AI WORK MAIL</span></div></Link>
       <Button className="compose-button" asChild><Link to="/compose"><Plus size={17}/>새 메일 작성 <kbd>C</kbd></Link></Button>
       <nav className="sidebar-nav">{navigation.map(group => <div className="nav-group" key={group.label}><div className="nav-label">{group.label}</div>{group.items.map(item => {
-        const selected = item.to.includes('?') ? location.pathname === '/mail' && location.search.includes('folder=important') : location.pathname === item.to && !(item.to === '/mail' && location.search.includes('folder=important'))
+        const selected = navSelected(item.to, location.pathname, location.search)
         return <NavLink key={item.to} to={item.to} className={`nav-item ${selected ? 'selected' : ''}`}><item.icon size={17}/>{item.label}</NavLink>
       })}</div>)}{principal?.role === 'admin' && <div className="nav-group"><div className="nav-label">ADMIN</div><NavLink to="/admin" className={({isActive}) => `nav-item ${isActive ? 'selected' : ''}`}><ShieldCheck size={17}/>관리자 콘솔</NavLink></div>}</nav>
       <div className="sidebar-footer"><div className="identity"><span className="avatar">{(principal?.display_name || principal?.login_id || 'P').slice(0, 1)}</span><div><strong>{principal?.display_name || principal?.login_id}</strong><span>{principal?.role === 'admin' ? '관리자' : '내 워크스페이스'}</span></div><Button variant="ghost" size="icon" title="로그아웃" aria-label="로그아웃" onClick={logout}><LogOut size={16}/></Button></div><div className="legacy-link"><span>{info.data?.version || 'Postra'}</span><Link to="/settings">개인 설정</Link></div></div>

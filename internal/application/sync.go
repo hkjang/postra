@@ -30,7 +30,16 @@ type SyncOptions struct {
 	RepairBodies bool `json:"repair_bodies,omitempty"`
 	// DeleteAfterFetch is intentionally absent from the MVP sync path:
 	// server-side deletion is a separate, approval-gated flow (§5.2).
+
+	// fromIdle marks a sync an IDLE wake-up started. IDLE watches the inbox,
+	// and every new message wakes it, so these syncs read the Sent folder at
+	// most every sentFolderIdleInterval instead of on every arrival.
+	fromIdle bool
 }
+
+// sentFolderIdleInterval bounds how often IDLE-started syncs enumerate the
+// Sent folder. Scheduled and manual syncs always read it.
+var sentFolderIdleInterval = 10 * time.Minute
 
 // StartSync launches an asynchronous POP3 sync job and returns its job ID.
 func (a *App) StartSync(ctx context.Context, accountID string, opts SyncOptions) (*domain.Job, error) {
@@ -123,9 +132,18 @@ func (a *App) runSync(ctx context.Context, job *domain.Job, acc *domain.MailAcco
 	stats := domain.SyncStats{}
 	// Sent mail is counted apart, so "new" still means new mail received.
 	sentStats := domain.SyncStats{}
+	// diag accumulates where this sync went, so its outcome can be explained
+	// step by step instead of as one word. It is filled in as the sync
+	// proceeds and attached to the job by finish.
+	protocol := "pop3"
+	if acc.InboundProtocol == domain.InboundIMAP {
+		protocol = "imap"
+	}
+	diag := domain.SyncDiagnostic{Protocol: protocol, Host: acc.POP3Host, Port: acc.POP3Port, Security: string(acc.POP3Security)}
 	finish := func(status domain.JobStatus, errMsg string) {
 		job.Status = status
 		job.Error = jobDiagnostic(job.Type, status, errMsg)
+		job.Diagnostic = safeSyncDiagnostic(&diag)
 		job.Stats = map[string]int64{
 			"seen": stats.Seen, "new": stats.New, "duplicate": stats.Duplicate,
 			"failed": stats.Failed, "oversize": stats.Oversize, "parse_error": stats.ParseError,
@@ -139,8 +157,15 @@ func (a *App) runSync(ctx context.Context, job *domain.Job, acc *domain.MailAcco
 		metrics.MessagesFetched.Add(float64(stats.New))
 		a.audit(context.Background(), "sync_finish", "account:"+acc.ID, string(status),
 			fmt.Sprintf("job:%s new=%d dup=%d failed=%d", job.ID, stats.New, stats.Duplicate, stats.Failed))
-		if status == domain.JobFailed {
-			a.recordIncident(domain.SeverityError, "sync", job.Error, "",
+		if status == domain.JobFailed || status == domain.JobPartial {
+			severity := domain.SeverityError
+			if status == domain.JobPartial {
+				severity = domain.SeverityWarning
+			}
+			// The detail is Postra's own rendering of the diagnostic: the
+			// failing step, its timings, the connections held — what an
+			// operator needs before opening the job.
+			a.recordIncident(severity, "sync", job.Error, diagnosticDetail(job.Diagnostic),
 				withIncidentAccount(acc.ID), withIncidentJob(job.ID))
 		}
 	}
@@ -176,25 +201,37 @@ func (a *App) runSync(ctx context.Context, job *domain.Job, acc *domain.MailAcco
 	// Bound concurrent syncs so a scheduler fan-out over many accounts (plus
 	// IMAP IDLE triggers) doesn't buffer many whole messages at once and OOM
 	// the container (which K8s then restarts, orphaning this very job).
+	slotStart := time.Now()
 	if err := a.acquireSyncSlot(ctx); err != nil {
+		diag.SlotWaitMS = durationMS(time.Since(slotStart))
 		finish(domain.JobCancelled, "cancelled")
 		return
 	}
 	defer a.releaseSyncSlot()
+	diag.SlotWaitMS = durationMS(time.Since(slotStart))
 
 	job.Status = domain.JobRunning
 	_ = a.Store.UpdateJob(ctx, job)
 
-	sess, err := a.dialInbound(ctx, acc, domain.PurposePOP3Auth)
+	// Count this session while it is open: the next connect failure can then
+	// say whether Postra itself was already using the server's per-account
+	// connection allowance (IDLE holds one of its own).
+	releaseSession := a.inbound.hold(acc)
+	defer releaseSession()
+
+	sess, err := a.dialInboundForSync(ctx, acc, &diag)
 	if err != nil {
 		var authErr *domain.AuthError
 		if errors.As(err, &authErr) {
-			// POP-011: no endless retries on bad credentials.
+			// POP-011: no endless retries on bad credentials. Only a refusal
+			// of these credentials reaches here; a busy or throttled server is
+			// a transient failure and leaves the account active.
 			_ = a.Store.SetAccountStatus(context.Background(), acc.UserID, acc.ID, domain.AccountCredentialError)
+			diag.Stage = domain.StageLogin
 			finish(domain.JobFailed, providerAuthFailed)
 			return
 		}
-		finish(domain.JobFailed, providerDiagnostic(err))
+		finish(domain.JobFailed, syncFailure(&diag, err, providerDiagnostic(err)))
 		return
 	}
 	defer sess.Close()
@@ -206,7 +243,8 @@ func (a *App) runSync(ctx context.Context, job *domain.Job, acc *domain.MailAcco
 	if !uidlSupported {
 		remote, err = sess.List(ctx)
 		if err != nil {
-			finish(domain.JobFailed, providerListFailed)
+			syncDiagnosticStage(&diag, domain.StageEnumerate, err)
+			finish(domain.JobFailed, syncFailure(&diag, err, providerListFailed))
 			return
 		}
 	} else {
@@ -244,6 +282,8 @@ func (a *App) runSync(ctx context.Context, job *domain.Job, acc *domain.MailAcco
 	}
 
 	fetched := 0
+	attempted := int64(0)
+	var ingestErr error
 	for _, rm := range remote {
 		if ctx.Err() != nil {
 			finish(domain.JobCancelled, "cancelled")
@@ -265,8 +305,10 @@ func (a *App) runSync(ctx context.Context, job *domain.Job, acc *domain.MailAcco
 			stats.Oversize++
 			continue
 		}
+		attempted++
 		if err := a.ingestOne(ctx, sess, acc, rm, uidlSupported, &stats, domain.MailboxInbox); err != nil {
 			stats.Failed++
+			ingestErr = err
 			continue
 		}
 		fetched++
@@ -276,14 +318,61 @@ func (a *App) runSync(ctx context.Context, job *domain.Job, acc *domain.MailAcco
 		job.Progress = fmt.Sprintf("%d/%d", fetched, len(remote))
 		_ = a.Store.UpdateJob(ctx, job)
 	}
-	if sent, ok := sess.(domain.SentFolderCapable); ok {
-		if a.syncSentFolder(ctx, sess, sent, acc, job, &sentStats, maxN) {
-			finish(domain.JobCancelled, "cancelled")
-			return
-		}
+	sentOutcome, sentErr := a.sentFolderPass(ctx, sess, acc, job, &sentStats, maxN, opts)
+	if sentOutcome == sentCancelled {
+		finish(domain.JobCancelled, "cancelled")
+		return
+	}
+	diag.Sent = sentOutcome
+	if sentErr != nil {
+		sentDiag := domain.SyncDiagnostic{}
+		syncDiagnosticStage(&sentDiag, domain.StageSelect, sentErr)
+		diag.SentStage, diag.SentClass = sentDiag.Stage, sentDiag.Class
 	}
 	_ = sess.Quit(ctx)
+	// Every message this sync tried to fetch failed: reporting that as a
+	// success hides the outage the operator has to act on. A sync that got
+	// some of them through is partial, not clean.
+	if stats.Failed > 0 {
+		syncDiagnosticStage(&diag, domain.StageFetch, ingestErr)
+		if stats.Failed == attempted && sentStats.New == 0 {
+			finish(domain.JobFailed, syncFailure(&diag, ingestErr, providerSyncFailed))
+			return
+		}
+		finish(domain.JobPartial, syncFailure(&diag, ingestErr, providerSyncFailed))
+		return
+	}
 	finish(domain.JobSucceeded, "")
+}
+
+// sentFolderPass runs the Sent-folder pass when it is due and names how it
+// ended. It never fails the sync: received mail is synced either way, and an
+// account whose server refuses the Sent folder must still get its inbox.
+func (a *App) sentFolderPass(ctx context.Context, sess domain.POP3Session, acc *domain.MailAccount,
+	job *domain.Job, stats *domain.SyncStats, maxN int, opts SyncOptions) (outcome string, err error) {
+	sent, ok := sess.(domain.SentFolderCapable)
+	if !ok {
+		return "", nil // POP3: there is no Sent folder to read
+	}
+	if !a.sentFolderDue(acc.ID, opts) {
+		return sentThrottled, nil
+	}
+	return a.syncSentFolder(ctx, sess, sent, acc, job, stats, maxN)
+}
+
+// sentFolderDue reports whether this sync reads the Sent folder, and claims
+// the pass. Enumerating it costs one FETCH per 2,000 messages, which on every
+// IDLE wake-up — each new inbox message — would double the cost of real-time
+// sync for no gain: IDLE cannot see Sent. Other syncs always read it.
+func (a *App) sentFolderDue(accountID string, opts SyncOptions) bool {
+	now := time.Now()
+	if opts.fromIdle {
+		if last, ok := a.sentSyncedAt.Load(accountID); ok && now.Sub(last.(time.Time)) < sentFolderIdleInterval {
+			return false
+		}
+	}
+	a.sentSyncedAt.Store(accountID, now)
+	return true
 }
 
 // sentCheckpointPrefix namespaces Sent-folder UIDs in the dedup checkpoints.
@@ -292,27 +381,38 @@ func (a *App) runSync(ctx context.Context, job *domain.Job, acc *domain.MailAcco
 // be skipped as already seen.
 const sentCheckpointPrefix = "sent:"
 
+// How the Sent-folder pass ended. sentCancelled is internal to the sync: the
+// job becomes cancelled, so it is never stored as an outcome.
+const (
+	sentSynced    = "synced"
+	sentThrottled = "throttled"
+	sentNone      = "none"
+	sentFailed    = "failed"
+	sentCancelled = "cancelled"
+)
+
 // syncSentFolder ingests the account's Sent folder after the inbox, on the
 // same session. It is best-effort: a server without a Sent folder, or one
-// that refuses it, never fails the inbox sync. It reports whether the sync
-// was cancelled.
+// that refuses it, never fails the inbox sync. It names how the pass ended and
+// returns the failure that ended it, for the sync's diagnostic.
 func (a *App) syncSentFolder(ctx context.Context, sess domain.POP3Session, sent domain.SentFolderCapable,
-	acc *domain.MailAccount, job *domain.Job, stats *domain.SyncStats, maxN int) (cancelled bool) {
+	acc *domain.MailAccount, job *domain.Job, stats *domain.SyncStats, maxN int) (string, error) {
 	name, err := sent.SentMailbox(ctx)
-	if err != nil || name == "" {
-		if err != nil {
-			slog.Warn("sync: sent folder lookup failed; received mail was synced", "account", acc.ID, "err", providerDiagnostic(err))
-		}
-		return false
+	if err != nil {
+		slog.Warn("sync: sent folder lookup failed; received mail was synced", "account", acc.ID, "err", providerDiagnostic(err))
+		return sentFailed, err
+	}
+	if name == "" {
+		return sentNone, nil
 	}
 	if err := sent.SelectMailbox(name); err != nil {
 		slog.Warn("sync: sent folder could not be opened; received mail was synced", "account", acc.ID, "err", providerDiagnostic(err))
-		return false
+		return sentFailed, err
 	}
 	remote, err := sess.UIDL(ctx)
 	if err != nil {
 		slog.Warn("sync: sent folder could not be listed; received mail was synced", "account", acc.ID, "err", providerDiagnostic(err))
-		return false
+		return sentFailed, err
 	}
 	// Newest first, as for the inbox.
 	for i, j := 0, len(remote)-1; i < j; i, j = i+1, j-1 {
@@ -321,7 +421,7 @@ func (a *App) syncSentFolder(ctx context.Context, sess domain.POP3Session, sent 
 	fetched := 0
 	for _, rm := range remote {
 		if ctx.Err() != nil {
-			return true
+			return sentCancelled, nil
 		}
 		if maxN > 0 && fetched >= maxN {
 			break
@@ -350,7 +450,7 @@ func (a *App) syncSentFolder(ctx context.Context, sess domain.POP3Session, sent 
 		job.Progress = fmt.Sprintf("sent %d/%d", fetched, len(remote))
 		_ = a.Store.UpdateJob(ctx, job)
 	}
-	return false
+	return sentSynced, nil
 }
 
 // runBodyRepair re-fetches messages whose stored body is missing/undecryptable
@@ -520,13 +620,15 @@ func (a *App) storeMessage(ctx context.Context, acc *domain.MailAccount, raw []b
 	msg = &domain.Message{
 		ID: persistence.NewID("msg"), UserID: acc.UserID, AccountID: acc.ID,
 		UIDL: uidl, MessageID: parsed.MessageID, Subject: parsed.Subject,
-		From: parsed.From, To: parsed.To, Cc: parsed.Cc, ReplyTo: parsed.ReplyTo,
+		From: parsed.From, To: parsed.To, Cc: parsed.Cc, ReplyTo: parsed.ReplyTo, Bcc: parsed.Bcc,
 		Date: parsed.Date.Unix(), Size: int64(len(raw)),
 		RawHash: rawHash, RawURI: rawURI, ThreadID: threadID,
 		HasAttachments: len(parsed.Attachments) > 0,
 		InReplyTo:      parsed.InReplyTo, References: parsed.References,
 		AuthResults: parsed.AuthResults, ParseError: parsed.ParseError,
 		Mailbox: mailbox,
+		// The owner wrote it: sent mail is never unread.
+		IsRead: mailbox == domain.MailboxSent,
 	}
 	body = &domain.MessageBody{
 		MessageID: msg.ID, TextBody: parsed.TextBody,

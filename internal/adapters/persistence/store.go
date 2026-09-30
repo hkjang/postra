@@ -237,7 +237,7 @@ CREATE TABLE IF NOT EXISTS messages (
   created_at INTEGER NOT NULL,
   is_archived INTEGER NOT NULL DEFAULT 0, is_important INTEGER NOT NULL DEFAULT 0,
   snoozed_until INTEGER NOT NULL DEFAULT 0, labels_json TEXT NOT NULL DEFAULT '',
-  legal_hold INTEGER NOT NULL DEFAULT 0, mailbox TEXT NOT NULL DEFAULT 'inbox');
+  legal_hold INTEGER NOT NULL DEFAULT 0, mailbox TEXT NOT NULL DEFAULT 'inbox', bcc_json TEXT NOT NULL DEFAULT '');
 CREATE INDEX IF NOT EXISTS idx_messages_account_date ON messages(account_id, date DESC);
 -- Serves the periodic background queries, which filter by owner and arrival
 -- time: triage runs every few minutes forever, so an unindexed scan here is a
@@ -296,7 +296,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   id TEXT PRIMARY KEY, user_id TEXT NOT NULL, type TEXT NOT NULL,
   account_id TEXT, status TEXT NOT NULL, progress TEXT,
   stats_json TEXT, error TEXT, meta_json TEXT,
-  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, diagnostic_json TEXT NOT NULL DEFAULT '');
 
 CREATE TABLE IF NOT EXISTS embeddings (
   message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
@@ -366,6 +366,8 @@ CREATE INDEX IF NOT EXISTS idx_message_notes_msg ON message_notes(message_id);
 		`ALTER TABLE messages ADD COLUMN labels_json TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE messages ADD COLUMN legal_hold INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE messages ADD COLUMN mailbox TEXT NOT NULL DEFAULT 'inbox'`,
+		`ALTER TABLE messages ADD COLUMN bcc_json TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE jobs ADD COLUMN diagnostic_json TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := s.db.Exec(alt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return fmt.Errorf("migrate attachments: %w", err)
@@ -377,6 +379,11 @@ CREATE INDEX IF NOT EXISTS idx_message_notes_msg ON message_notes(message_id);
 	// After the mailbox column exists: every listing now filters on it.
 	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_user_mailbox_date ON messages(user_id, mailbox, date DESC)`); err != nil {
 		return fmt.Errorf("migrate messages mailbox index: %w", err)
+	}
+	// Serves thread views and the awaiting-reply check, which looks for a
+	// later message in the same conversation for every sent message listed.
+	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_user_thread_date ON messages(user_id, thread_id, date)`); err != nil {
+		return fmt.Errorf("migrate messages thread index: %w", err)
 	}
 
 	// Full-text index; fall back to LIKE search when FTS5 is unavailable.
@@ -1113,12 +1120,12 @@ func (s *Store) InsertMessage(ctx context.Context, m *domain.Message, body *doma
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO messages
 	 (id,user_id,account_id,uidl,message_id_hdr,subject,from_name,from_email,to_json,cc_json,reply_to_json,
-	  date,size,raw_hash,raw_uri,thread_id,has_attachments,in_reply_to,refs,auth_results,parse_error,created_at,mailbox)
-	 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+	  date,size,raw_hash,raw_uri,thread_id,has_attachments,in_reply_to,refs,auth_results,parse_error,created_at,mailbox,bcc_json,is_read)
+	 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		m.ID, m.UserID, m.AccountID, m.UIDL, m.MessageID, m.Subject, m.From.Name, m.From.Email,
 		addrJSON(m.To), addrJSON(m.Cc), addrJSON(m.ReplyTo),
 		m.Date, m.Size, m.RawHash, m.RawURI, m.ThreadID, boolInt(m.HasAttachments),
-		m.InReplyTo, m.References, m.AuthResults, m.ParseError, m.CreatedAt, m.Mailbox)
+		m.InReplyTo, m.References, m.AuthResults, m.ParseError, m.CreatedAt, m.Mailbox, addrJSON(m.Bcc), boolInt(m.IsRead))
 	if err != nil {
 		return err
 	}
@@ -1287,7 +1294,7 @@ const msgCols = `id,user_id,account_id,uidl,message_id_hdr,subject,from_name,fro
 // msgSelectCols extends the insert column set with the mutable UX-state columns
 // (archive/important/snooze/labels). It is used for every SELECT + scanMessage;
 // msgCols stays the immutable ingest set used by InsertMessage.
-const msgSelectCols = msgCols + `,is_archived,is_important,snoozed_until,labels_json,legal_hold,is_read,mailbox`
+const msgSelectCols = msgCols + `,is_archived,is_important,snoozed_until,labels_json,legal_hold,is_read,mailbox,bcc_json`
 
 func labelsFromJSON(s string) []string {
 	if s == "" {
@@ -1300,7 +1307,7 @@ func labelsFromJSON(s string) []string {
 
 func scanMessage(row interface{ Scan(...any) error }) (*domain.Message, error) {
 	var m domain.Message
-	var toJ, ccJ, rtJ string
+	var toJ, ccJ, rtJ, bccJ string
 	var hasAtt int
 	var isArch, isImp, legalHold, isRead int
 	var labelsJSON string
@@ -1309,14 +1316,14 @@ func scanMessage(row interface{ Scan(...any) error }) (*domain.Message, error) {
 		&m.From.Name, &m.From.Email, &toJ, &ccJ, &rtJ,
 		&m.Date, &m.Size, &m.RawHash, &m.RawURI, &threadID, &hasAtt,
 		&m.InReplyTo, &m.References, &authRes, &parseErr, &m.CreatedAt,
-		&isArch, &isImp, &m.SnoozedUntil, &labelsJSON, &legalHold, &isRead, &m.Mailbox)
+		&isArch, &isImp, &m.SnoozedUntil, &labelsJSON, &legalHold, &isRead, &m.Mailbox, &bccJ)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
-	m.To, m.Cc, m.ReplyTo = addrFromJSON(toJ), addrFromJSON(ccJ), addrFromJSON(rtJ)
+	m.To, m.Cc, m.ReplyTo, m.Bcc = addrFromJSON(toJ), addrFromJSON(ccJ), addrFromJSON(rtJ), addrFromJSON(bccJ)
 	m.HasAttachments = hasAtt != 0
 	m.IsArchived, m.IsImportant, m.LegalHold = isArch != 0, isImp != 0, legalHold != 0
 	m.IsRead = isRead != 0
@@ -1546,6 +1553,12 @@ func (s *Store) Search(ctx context.Context, q domain.SearchQuery) (*domain.Searc
 	// received mail only, so no existing listing starts showing sent mail.
 	if q.Folder == "sent" {
 		conds, args = append(conds, "m.mailbox = ?"), append(args, domain.MailboxSent)
+		if q.AwaitingReply {
+			// The last word is still the owner's: no later message, from
+			// either side, in the same conversation.
+			conds = append(conds, `NOT EXISTS (SELECT 1 FROM messages later WHERE later.user_id = m.user_id
+			 AND m.thread_id <> '' AND later.thread_id = m.thread_id AND later.id <> m.id AND later.date > m.date)`)
+		}
 	} else {
 		conds, args = append(conds, "m.mailbox = ?"), append(args, domain.MailboxInbox)
 	}
@@ -2224,8 +2237,8 @@ func (s *Store) UpdateJob(ctx context.Context, j *domain.Job) error {
 	j.UpdatedAt = now()
 	stats, _ := json.Marshal(j.Stats)
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE jobs SET status=?, progress=?, stats_json=?, error=?, updated_at=? WHERE id=?`,
-		j.Status, j.Progress, string(stats), j.Error, j.UpdatedAt, j.ID)
+		`UPDATE jobs SET status=?, progress=?, stats_json=?, error=?, diagnostic_json=?, updated_at=? WHERE id=?`,
+		j.Status, j.Progress, string(stats), j.Error, jobDiagnosticJSON(j.Diagnostic), j.UpdatedAt, j.ID)
 	return err
 }
 
@@ -2315,10 +2328,10 @@ func (s *Store) RecoverStaleJobsExcept(ctx context.Context, activeJobIDs []strin
 
 func (s *Store) GetJob(ctx context.Context, userID, id string) (*domain.Job, error) {
 	var j domain.Job
-	var stats, meta, accountID, progress, jerr sql.NullString
-	err := s.db.QueryRowContext(ctx, `SELECT id,user_id,type,account_id,status,progress,stats_json,error,meta_json,created_at,updated_at
+	var stats, meta, accountID, progress, jerr, diag sql.NullString
+	err := s.db.QueryRowContext(ctx, `SELECT id,user_id,type,account_id,status,progress,stats_json,error,meta_json,created_at,updated_at,diagnostic_json
 	 FROM jobs WHERE id=? AND user_id=?`, id, userID).
-		Scan(&j.ID, &j.UserID, &j.Type, &accountID, &j.Status, &progress, &stats, &jerr, &meta, &j.CreatedAt, &j.UpdatedAt)
+		Scan(&j.ID, &j.UserID, &j.Type, &accountID, &j.Status, &progress, &stats, &jerr, &meta, &j.CreatedAt, &j.UpdatedAt, &diag)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -2326,6 +2339,7 @@ func (s *Store) GetJob(ctx context.Context, userID, id string) (*domain.Job, err
 		return nil, err
 	}
 	j.AccountID, j.Progress, j.Error = accountID.String, progress.String, jerr.String
+	j.Diagnostic = jobDiagnosticFromJSON(diag.String)
 	if stats.String != "" {
 		json.Unmarshal([]byte(stats.String), &j.Stats)
 	}
@@ -2339,11 +2353,11 @@ func (s *Store) ListJobs(ctx context.Context, userID string, limit int) ([]domai
 	if limit <= 0 {
 		limit = 10
 	}
-	query := `SELECT id, user_id, type, account_id, status, progress, stats_json, error, meta_json, created_at, updated_at
+	query := `SELECT id, user_id, type, account_id, status, progress, stats_json, error, meta_json, created_at, updated_at, diagnostic_json
 		FROM jobs WHERE user_id=? ORDER BY updated_at DESC LIMIT ?`
 	args := []any{userID, limit}
 	if userID == "" {
-		query = `SELECT id, user_id, type, account_id, status, progress, stats_json, error, meta_json, created_at, updated_at
+		query = `SELECT id, user_id, type, account_id, status, progress, stats_json, error, meta_json, created_at, updated_at, diagnostic_json
 			FROM jobs ORDER BY updated_at DESC LIMIT ?`
 		args = []any{limit}
 	}
@@ -2355,11 +2369,12 @@ func (s *Store) ListJobs(ctx context.Context, userID string, limit int) ([]domai
 	var out []domain.Job
 	for rows.Next() {
 		var j domain.Job
-		var stats, meta, accountID, progress, jerr sql.NullString
-		if err := rows.Scan(&j.ID, &j.UserID, &j.Type, &accountID, &j.Status, &progress, &stats, &jerr, &meta, &j.CreatedAt, &j.UpdatedAt); err != nil {
+		var stats, meta, accountID, progress, jerr, diag sql.NullString
+		if err := rows.Scan(&j.ID, &j.UserID, &j.Type, &accountID, &j.Status, &progress, &stats, &jerr, &meta, &j.CreatedAt, &j.UpdatedAt, &diag); err != nil {
 			return nil, err
 		}
 		j.AccountID, j.Progress, j.Error = accountID.String, progress.String, jerr.String
+		j.Diagnostic = jobDiagnosticFromJSON(diag.String)
 		if stats.String != "" {
 			_ = json.Unmarshal([]byte(stats.String), &j.Stats)
 		}
@@ -2678,4 +2693,23 @@ func (s *Store) TryAcquireLease(ctx context.Context, key, nodeID string, duratio
 		return false, err
 	}
 	return true, nil
+}
+
+func jobDiagnosticJSON(d *domain.SyncDiagnostic) string {
+	if d == nil {
+		return ""
+	}
+	raw, _ := json.Marshal(d)
+	return string(raw)
+}
+
+func jobDiagnosticFromJSON(raw string) *domain.SyncDiagnostic {
+	if raw == "" {
+		return nil
+	}
+	var d domain.SyncDiagnostic
+	if json.Unmarshal([]byte(raw), &d) != nil {
+		return nil
+	}
+	return &d
 }

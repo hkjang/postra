@@ -474,17 +474,19 @@ func registerQueryTools(s *mcp.Server, app *application.App) {
 		HasAttachment *bool  `json:"has_attachment,omitempty" jsonschema:"only mail with, or without, attachments"`
 		Limit         int    `json:"limit,omitempty" jsonschema:"page size, at most 200 (default 50)"`
 		Cursor        string `json:"cursor,omitempty" jsonschema:"next_cursor from the previous page"`
+		AwaitingReply bool   `json:"awaiting_reply,omitempty" jsonschema:"only mail still awaiting an answer: the last message of its conversation is yours (not proof the recipient owes a reply)"`
 	}
 	addTool(s, &mcp.Tool{
 		Name: "mail_sent_search",
 		Description: "List or search only the mail you sent, newest first; with no filters it lists all of it. " +
 			"Covers mail sent through Postra and, for IMAP accounts, the server's Sent folder. " +
+			"awaiting_reply=true keeps mail nobody has answered yet — use it to find what to follow up on (combine with until for \"older than\"). " +
 			"Use mail_message_get with a returned id for the body. Cursor-paginated.",
 		Annotations: readOnly,
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in sentSearchInput) (*mcp.CallToolResult, any, error) {
 		res, err := app.Search(ctx, domain.SearchQuery{
 			Folder: "sent", AccountID: in.AccountID, Text: in.Text, To: in.To, Subject: in.Subject,
-			Since: in.Since, Until: in.Until, HasAttachment: in.HasAttachment, Limit: in.Limit, Cursor: in.Cursor,
+			Since: in.Since, Until: in.Until, HasAttachment: in.HasAttachment, Limit: in.Limit, Cursor: in.Cursor, AwaitingReply: in.AwaitingReply,
 		})
 		if err != nil {
 			return nil, nil, err

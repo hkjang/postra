@@ -123,6 +123,9 @@ func safeJob(job *domain.Job) *domain.Job {
 	}
 	copy := *job
 	copy.Error = jobDiagnostic(copy.Type, copy.Status, copy.Error)
+	// The diagnostic passes the same boundary as the message: only known
+	// tokens and numbers survive, and its summary is rewritten from them.
+	copy.Diagnostic = safeSyncDiagnostic(copy.Diagnostic)
 	return &copy
 }
 
@@ -132,6 +135,8 @@ func jobDiagnostic(kind string, status domain.JobStatus, message string) string 
 	switch message {
 	case providerFailed, providerAuthFailed, providerTimeout, providerCancelled,
 		providerUnexpected, providerListFailed, providerSyncFailed, providerEmbedFailed, providerHidden,
+		syncStoppedTimeout, syncStoppedRefused, syncStoppedReset, syncStoppedUnreachable,
+		syncStoppedDNS, syncStoppedTLS, syncStoppedRejected, syncStoppedConfig,
 		providerAIContext, providerAIOutput, providerAIEmpty, providerAIDisabled, providerAIEmbedding, providerAIResponse,
 		providerAIAuth, providerAIForbidden, providerAIRate, providerAIQuota, providerAITimeout, providerAINetwork, providerAIRejected:
 		return message
@@ -206,6 +211,12 @@ func safeIncidentDiagnostic(incident *domain.Incident) *domain.Incident {
 	switch copy.Component {
 	case "sync", "sync-worker":
 		copy.Message = jobDiagnostic("sync", domain.JobFailed, copy.Message)
+		// A sync diagnostic is re-rendered from its own validated fields;
+		// every other detail (provider chains, stack traces) is dropped below.
+		if detail := syncIncidentDetail(copy.Detail); detail != "" {
+			copy.Detail = detail
+			return &copy
+		}
 	case "embeddings":
 		copy.Message = jobDiagnostic("embed", domain.JobFailed, copy.Message)
 	case "oidc", "oidc-mail":

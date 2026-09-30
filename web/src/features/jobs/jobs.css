@@ -1,0 +1,1 @@
+.job-diagnostic{gap:10px;padding:15px;border:1px solid var(--border);border-radius:8px;background:var(--muted)}.job-diagnostic h3{margin:0;font-size:var(--font-title)}.job-diagnostic p{margin:0}.job-diagnostic dl{gap:10px 20px}.job-diagnostic dt{font-size:var(--font-meta);color:var(--muted-foreground)}.job-diagnostic dd{margin:0;font-size:var(--font-body);overflow-wrap:anywhere}

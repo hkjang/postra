@@ -43,7 +43,8 @@ var errUnframed = errors.New("imap session abandoned: response stream could not 
 
 func (Dialer) Dial(ctx context.Context, opts domain.InboundDialOptions) (domain.InboundSession, error) {
 	addr := net.JoinHostPort(opts.Host, strconv.Itoa(opts.Port))
-	d := &net.Dialer{Timeout: secondsOr(opts.ConnectTimeoutSec, 15)}
+	connectTO := secondsOr(opts.ConnectTimeoutSec, 15)
+	d := &net.Dialer{Timeout: connectTO}
 	tlsCfg := &tls.Config{
 		ServerName: opts.Host,
 		MinVersion: tls.VersionTLS12,
@@ -55,6 +56,7 @@ func (Dialer) Dial(ctx context.Context, opts domain.InboundDialOptions) (domain.
 
 	var conn net.Conn
 	var err error
+	start := time.Now()
 	switch opts.Security {
 	case domain.SecurityTLS:
 		conn, err = (&tls.Dialer{NetDialer: d, Config: tlsCfg}).DialContext(ctx, "tcp", addr)
@@ -64,16 +66,22 @@ func (Dialer) Dial(ctx context.Context, opts domain.InboundDialOptions) (domain.
 		return nil, fmt.Errorf("unknown security mode %q", opts.Security)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("imap connect %s: %w", addr, err)
+		return nil, connectFailure(err, time.Since(start), connectTO)
 	}
 
 	s := &session{conn: conn, r: bufio.NewReader(conn), commandTO: secondsOr(opts.CommandTimeoutSec, 60), maxLiteral: opts.MaxMessageBytes}
+	start = time.Now()
 	greeting, err := s.readLine()
 	if err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("imap greeting: %w", err)
+		return nil, s.failed(domain.StageGreeting, "", fmt.Errorf("imap greeting: %w", err), start)
 	}
 	preAuth := strings.HasPrefix(greeting, "* PREAUTH")
+	if strings.HasPrefix(greeting, "* BYE") {
+		// Refused before any command — typically a connection limit.
+		conn.Close()
+		return nil, s.failed(domain.StageGreeting, "", &domain.InboundRejected{Code: domain.InboundResponseCode(greeting)}, start)
+	}
 
 	if opts.Security == domain.SecurityStartTLS {
 		if _, err := s.exec("STARTTLS"); err != nil {
@@ -98,9 +106,11 @@ func (Dialer) Dial(ctx context.Context, opts domain.InboundDialOptions) (domain.
 			return nil, fmt.Errorf("STARTTLS: server sent %d bytes before TLS handshake", n)
 		}
 		tconn := tls.Client(conn, tlsCfg)
+		start = time.Now()
 		if err := tconn.HandshakeContext(ctx); err != nil {
 			conn.Close()
-			return nil, fmt.Errorf("STARTTLS handshake: %w", err)
+			return nil, &domain.InboundError{Stage: domain.StageTLS, Command: "STARTTLS", Class: domain.ClassifyInbound(err),
+				Elapsed: time.Since(start), Timeout: s.commandTO, Err: fmt.Errorf("STARTTLS handshake: %w", err)}
 		}
 		s.conn = tconn
 		s.r = bufio.NewReader(tconn)
@@ -118,7 +128,15 @@ func (Dialer) Dial(ctx context.Context, opts domain.InboundDialOptions) (domain.
 		_ = pass
 		if err != nil {
 			s.Close()
-			return nil, &domain.AuthError{Err: fmt.Errorf("LOGIN rejected: %w", err)}
+			// Only the server's refusal of these credentials is an auth
+			// failure. A LOGIN that timed out, lost its connection, or was
+			// refused for load says nothing about the password, and calling it
+			// one parks the account in credential_error for good.
+			var rejected *domain.InboundRejected
+			if errors.As(err, &rejected) && !domain.TemporaryRefusal(rejected.Code) {
+				return nil, &domain.AuthError{Err: fmt.Errorf("LOGIN rejected: %w", err)}
+			}
+			return nil, fmt.Errorf("LOGIN: %w", err)
 		}
 	}
 
@@ -127,6 +145,18 @@ func (Dialer) Dial(ctx context.Context, opts domain.InboundDialOptions) (domain.
 		return nil, err
 	}
 	return s, nil
+}
+
+// connectFailure names the step a failed dial stopped at. With implicit TLS
+// the dialer runs TCP and the handshake as one call; a TLS error type tells
+// the two apart.
+func connectFailure(err error, elapsed, timeout time.Duration) error {
+	stage := domain.StageTCPConnect
+	switch domain.ClassifyInbound(err) {
+	case "tls_certificate", "tls_handshake":
+		stage = domain.StageTLS
+	}
+	return &domain.InboundError{Stage: stage, Class: domain.ClassifyInbound(err), Elapsed: elapsed, Timeout: timeout, Err: fmt.Errorf("imap connect: %w", err)}
 }
 
 type session struct {
@@ -259,6 +289,15 @@ func (s *session) readBoundedLine() (string, error) {
 // matching tagged completion. Server literals ({n}) are read inline so the
 // stream stays framed; the literal bytes are appended to the current line.
 func (s *session) exec(format string, args ...any) ([]string, error) {
+	start := time.Now()
+	untagged, err := s.execRaw(format, args...)
+	if err != nil {
+		return untagged, s.failed(commandStage(format), commandVerb(format), err, start)
+	}
+	return untagged, nil
+}
+
+func (s *session) execRaw(format string, args ...any) ([]string, error) {
 	if s.broken != nil {
 		return nil, s.broken
 	}
@@ -343,7 +382,9 @@ func (s *session) exec(format string, args ...any) ([]string, error) {
 			if strings.HasPrefix(status, "OK") {
 				return untagged, refused
 			}
-			return untagged, fmt.Errorf("server: %s", status)
+			// The reply text is the server's and stays out of diagnostics; only a
+			// known response code travels on.
+			return untagged, fmt.Errorf("%w: server: %s", &domain.InboundRejected{Code: domain.InboundResponseCode(status)}, status)
 		}
 		untagged = append(untagged, line)
 	}
@@ -694,4 +735,46 @@ func secondsOr(v, def int) time.Duration {
 		v = def
 	}
 	return time.Duration(v) * time.Second
+}
+
+// commandVerb is the protocol verb of a command format ("LOGIN %s %s" →
+// "LOGIN", "UID FETCH …" → "UID FETCH"). Arguments never leave the adapter:
+// LOGIN's carry the password.
+func commandVerb(format string) string {
+	fields := strings.Fields(format)
+	if len(fields) == 0 {
+		return ""
+	}
+	verb := strings.ToUpper(fields[0])
+	if verb == "UID" && len(fields) > 1 {
+		verb += " " + strings.ToUpper(fields[1])
+	}
+	return verb
+}
+
+// commandStage places a command in the session's life for diagnostics.
+func commandStage(format string) string {
+	switch verb := commandVerb(format); {
+	case verb == "LOGIN" || verb == "AUTHENTICATE":
+		return domain.StageLogin
+	case verb == "SELECT" || verb == "EXAMINE":
+		return domain.StageSelect
+	case verb == "STARTTLS":
+		return domain.StageStartTLS
+	case verb == "LIST":
+		return domain.StageList
+	case verb == "IDLE":
+		return domain.StageIdle
+	case verb == "LOGOUT":
+		return domain.StageLogout
+	case strings.Contains(format, "RFC822.SIZE"):
+		return domain.StageEnumerate
+	default:
+		return domain.StageFetch
+	}
+}
+
+// failed records where the session broke, once.
+func (s *session) failed(stage, verb string, err error, start time.Time) error {
+	return domain.WrapInbound(stage, verb, err, time.Since(start), s.commandTO)
 }

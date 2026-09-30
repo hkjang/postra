@@ -120,14 +120,27 @@ func (a *App) CreateDraft(ctx context.Context, in CreateDraftInput) (*DraftView,
 			v.Subject = prefix + strings.TrimSpace(original.Subject)
 		}
 		if len(v.To) == 0 && kind != domain.DraftForward {
-			// DRAFT-001: reply targets Reply-To, falling back to From.
-			targets := original.ReplyTo
-			if len(targets) == 0 {
-				targets = []domain.Address{original.From}
-			}
-			v.To = targets
-			if kind == domain.DraftReplyAll {
-				v.Cc = append(v.Cc, dedupAddrs(append(original.To, original.Cc...), acc.Email)...)
+			if original.Mailbox == domain.MailboxSent {
+				// Replying to one's own sent mail is a follow-up to the same
+				// people, as in any mail client — not a message to oneself.
+				// Bcc stays out: a follow-up must not reveal who was copied.
+				v.To = dedupAddrs(original.To, acc.Email)
+				if len(v.To) == 0 {
+					v.To = original.To // it went to the owner alone
+				}
+				if kind == domain.DraftReplyAll {
+					v.Cc = append(v.Cc, dedupAddrs(original.Cc, acc.Email)...)
+				}
+			} else {
+				// DRAFT-001: reply targets Reply-To, falling back to From.
+				targets := original.ReplyTo
+				if len(targets) == 0 {
+					targets = []domain.Address{original.From}
+				}
+				v.To = targets
+				if kind == domain.DraftReplyAll {
+					v.Cc = append(v.Cc, dedupAddrs(append(original.To, original.Cc...), acc.Email)...)
+				}
 			}
 		}
 	}
@@ -202,6 +215,12 @@ func (a *App) generateDraftBody(ctx context.Context, instructions string, origin
 		untrusted = fmt.Sprintf("Subject: %s\nFrom: %s <%s>\n\n%s",
 			original.Subject, original.From.Name, original.From.Email, originalBody)
 		targetID = original.ID
+		if original.Mailbox == domain.MailboxSent {
+			// Written by the user: the draft follows it up with the same
+			// recipients, it does not answer it.
+			instructions = "The quoted message is one the user sent earlier and that has not been answered yet. " +
+				"Write the user's follow-up to its recipients; do not reply to it as if someone else wrote it.\n" + instructions
+		}
 	}
 	an, err := a.runAnalysis(ctx, "draft_reply", "message", targetID, a.withWritingGuide(instructions), untrusted)
 	if err != nil {

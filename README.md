@@ -9,9 +9,9 @@ Go로 작성한 개인/사내 구축형 메일 서비스입니다. 사용자의 
 
 공식 **React AI 업무 메일 워크스페이스**는 `/app/`에서 사용할 수 있습니다. 메일 목록·본문·AI Insight를 함께 보는 화면, 통합 검색, TipTap HTML 작성, 업무·액션·관리 화면을 제공합니다. 이전 `/ui/` 템플릿은 제거했으며 루트·메일 북마크와 기존 OIDC 콜백만 v0.20의 한시적 이전용 리다이렉트로 유지합니다. React와 글꼴은 Go 실행 파일에 포함되어 운영 시 Node 서버나 외부 CDN이 필요 없습니다. [전환 및 사용 안내](docs/REACT_WORKSPACE.md) · [프런트엔드 개발](web/README.md)
 
-v0.20.0의 검색 가능한 운영 콘솔은 환경변수 초기값 위에 관리자 설정과 강제 정책을 적용합니다. 개인·계정 설정과 복수 서명도 웹에서 관리합니다. [설정 관리](docs/SETTINGS.md) · [HTML 메일](docs/MAIL_RENDERING.md) · [Ask Postra](docs/ASK_POSTRA.md) · [MCP 계약](docs/MCP_CONVERGENCE.md) · [API 스키마](docs/API_CONTRACTS.md) · [릴리즈 및 이전 주의사항](docs/releases/v0.20.0.md)
+v0.20.0의 검색 가능한 운영 콘솔은 환경변수 초기값 위에 관리자 설정과 강제 정책을 적용합니다. 개인·계정 설정과 복수 서명도 웹에서 관리합니다. [설정 관리](docs/SETTINGS.md) · [HTML 메일](docs/MAIL_RENDERING.md) · [Ask Postra](docs/ASK_POSTRA.md) · [MCP 계약](docs/MCP_CONVERGENCE.md) · [API 스키마](docs/API_CONTRACTS.md) · [동기화 실패 진단](docs/SYNC_DIAGNOSTICS.md) · [릴리즈 및 이전 주의사항](docs/releases/v0.20.0.md)
 
-최신 릴리즈 [v0.24.0](docs/releases/v0.24.0.md)은 IMAP 보낸편지함과 Postra 발송분을 보낸 메일로 가져오고 MCP `mail_sent_search` 로 보낸 메일만 조회하게 하며, IMAP IDLE 감시가 멈춘 채 돌아오지 않던 문제와 리더 lease 갱신 결함을 고친 릴리즈입니다. 로그인 화면은 조직 계정(SSO) 중심으로 바뀌고 silent SSO 로그아웃이 브라우저 단위로 유지되며, Keycloak에 로그인한 사용자는 첫 MCP 요청에서 Postra 계정이 연결됩니다. `messages.mailbox` 컬럼이 추가되는 DB 마이그레이션이 있습니다(기동 시 자동). v0.23.x의 MCP OAuth·DCR 프록시·프로토콜 안전 처리, 기존 API Key·메일·AI·개인화·승인 기반 발송은 그대로 유지합니다.
+최신 릴리즈 [v0.25.0](docs/releases/v0.25.0.md)는 메일 동기화 실패를 멈춘 단계·유형·소요/제한 시간·재시도·유지 중인 연결 수로 기록해 "응답 시간 초과" 한 줄을 확인 가능한 진단으로 바꾸고, 일시적인 연결 실패는 최대 3회 재시도하며, 메일을 하나도 가져오지 못한 동기화를 성공으로 보고하지 않습니다. 보낸 메일은 답장 대기 보기·Bcc 기록·후속 메일 작성·Ask 근거로 확장했습니다.
 
 ## 설계 핵심
 

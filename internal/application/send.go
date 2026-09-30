@@ -425,7 +425,7 @@ func (a *App) deliver(ctx context.Context, out *domain.OutboundMessage, acc *dom
 	}, domain.Envelope{From: acc.Email, To: rcpts}, bytes.NewReader(raw))
 	if err == nil && !receipt.Uncertain {
 		// Delivered: the request may end now, but the record must not.
-		a.recordSentCopy(context.WithoutCancel(ctx), acc, out, raw)
+		a.recordSentCopy(context.WithoutCancel(ctx), acc, out, raw, v.Bcc)
 	}
 	return receipt, err
 }
@@ -435,12 +435,19 @@ func (a *App) deliver(ctx context.Context, out *domain.OutboundMessage, acc *dom
 // for servers that do not save SMTP submissions to Sent. If the server does
 // save it, the Sent-folder sync later finds the same Message-ID and skips it.
 // Best-effort: the message was already delivered.
-func (a *App) recordSentCopy(ctx context.Context, acc *domain.MailAccount, out *domain.OutboundMessage, raw []byte) {
+//
+// The transmitted bytes carry no Bcc header — recipients must not see one —
+// so the kept copy adds it, as a mail client's Sent copy does. The owner is
+// the only one who ever reads it.
+func (a *App) recordSentCopy(ctx context.Context, acc *domain.MailAccount, out *domain.OutboundMessage, raw []byte, bcc []domain.Address) {
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("send: recording the sent copy panicked", "outbound", out.ID)
 		}
 	}()
+	if header := bccHeader(bcc); header != "" {
+		raw = append([]byte(header), raw...)
+	}
 	sum := sha256.Sum256(raw)
 	rawHash := hex.EncodeToString(sum[:])
 	if dup, _ := a.Store.IsDuplicateHash(ctx, acc.ID, rawHash); dup {
@@ -453,6 +460,22 @@ func (a *App) recordSentCopy(ctx context.Context, acc *domain.MailAccount, out *
 	if _, _, _, err := a.storeMessage(ctx, acc, raw, rawHash, parsed, sentCheckpointPrefix+"outbound:"+out.ID, domain.MailboxSent); err != nil {
 		slog.Warn("send: sent copy not recorded", "outbound", out.ID, "err", err)
 	}
+}
+
+// bccHeader renders a Bcc header line, RFC 2047-encoding display names, or ""
+// when there is no Bcc. Addresses that do not parse are left out.
+func bccHeader(bcc []domain.Address) string {
+	var parts []string
+	for _, b := range bcc {
+		if _, err := mail.ParseAddress(b.Email); err != nil {
+			continue
+		}
+		parts = append(parts, (&mail.Address{Name: b.Name, Address: b.Email}).String())
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "Bcc: " + strings.Join(parts, ", ") + "\r\n"
 }
 
 func (a *App) replyContext(ctx context.Context, draftID string) (*domain.Message, error) {

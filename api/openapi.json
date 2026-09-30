@@ -136,6 +136,9 @@
                     "date": {
                       "type": "integer"
                     },
+                    "mailbox": {
+                      "type": "string"
+                    },
                     "work_status": {
                       "type": "string"
                     },
@@ -222,6 +225,9 @@
                 "date": {
                   "type": "integer"
                 },
+                "mailbox": {
+                  "type": "string"
+                },
                 "work_status": {
                   "type": "string"
                 },
@@ -281,6 +287,9 @@
           },
           "date": {
             "type": "integer"
+          },
+          "mailbox": {
+            "type": "string"
           },
           "work_status": {
             "type": "string"

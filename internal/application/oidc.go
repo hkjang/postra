@@ -286,11 +286,20 @@ type oidcClaims struct {
 	Subject           string   `json:"sub"`
 	PreferredUsername string   `json:"preferred_username"`
 	Email             string   `json:"email"`
-	EmailVerified     bool     `json:"email_verified"`
+	EmailVerified     *bool    `json:"email_verified"`
 	Name              string   `json:"name"`
 	Groups            []string `json:"groups"`
 	AuthorizedParty   string   `json:"azp"`
 	Audience          any      `json:"aud"`
+}
+
+// emailUnverified reports an identity provider saying outright that the
+// address is not verified. An email is a link key only when it is the
+// person's: where users may set their own address unchecked, matching on it
+// would hand them someone else's local account. A provider that does not
+// send the claim keeps the previous behaviour.
+func (c oidcClaims) emailUnverified() bool {
+	return c.EmailVerified != nil && !*c.EmailVerified
 }
 
 // oidcRole maps IdP group membership to a Postra role.
@@ -640,7 +649,7 @@ func (a *App) linkExistingLocalUser(ctx context.Context, rt oidcRuntime, claims 
 	if cand.OIDCSubject != "" || (cand.AuthProvider != "local" && !preprovisioned) {
 		return nil
 	}
-	if preprovisioned && (cand.Email == "" || !strings.EqualFold(cand.Email, claims.Email)) {
+	if preprovisioned && (claims.emailUnverified() || cand.Email == "" || !strings.EqualFold(cand.Email, claims.Email)) {
 		return nil // pending OIDC identities bind only through the exact asserted email
 	}
 	cand.OIDCIssuer, cand.OIDCSubject = rt.Issuer, claims.Subject
@@ -665,7 +674,7 @@ func (a *App) linkExistingLocalUser(ctx context.Context, rt oidcRuntime, claims 
 // covers the emailless bootstrap admin) — but only when the token does not
 // assert a *different* verified email for that username, to avoid takeover.
 func (a *App) oidcLinkCandidate(ctx context.Context, claims oidcClaims) *domain.User {
-	if claims.Email != "" {
+	if claims.Email != "" && !claims.emailUnverified() {
 		if u, err := a.Store.GetUserByEmail(ctx, claims.Email); err == nil && u != nil {
 			return u
 		}

@@ -19,7 +19,8 @@ type Message struct {
 	To        []Address `json:"to,omitempty"`
 	Cc        []Address `json:"cc,omitempty"`
 	ReplyTo   []Address `json:"reply_to,omitempty"`
-	Date      int64     `json:"date"` // unix seconds
+	Bcc       []Address `json:"bcc,omitempty"` // only on sent mail: delivered mail never carries it
+	Date      int64     `json:"date"`          // unix seconds
 	Size      int64     `json:"size"`
 	// RawHash is the SHA-256 of the unmodified RFC822 bytes (MIME-013).
 	RawHash        string `json:"raw_hash"`
@@ -169,6 +170,9 @@ type SearchQuery struct {
 	IsImportant   *bool  `json:"is_important,omitempty"`
 	IsArchived    *bool  `json:"is_archived,omitempty"`
 	IsRead        *bool  `json:"is_read,omitempty"`
+	// AwaitingReply, with Folder "sent", keeps only sent mail that is still
+	// the last message of its conversation: nobody has answered it yet.
+	AwaitingReply bool `json:"awaiting_reply,omitempty"`
 }
 
 type SearchResult struct {

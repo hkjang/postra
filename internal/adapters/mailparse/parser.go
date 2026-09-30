@@ -36,6 +36,7 @@ type Parsed struct {
 	To          []domain.Address
 	Cc          []domain.Address
 	ReplyTo     []domain.Address
+	Bcc         []domain.Address // only on a sender's own copy (Sent folder, Postra's record); delivered mail never carries it
 	Date        time.Time
 	MessageID   string
 	InReplyTo   string
@@ -82,6 +83,7 @@ func Parse(raw []byte) *Parsed {
 	out.To = parseAddrs(h.Get("To"))
 	out.Cc = parseAddrs(h.Get("Cc"))
 	out.ReplyTo = parseAddrs(h.Get("Reply-To"))
+	out.Bcc = parseAddrs(h.Get("Bcc"))
 
 	partCount := 0
 	if err := walkPart(msg.Body, h.Get("Content-Type"), h.Get("Content-Transfer-Encoding"), h.Get("Content-Disposition"), out, 0, &partCount); err != nil {

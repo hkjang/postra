@@ -34,6 +34,9 @@ export function AIContext({ message }: { message: Message }) {
   const preferences = usePersonalPreferences()
   const autoSummary = preferences.value('ai.auto_summary','false') === 'true'
   const showReplies = preferences.value('ai.show_replies','true') === 'true'
+  // The owner's own sent mail is followed up, not answered: suggested
+  // replies to it would be replies to oneself.
+  const sentMail = message.mailbox === 'sent'
   const autoStarted = useRef('')
   const summary = useMutation({ mutationFn: () => api<Analysis>(`/api/messages/${message.id}/analyze`, { method: 'POST', body: { type: 'summarize' } }).then(summaryResult) })
   const triage = useMutation({ mutationFn: () => api<Analysis>(`/api/messages/${message.id}/analyze`, { method: 'POST', body: { type: 'triage' } }).then(triageResult) })
@@ -66,13 +69,13 @@ export function AIContext({ message }: { message: Message }) {
       {cards.isSuccess && <Button size="sm" variant="ghost" onClick={() => navigate('/actions')}>Action Center에서 검토 <ArrowUpRight size={14} /></Button>}
     </section>
     <section className="insight-section">
-      <div className="row"><h3>스마트 답장</h3>{showReplies && <Button size="sm" variant="ghost" disabled={replies.isPending} onClick={() => replies.mutate()}>{replies.isPending ? '작성 중…' : '답장 제안'}</Button>}</div>
+      <div className="row"><h3>{sentMail ? '후속 메일' : '스마트 답장'}</h3>{showReplies && !sentMail && <Button size="sm" variant="ghost" disabled={replies.isPending} onClick={() => replies.mutate()}>{replies.isPending ? '작성 중…' : '답장 제안'}</Button>}</div>
       {replies.error && <ErrorState error={replies.error} />}{reply.error && <ErrorState error={reply.error} />}
-      {showReplies && replies.data && !replies.data.suggestions.length && <p className="muted">제안된 답장이 없습니다.</p>}
-      {showReplies && replies.data?.suggestions.map((text, i) => <div className="reply-suggestion" key={i}><p>{text}</p><Button size="sm" variant="secondary" disabled={reply.isPending} onClick={() => reply.mutate(text)}>답장에 적용 <ArrowUpRight size={14} /></Button></div>)}
+      {showReplies && !sentMail && replies.data && !replies.data.suggestions.length && <p className="muted">제안된 답장이 없습니다.</p>}
+      {showReplies && !sentMail && replies.data?.suggestions.map((text, i) => <div className="reply-suggestion" key={i}><p>{text}</p><Button size="sm" variant="secondary" disabled={reply.isPending} onClick={() => reply.mutate(text)}>답장에 적용 <ArrowUpRight size={14} /></Button></div>)}
       {!showReplies && <p className="muted">개인 또는 조직 설정에서 추천 답장 표시를 껐습니다.</p>}
       <p className="muted">제안은 초안으로만 저장됩니다. 발송 전 확인과 승인이 필요합니다.</p>
-      <form className="stack" onSubmit={event => {event.preventDefault(); instructedReply.mutate()}}><label className="field">AI 답장 작성 지시<Textarea value={instructions} onChange={event => setInstructions(event.target.value)} placeholder="예: 참석 가능하다고 정중하게 답장해 줘" required/></label><Button size="sm" type="submit" variant="outline" disabled={instructedReply.isPending || !instructions.trim()}>지시대로 답장 초안 만들기</Button>{instructedReply.error && <ErrorState error={instructedReply.error}/>}</form>
+      <form className="stack" onSubmit={event => {event.preventDefault(); instructedReply.mutate()}}><label className="field">{sentMail ? 'AI 후속 메일 작성 지시' : 'AI 답장 작성 지시'}<Textarea value={instructions} onChange={event => setInstructions(event.target.value)} placeholder="예: 참석 가능하다고 정중하게 답장해 줘" required/></label><Button size="sm" type="submit" variant="outline" disabled={instructedReply.isPending || !instructions.trim()}>{sentMail ? '지시대로 후속 메일 초안 만들기' : '지시대로 답장 초안 만들기'}</Button>{instructedReply.error && <ErrorState error={instructedReply.error}/>}</form>
     </section>
     <AdditionalAnalysis messageID={message.id}/>
   </aside>

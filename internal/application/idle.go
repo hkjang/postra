@@ -241,7 +241,7 @@ func (a *App) triggerIdleSync(ctx context.Context, acc *domain.MailAccount) {
 	uctx := WithPrincipal(WithActor(ctx, "idle-worker"), domain.Principal{
 		UserID: acc.UserID, Role: domain.RoleUser, AuthMethod: "idle-worker",
 	})
-	if _, err := a.StartSync(uctx, acc.ID, SyncOptions{}); err != nil {
+	if _, err := a.StartSync(uctx, acc.ID, SyncOptions{fromIdle: true}); err != nil {
 		slog.Debug("idle worker: sync skipped", "account", acc.ID, "reason", err)
 	}
 }

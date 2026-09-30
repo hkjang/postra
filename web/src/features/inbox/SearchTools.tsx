@@ -3,11 +3,15 @@ import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import {api} from '@/api/client'
 import {Button, ErrorState, Input} from '@/components/ui'
 import {accountListResponse, batchResponse} from '../messages/responses'
+import {isSentView} from './views'
 import {snoozeChoices, snoozeTimestamp, type SnoozePreset} from '../messages/snooze'
+
 
 export function keywordSearchParams(params: URLSearchParams, cursor: string): URLSearchParams {
   const folder = params.get('folder') || 'inbox'
-  const query = new URLSearchParams({q: params.get('q') || '', limit: '60', cursor, folder: ['important', 'archive', 'snoozed'].includes(folder) ? folder : 'inbox'})
+  const view = isSentView(folder) ? 'sent' : ['important', 'archive', 'snoozed'].includes(folder) ? folder : 'inbox'
+  const query = new URLSearchParams({q: params.get('q') || '', limit: '60', cursor, folder: view})
+  if (folder === 'awaiting') query.set('awaiting_reply', 'true')
   const account = params.get('account'); if (account) query.set('account_id', account)
   if (folder === 'unread') query.set('is_read','false')
   for (const name of ['from', 'to', 'subject', 'label']) {const value = params.get(name); if (value) query.set(name, value)}

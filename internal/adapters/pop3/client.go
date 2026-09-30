@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -67,6 +68,7 @@ func (Dialer) Dial(ctx context.Context, opts domain.POP3DialOptions) (domain.POP
 		// (default false), required by offline-network mail support.
 		InsecureSkipVerify: opts.InsecureSkipVerify,
 	}
+	dialStart := time.Now()
 	switch opts.Security {
 	case domain.SecurityTLS:
 		conn, err = (&tls.Dialer{NetDialer: d, Config: tlsCfg}).DialContext(ctx, "tcp", addr)
@@ -76,7 +78,7 @@ func (Dialer) Dial(ctx context.Context, opts domain.POP3DialOptions) (domain.POP
 		return nil, fmt.Errorf("unknown security mode %q", opts.Security)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("pop3 connect %s: %w", addr, err)
+		return nil, connectFailure(err, time.Since(dialStart), connectTO)
 	}
 
 	s := &session{
@@ -84,9 +86,10 @@ func (Dialer) Dial(ctx context.Context, opts domain.POP3DialOptions) (domain.POP
 		text:      textproto.NewConn(conn),
 		commandTO: secondsOr(opts.CommandTimeoutSec, 60),
 	}
+	greetStart := time.Now()
 	if _, err := s.readResponse(); err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("pop3 greeting: %w", err)
+		return nil, domain.WrapInbound(domain.StageGreeting, "", fmt.Errorf("pop3 greeting: %w", err), time.Since(greetStart), s.commandTO)
 	}
 
 	if opts.Security == domain.SecurityStartTLS {
@@ -111,20 +114,25 @@ func (Dialer) Dial(ctx context.Context, opts domain.POP3DialOptions) (domain.POP
 			return nil, fmt.Errorf("STLS: server sent %d bytes before TLS handshake", n)
 		}
 		tconn := tls.Client(conn, tlsCfg)
+		tlsStart := time.Now()
 		if err := tconn.HandshakeContext(ctx); err != nil {
 			conn.Close()
-			return nil, fmt.Errorf("STLS handshake: %w", err)
+			return nil, &domain.InboundError{Stage: domain.StageTLS, Command: "STLS", Class: domain.ClassifyInbound(err), Elapsed: time.Since(tlsStart), Timeout: s.commandTO, Err: fmt.Errorf("STLS handshake: %w", err)}
 		}
 		s.conn = tconn
 		s.text = textproto.NewConn(tconn)
 	}
 
 	// Authentication is optional: some maildrops on isolated networks accept
-	// sessions without USER/PASS.
+	// sessions without USER/PASS. Only the server's refusal of the
+	// credentials is an auth failure; a timeout, a lost connection or a
+	// refusal for load ([IN-USE], [LOGIN-DELAY], [SYS/TEMP]) says nothing
+	// about the password, and calling it one parks the account in
+	// credential_error for good.
 	if opts.Username != "" {
 		if _, err := s.cmd("USER %s", opts.Username); err != nil {
 			s.Close()
-			return nil, &AuthError{Err: fmt.Errorf("USER: %w", err)}
+			return nil, loginFailure("USER", err)
 		}
 		pass := ""
 		if opts.Password != nil {
@@ -135,10 +143,51 @@ func (Dialer) Dial(ctx context.Context, opts domain.POP3DialOptions) (domain.POP
 		_ = pass
 		if err != nil {
 			s.Close()
-			return nil, &AuthError{Err: fmt.Errorf("PASS rejected: %w", err)}
+			return nil, loginFailure("PASS", err)
 		}
 	}
 	return s, nil
+}
+
+func loginFailure(verb string, err error) error {
+	var rejected *domain.InboundRejected
+	if errors.As(err, &rejected) && !domain.TemporaryRefusal(rejected.Code) {
+		return &AuthError{Err: fmt.Errorf("%s rejected: %w", verb, err)}
+	}
+	return fmt.Errorf("%s: %w", verb, err)
+}
+
+// connectFailure names the step a failed dial stopped at. With implicit TLS
+// the dialer runs TCP and the handshake as one call; a TLS error type tells
+// the two apart.
+func connectFailure(err error, elapsed, timeout time.Duration) error {
+	stage := domain.StageTCPConnect
+	switch domain.ClassifyInbound(err) {
+	case "tls_certificate", "tls_handshake":
+		stage = domain.StageTLS
+	}
+	return &domain.InboundError{Stage: stage, Class: domain.ClassifyInbound(err), Elapsed: elapsed, Timeout: timeout, Err: fmt.Errorf("pop3 connect: %w", err)}
+}
+
+// commandStage places a POP3 command in the session's life for diagnostics.
+// Only the verb is kept: PASS carries the password.
+func commandStage(format string) (stage, verb string) {
+	fields := strings.Fields(format)
+	if len(fields) > 0 {
+		verb = strings.ToUpper(fields[0])
+	}
+	switch verb {
+	case "USER", "PASS", "APOP", "AUTH":
+		return domain.StageLogin, verb
+	case "STLS":
+		return domain.StageStartTLS, verb
+	case "STAT", "LIST", "UIDL":
+		return domain.StageEnumerate, verb
+	case "QUIT":
+		return domain.StageLogout, verb
+	default:
+		return domain.StageFetch, verb
+	}
 }
 
 // AuthError aliases the shared domain type so the sync layer can recognize
@@ -160,17 +209,24 @@ func (s *session) readResponse() (string, error) {
 		return "", err
 	}
 	if !strings.HasPrefix(line, "+OK") {
-		return "", fmt.Errorf("server: %s", line)
+		// Only a known response code leaves the adapter, never the text.
+		return "", fmt.Errorf("%w: server: %s", &domain.InboundRejected{Code: domain.InboundResponseCode(line)}, line)
 	}
 	return line, nil
 }
 
 func (s *session) cmd(format string, args ...any) (string, error) {
+	start := time.Now()
+	stage, verb := commandStage(format)
 	s.deadline()
 	if err := s.text.PrintfLine(format, args...); err != nil {
-		return "", err
+		return "", domain.WrapInbound(stage, verb, err, time.Since(start), s.commandTO)
 	}
-	return s.readResponse()
+	line, err := s.readResponse()
+	if err != nil {
+		return "", domain.WrapInbound(stage, verb, err, time.Since(start), s.commandTO)
+	}
+	return line, nil
 }
 
 // readList collects a multi-line response up to its "." terminator, bounded by
@@ -204,9 +260,10 @@ func (s *session) List(ctx context.Context) ([]domain.RemoteMessage, error) {
 	if _, err := s.cmd("LIST"); err != nil {
 		return nil, err
 	}
+	listStart := time.Now()
 	lines, err := s.readList()
 	if err != nil {
-		return nil, err
+		return nil, domain.WrapInbound(domain.StageEnumerate, "LIST", err, time.Since(listStart), s.commandTO)
 	}
 	var out []domain.RemoteMessage
 	for _, l := range lines {
@@ -223,9 +280,10 @@ func (s *session) UIDL(ctx context.Context) ([]domain.RemoteMessage, error) {
 	if _, err := s.cmd("UIDL"); err != nil {
 		return nil, err // caller falls back to LIST + content hash (POP-005)
 	}
+	listStart := time.Now()
 	lines, err := s.readList()
 	if err != nil {
-		return nil, err
+		return nil, domain.WrapInbound(domain.StageEnumerate, "UIDL", err, time.Since(listStart), s.commandTO)
 	}
 	var out []domain.RemoteMessage
 	for _, l := range lines {
@@ -267,14 +325,22 @@ func (s *session) Retrieve(ctx context.Context, number int) (io.ReadCloser, erro
 	if _, err := s.cmd("RETR %d", number); err != nil {
 		return nil, err
 	}
-	return s.retrBody()
+	body, err := s.retrBody()
+	if err != nil {
+		return nil, domain.WrapInbound(domain.StageFetch, "RETR", err, 0, s.commandTO)
+	}
+	return body, nil
 }
 
 func (s *session) Top(ctx context.Context, number, lines int) (io.ReadCloser, error) {
 	if _, err := s.cmd("TOP %d %d", number, lines); err != nil {
 		return nil, err
 	}
-	return s.retrBody()
+	body, err := s.retrBody()
+	if err != nil {
+		return nil, domain.WrapInbound(domain.StageFetch, "RETR", err, 0, s.commandTO)
+	}
+	return body, nil
 }
 
 func (s *session) Delete(ctx context.Context, number int) error {

@@ -37,7 +37,8 @@ export function messageResponse(value: unknown): Message {
   const snoozed_until = optionalNumber(row.snoozed_until)
   if (snoozed_until !== undefined && (!Number.isInteger(snoozed_until) || snoozed_until < 0 || snoozed_until > 253402300799)) throw invalid()
   return {id, account_id, subject: optionalString(row.subject) ?? '', from: address(row.from),
-    to: responseList(row.to ?? null, address), cc: responseList(row.cc ?? null, address),
+    to: responseList(row.to ?? null, address), cc: responseList(row.cc ?? null, address), bcc: responseList(row.bcc ?? null, address),
+    mailbox: optionalString(row.mailbox),
     date: optionalNumber(row.date) ?? 0, created_at: optionalNumber(row.created_at) ?? 0,
     has_attachments: optionalBoolean(row.has_attachments) ?? false,
     is_read: optionalBoolean(row.is_read), is_important: optionalBoolean(row.is_important), is_archived: optionalBoolean(row.is_archived), snoozed_until,

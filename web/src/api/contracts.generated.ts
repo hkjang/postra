@@ -46,6 +46,7 @@ export type AskResult = {
       "action_ids"?: null | Array<string>
       "date": number
       "from": string
+      "mailbox"?: string
       "message_id": string
       "subject": string
       "work_status"?: string
@@ -67,6 +68,7 @@ export type AskRetrieval = {
     "action_ids"?: null | Array<string>
     "date": number
     "from": string
+    "mailbox"?: string
     "message_id": string
     "subject": string
     "work_status"?: string
@@ -80,6 +82,7 @@ export type AskSource = {
   "action_ids"?: null | Array<string>
   "date": number
   "from": string
+  "mailbox"?: string
   "message_id": string
   "subject": string
   "work_status"?: string
