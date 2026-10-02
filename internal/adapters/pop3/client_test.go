@@ -650,3 +650,122 @@ func TestPOP3BodyDotUnstuffingPreservesFraming(t *testing.T) {
 		})
 	}
 }
+
+// stalledBodyServer accepts a command, acknowledges it with +OK, and then
+// sends neither body nor the terminating ".", so retrBody waits out the whole
+// command budget. The accepted command is reported back for the assertion.
+func stalledBodyServer(t *testing.T) (string, <-chan string) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	got := make(chan string, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		br := bufio.NewReader(conn)
+		io.WriteString(conn, "+OK ready\r\n")
+		line, err := br.ReadString('\n')
+		if err != nil {
+			return
+		}
+		got <- strings.TrimSpace(line)
+		// Acknowledge, then stall: the body never arrives.
+		io.WriteString(conn, "+OK message follows\r\n")
+		<-t.Context().Done()
+	}()
+	return ln.Addr().String(), got
+}
+
+// dialShortCommandTO uses the real Dialer with a 1s command budget so a
+// stalled body fails inside the test timeout instead of the 60s default.
+func dialShortCommandTO(t *testing.T, addr string) domain.POP3Session {
+	t.Helper()
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := Dialer{}.Dial(context.Background(), domain.POP3DialOptions{
+		Host: host, Port: port, Security: domain.SecurityNone,
+		CommandTimeoutSec: 1,
+	})
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { sess.Close() })
+	return sess
+}
+
+// TestPOP3StalledBodyReportsFetchTiming pins the two facts the fetch-stage
+// diagnostic is built on: the elapsed time actually spent waiting, and the
+// verb that was actually sent. syncTiming treats ElapsedMS == 0 as "no
+// measurement" and prints only the limit, which hides whether the server used
+// up its own budget (slow server) or the wait was cut short from outside.
+func TestPOP3StalledBodyReportsFetchTiming(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		wire    string
+		command string
+		read    func(domain.POP3Session) (io.ReadCloser, error)
+	}{
+		{
+			name: "RETR", wire: "RETR 7", command: "RETR",
+			read: func(sess domain.POP3Session) (io.ReadCloser, error) {
+				return sess.Retrieve(context.Background(), 7)
+			},
+		},
+		{
+			name: "TOP", wire: "TOP 7 4", command: "TOP",
+			read: func(sess domain.POP3Session) (io.ReadCloser, error) {
+				return sess.Top(context.Background(), 7, 4)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			addr, sent := stalledBodyServer(t)
+			sess := dialShortCommandTO(t, addr)
+
+			start := time.Now()
+			body, err := tc.read(sess)
+			total := time.Since(start)
+			if err == nil {
+				body.Close()
+				t.Fatalf("%s returned a body from a server that never sent one", tc.name)
+			}
+			if got := <-sent; got != tc.wire {
+				t.Fatalf("server received %q, want %q", got, tc.wire)
+			}
+
+			var ie *domain.InboundError
+			if !errors.As(err, &ie) {
+				t.Fatalf("error %v is not a *domain.InboundError", err)
+			}
+			if ie.Stage != domain.StageFetch {
+				t.Errorf("Stage = %q, want %q", ie.Stage, domain.StageFetch)
+			}
+			if ie.Command != tc.command {
+				t.Errorf("Command = %q, want %q", ie.Command, tc.command)
+			}
+			if ie.Timeout != time.Second {
+				t.Errorf("Timeout = %v, want 1s", ie.Timeout)
+			}
+			// The wait consumed its own 1s budget, so the recorded elapsed
+			// must reflect it and cannot exceed the call's real duration.
+			if ie.Elapsed < 900*time.Millisecond {
+				t.Errorf("Elapsed = %v, want the time actually spent waiting (>= 900ms of the 1s budget)", ie.Elapsed)
+			}
+			if ie.Elapsed > total {
+				t.Errorf("Elapsed = %v, longer than the whole call (%v)", ie.Elapsed, total)
+			}
+		})
+	}
+}

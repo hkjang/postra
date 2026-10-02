@@ -342,9 +342,13 @@ func (s *session) Retrieve(ctx context.Context, number int) (io.ReadCloser, erro
 	if _, err := s.cmd("RETR %d", number); err != nil {
 		return nil, err
 	}
+	// retrBody sets the command deadline itself, so the wait starts here:
+	// reporting 0 would make syncTiming print only the limit and lose the
+	// slow-server/cut-connection distinction the fetch diagnostic exists for.
+	bodyStart := time.Now()
 	body, err := s.retrBody()
 	if err != nil {
-		return nil, domain.WrapInbound(domain.StageFetch, "RETR", err, 0, s.commandTO)
+		return nil, domain.WrapInbound(domain.StageFetch, "RETR", err, time.Since(bodyStart), s.commandTO)
 	}
 	return body, nil
 }
@@ -353,9 +357,10 @@ func (s *session) Top(ctx context.Context, number, lines int) (io.ReadCloser, er
 	if _, err := s.cmd("TOP %d %d", number, lines); err != nil {
 		return nil, err
 	}
+	bodyStart := time.Now()
 	body, err := s.retrBody()
 	if err != nil {
-		return nil, domain.WrapInbound(domain.StageFetch, "RETR", err, 0, s.commandTO)
+		return nil, domain.WrapInbound(domain.StageFetch, "TOP", err, time.Since(bodyStart), s.commandTO)
 	}
 	return body, nil
 }
