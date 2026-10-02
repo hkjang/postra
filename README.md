@@ -11,7 +11,7 @@ Go로 작성한 개인/사내 구축형 메일 서비스입니다. 사용자의 
 
 v0.20.0의 검색 가능한 운영 콘솔은 환경변수 초기값 위에 관리자 설정과 강제 정책을 적용합니다. 개인·계정 설정과 복수 서명도 웹에서 관리합니다. [설정 관리](docs/SETTINGS.md) · [HTML 메일](docs/MAIL_RENDERING.md) · [Ask Postra](docs/ASK_POSTRA.md) · [MCP 계약](docs/MCP_CONVERGENCE.md) · [API 스키마](docs/API_CONTRACTS.md) · [동기화 실패 진단](docs/SYNC_DIAGNOSTICS.md) · [릴리즈 및 이전 주의사항](docs/releases/v0.20.0.md)
 
-최신 릴리즈 [v0.25.1](docs/releases/v0.25.1.md)은 IMAP 계정이 서버 연결을 하나만 쓰도록 고쳐 "TCP 연결은 되었으나 서버가 세션을 시작하지 않았습니다" 실패를 해소합니다(실시간 수신 감시가 동기화에 연결을 넘김, `mail.idle_enabled` 로 끌 수 있음). [v0.25.0](docs/releases/v0.25.0.md)의 동기화 실패 진단(멈춘 단계·유형·시간·재시도·연결 수)과 보낸 메일 후속 작업은 그대로입니다.
+최신 릴리즈 [v0.25.2](docs/releases/v0.25.2.md)는 OpenTelemetry 를 v1.45.0 으로 올려 govulncheck 권고 GO-2026-6505 를 해소하고, 브라우저 테스트가 `engines.node` 를 만족하는 인터프리터에서 실행되도록 고친 유지 보수 릴리즈입니다. 동작은 [v0.25.1](docs/releases/v0.25.1.md)(IMAP 계정당 연결 하나, `mail.idle_enabled`)과 [v0.25.0](docs/releases/v0.25.0.md)(동기화 실패 진단, 일시적 실패 재시도, 보낸 메일 후속 작업)에서 바뀌지 않았습니다.
 
 ## 설계 핵심
 
