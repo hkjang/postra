@@ -1,4 +1,9 @@
 @import "tailwindcss";
+/* Build scripts are not UI source. Tailwind's automatic detection otherwise
+   scans them and turns ordinary English in their comments into utilities --
+   "shadow", "grid", "table", "fixed", "block" and "container" are all class
+   names -- so a comment silently grows the stylesheet shipped to browsers. */
+@source not "../scripts";
 @import "./typography.css";
 
 :root{font-family:Inter,"Pretendard Variable",Pretendard,system-ui,sans-serif;color:#243049;background:#f8fafc;font-synthesis:none;text-rendering:optimizeLegibility;--background:#f8fafc;--surface:#fff;--foreground:#243049;--muted:#f0f3f8;--muted-foreground:#737e91;--border:#e6eaf0;--primary:#3e63dd;--ring:#6484f5;--ai:#865dd1;--danger:#c74242;--success:#21816a;--sidebar:#f5f7fb}

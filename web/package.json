@@ -7,7 +7,7 @@
     "dev": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build --logLevel warn && node scripts/third-party-notices.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "node scripts/engine-node.mjs node_modules/vitest/vitest.mjs run",
     "test:e2e": "cd .. && POSTRA_SPA_BROWSER_TEST=1 go test ./internal/transport/httpapi -run '^TestSPA(Browser|ConvergenceBrowser|DevProxyBrowser)$' -v -count=1"
   },
   "engines": {
