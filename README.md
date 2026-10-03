@@ -11,7 +11,7 @@ Go로 작성한 개인/사내 구축형 메일 서비스입니다. 사용자의 
 
 v0.20.0의 검색 가능한 운영 콘솔은 환경변수 초기값 위에 관리자 설정과 강제 정책을 적용합니다. 개인·계정 설정과 복수 서명도 웹에서 관리합니다. [설정 관리](docs/SETTINGS.md) · [HTML 메일](docs/MAIL_RENDERING.md) · [Ask Postra](docs/ASK_POSTRA.md) · [MCP 계약](docs/MCP_CONVERGENCE.md) · [API 스키마](docs/API_CONTRACTS.md) · [동기화 실패 진단](docs/SYNC_DIAGNOSTICS.md) · [릴리즈 및 이전 주의사항](docs/releases/v0.20.0.md)
 
-최신 릴리즈 [v0.25.3](docs/releases/v0.25.3.md)은 POP3 본문 수신(`fetch`)이 실패할 때 진단에 **실제 경과 시간과 실제로 보낸 명령**(RETR / TOP)이 남도록 고칩니다 — 그 단계만 "제한 60초" 만 적어, 느린 서버와 끊긴 연결을 구분하는 [v0.25.0](docs/releases/v0.25.0.md)의 진단이 비어 있었습니다. [v0.25.2](docs/releases/v0.25.2.md)의 OpenTelemetry v1.45.0 갱신과 [v0.25.1](docs/releases/v0.25.1.md)의 IMAP 계정당 연결 하나(`mail.idle_enabled`)는 그대로입니다.
+최신 릴리즈 [v0.25.4](docs/releases/v0.25.4.md)는 `sync.max_message_bytes` 를 **0 이하(= 크기 제한 없음)로 둔 계정에서 모든 메일이 1바이트로 잘려 저장되던** 조용한 데이터 유실을 고칩니다 — 수집은 그대로 "성공" 으로 끝났고 두 번째 메일부터는 같은 해시 때문에 중복으로 집계됐습니다. 양수 상한(기본 50 MiB)을 쓰는 계정은 영향이 없습니다. [v0.25.3](docs/releases/v0.25.3.md)의 POP3 `fetch` 진단 교정, [v0.25.2](docs/releases/v0.25.2.md)의 OpenTelemetry v1.45.0 갱신, [v0.25.1](docs/releases/v0.25.1.md)의 IMAP 계정당 연결 하나(`mail.idle_enabled`)는 그대로입니다.
 
 ## 설계 핵심
 
