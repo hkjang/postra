@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"runtime"
 	"runtime/debug"
 	"strings"
@@ -509,6 +510,26 @@ func (a *App) runBodyRepair(ctx context.Context, sess domain.POP3Session, acc *d
 	slog.Info("body repair: done", "account", acc.ID, "repaired", done, "candidates", len(repairSet))
 }
 
+// rawReadLimit turns MaxMessageBytes into the io.LimitReader count one message
+// body is read under. The extra byte is what lets the caller tell a message
+// exactly at the limit from one over it.
+//
+// A limit of zero or less turns the size cap off — the convention this setting
+// carries everywhere else (the oversize checks below and in runSync only
+// compare when maxBytes > 0, and the IMAP adapter treats maxLiteral <= 0 as no
+// literal cap). io.LimitReader has no value meaning "unbounded", and the naive
+// maxBytes+1 becomes 1 at zero and non-positive below it, which silently
+// truncates every message on such an account to a single byte or to nothing at
+// all; the oversize check cannot catch it because the cap is off, so the stub
+// is stored as if it were the mail. MaxInt64 stands in for unbounded, and it
+// also absorbs the overflow of +1 at the top of the range.
+func rawReadLimit(maxBytes int64) int64 {
+	if maxBytes <= 0 || maxBytes == math.MaxInt64 {
+		return math.MaxInt64
+	}
+	return maxBytes + 1
+}
+
 // fetchRaw downloads one message's raw bytes, bounded by MaxMessageBytes.
 func (a *App) fetchRaw(ctx context.Context, sess domain.POP3Session, number int) ([]byte, error) {
 	rc, err := sess.Retrieve(ctx, number)
@@ -516,7 +537,7 @@ func (a *App) fetchRaw(ctx context.Context, sess domain.POP3Session, number int)
 		return nil, err
 	}
 	defer rc.Close()
-	return io.ReadAll(io.LimitReader(rc, a.EffectiveConfig().Sync.MaxMessageBytes+1))
+	return io.ReadAll(io.LimitReader(rc, rawReadLimit(a.EffectiveConfig().Sync.MaxMessageBytes)))
 }
 
 // ingestOne downloads, stores, and indexes a single message. Each message is
@@ -541,7 +562,7 @@ func (a *App) ingestOne(ctx context.Context, sess domain.POP3Session, acc *domai
 		return err
 	}
 	maxBytes := a.EffectiveConfig().Sync.MaxMessageBytes
-	raw, err = io.ReadAll(io.LimitReader(rc, maxBytes+1))
+	raw, err = io.ReadAll(io.LimitReader(rc, rawReadLimit(maxBytes)))
 	rc.Close()
 	if err != nil {
 		return err
