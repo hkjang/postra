@@ -20,7 +20,7 @@ import (
 // sync layer applies to the body stream is the one under test.
 // refuseList makes the fixture answer LIST with an error while still answering
 // UIDL. runSync merges LIST sizes only to pre-screen oversize messages and
-// ignores a LIST failure (sync.go), so every message then arrives with Size 0
+// carries on past a LIST failure (sync.go warns), so every message arrives with Size 0
 // and ingestOne's own read limit is the only thing bounding the body.
 func scriptedMaildrop(t *testing.T, mails []string, refuseList bool) int {
 	t.Helper()
