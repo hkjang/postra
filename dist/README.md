@@ -2,16 +2,16 @@
 
 Docker 데몬 없이 빌드한, 오프라인망에서 바로 사용 가능한 산출물입니다.
 
-> **v0.25.4 — 크기 제한을 끈 계정의 본문 잘림 수정**: `sync.max_message_bytes` 를 0 이하(= 크기 제한 없음)로 둔 계정에서 **모든 메일이 1바이트로 잘려 저장**되던 문제를 고칩니다. 수집은 "성공" 으로 끝났고 두 번째 메일부터는 중복으로 집계됐습니다. 양수 상한(기본 50 MiB)을 쓰는 계정은 영향이 없습니다. 설정·DB 는 v0.25.3 과 같고 마이그레이션도 없습니다. [릴리즈 내용](../docs/releases/v0.25.4.md) · [진단 읽는 법](../docs/SYNC_DIAGNOSTICS.md)
+> **v0.25.5 — LIST 를 거부하는 POP3 서버에서 크기 선별이 꺼지는 것을 로그로 알립니다**: UIDL 은 답하면서 `LIST` 는 거부하는 서버에서 **사전 크기 선별이 아무 흔적 없이 꺼지던** 문제를 고칩니다. 이제 그 동기화에 경고 한 줄이 남습니다. **동작은 바뀌지 않습니다** — 큰 메일은 여전히 받은 뒤 걸러지고 작업은 그대로 성공합니다. 설정·DB 는 v0.25.4 와 같고 마이그레이션도 없습니다. [릴리즈 내용](../docs/releases/v0.25.5.md) · [진단 읽는 법](../docs/SYNC_DIAGNOSTICS.md)
 
 기존 SSO·메일 프로비저닝·비밀값 암호화·승인·멱등 발송은 유지합니다. 런타임 Node 서버나 외부 CDN은 필요 없으며 서체와 시간대 데이터도 실행 파일에 포함됩니다.
 
 | 파일 | 설명 |
 | --- | --- |
-| `postra-0.25.4.tar.gz` | `docker load` 로 불러오는 컨테이너 이미지 (`postra:0.25.4`, linux/amd64) |
-| `postra-0.25.4-linux-amd64` | 정적 링크 단일 실행 파일 (CGO 없음, 의존성 없음) |
-| `postra-0.25.4-sbom.cdx.json` | CycloneDX 소프트웨어 자재명세서 |
-| `postra-0.25.4-frontend-sbom.cdx.json` | 프런트엔드 의존성 CycloneDX 명세서 |
+| `postra-0.25.5.tar.gz` | `docker load` 로 불러오는 컨테이너 이미지 (`postra:0.25.5`, linux/amd64) |
+| `postra-0.25.5-linux-amd64` | 정적 링크 단일 실행 파일 (CGO 없음, 의존성 없음) |
+| `postra-0.25.5-sbom.cdx.json` | CycloneDX 소프트웨어 자재명세서 |
+| `postra-0.25.5-frontend-sbom.cdx.json` | 프런트엔드 의존성 CycloneDX 명세서 |
 | `SHA256SUMS.txt` | 모든 릴리즈 파일의 SHA-256 체크섬 |
 
 이미지는 순수 Go 정적 바이너리 + CA 인증서 + 최소 rootfs 로만 구성됩니다(scratch 기반).
@@ -20,7 +20,7 @@ Docker 데몬 없이 빌드한, 오프라인망에서 바로 사용 가능한 �
 
 ```bash
 # 폐쇄망 호스트로 tar.gz 를 옮긴 뒤:
-docker load -i postra-0.25.4.tar.gz     # gzip 자동 인식
+docker load -i postra-0.25.5.tar.gz     # gzip 자동 인식
 docker image ls postra
 
 # 오프라인망(평문 POP3/SMTP 허용) 실행 예시
@@ -30,7 +30,7 @@ docker run -d --name postra \
   -e POSTRA_HTTP_ADDR=0.0.0.0:8480 \
   -e POSTRA_ALLOW_INSECURE_MAIL=true \
   -e POSTRA_API_TOKEN=change-me \
-  postra:0.25.4
+  postra:0.25.5
 
 # CLI 사용 (같은 컨테이너)
 docker exec -it postra postra account list
@@ -42,9 +42,9 @@ REST API는 `/api/v1/`(기존 `/api/` 호환), 유일한 공식 Web UI는 `/app/
 ## 2) 바이너리 단독 실행 (Docker 불필요)
 
 ```bash
-chmod +x postra-0.25.4-linux-amd64
-./postra-0.25.4-linux-amd64 init
-POSTRA_BOOTSTRAP_ADMIN_PASSWORD='replace-with-a-long-secret' ./postra-0.25.4-linux-amd64 serve
+chmod +x postra-0.25.5-linux-amd64
+./postra-0.25.5-linux-amd64 init
+POSTRA_BOOTSTRAP_ADMIN_PASSWORD='replace-with-a-long-secret' ./postra-0.25.5-linux-amd64 serve
 ```
 
 ## 데이터 / 비밀값
@@ -58,6 +58,6 @@ Docker 없이 이미지를 다시 만들려면:
 
 ```bash
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o postra ./cmd/postra
-go run scripts/mkimage.go postra postra-image.tar postra:0.25.4
+go run scripts/mkimage.go postra postra-image.tar postra:0.25.5
 gzip -9 postra-image.tar
 ```
