@@ -265,6 +265,15 @@ func (a *App) runSync(ctx context.Context, job *domain.Job, acc *domain.MailAcco
 			for i := range remote {
 				remote[i].Size = sizes[remote[i].Number]
 			}
+		} else {
+			// A server that answers UIDL but refuses LIST leaves every size at
+			// 0, which turns the pre-fetch oversize screen below into a no-op:
+			// messages over the limit are downloaded and only then refused by
+			// ingestOne. That is the existing behaviour and no reason to fail
+			// the sync, but an operator who set a size limit has to be able to
+			// see why it looks ignored. Class is a label, never server text.
+			slog.Warn("sync: LIST failed; message sizes unknown and the pre-fetch size screen is off for this sync",
+				"account", acc.ID, "err", providerDiagnostic(lerr), "class", domain.ClassifyInbound(lerr))
 		}
 	}
 
