@@ -12,7 +12,10 @@ frontend:
 	cd web && $(NPM) ci --no-audit --no-fund
 	cd web && $(NPM) run build
 
+# The guard keeps repeat runs fast: without it a clean checkout has no tsc or
+# vitest binary, and with an unconditional npm ci every run costs minutes.
 frontend-test:
+	@test -d web/node_modules || (cd web && $(NPM) ci --no-audit --no-fund)
 	cd web && $(NPM) run typecheck
 	cd web && $(NPM) test
 
