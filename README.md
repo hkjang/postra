@@ -306,7 +306,7 @@ go test -race ./...      # 동시성 검사
 저장소 루트에서 로컬 검사 실행:
 
 ```bash
-go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...   # CI와 같은 고정 버전
 make lint           # 포맷 검사 + gosec 보안 검사
 make lint-format    # cmd/·internal/ Go 파일의 포맷 위반 경로 출력 및 실패 (파일 수정 없음)
 make lint-security  # CI와 같은 gosec v2.28.0, medium+, scripts 제외, ./... 범위
