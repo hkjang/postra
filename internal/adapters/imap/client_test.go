@@ -1128,6 +1128,33 @@ func TestIMAPStartTLSInjectedPlaintextRefusesUpgrade(t *testing.T) {
 		t.Fatalf("Dial error = %v, want it to name the pre-handshake bytes", err)
 	}
 
+	// Same contract as the POP3 adapter: the refusal has to name its own stage,
+	// or syncDiagnosticStage's dial fallback reports it as a failed TCP connect.
+	var inbound *domain.InboundError
+	if !errors.As(err, &inbound) {
+		t.Fatalf("Dial error = %T (%v), want a *domain.InboundError naming the stage", err, err)
+	}
+	if inbound.Stage != domain.StageStartTLS {
+		t.Fatalf("Stage = %q, want %q", inbound.Stage, domain.StageStartTLS)
+	}
+	if inbound.Command != "STARTTLS" {
+		t.Fatalf("Command = %q, want the verb actually sent, %q", inbound.Command, "STARTTLS")
+	}
+	// No new class label: "other" is already in syncClassLabels.
+	if want := domain.ClassifyInbound(inbound.Err); inbound.Class != want || want != "other" {
+		t.Fatalf("Class = %q, want the ClassifyInbound value %q (expected %q)", inbound.Class, want, "other")
+	}
+	if inbound.Elapsed <= 0 {
+		t.Fatalf("Elapsed = %v, want the time actually spent on the upgrade", inbound.Elapsed)
+	}
+	if want := 60 * time.Second; inbound.Timeout != want {
+		t.Fatalf("Timeout = %v, want the command budget %v", inbound.Timeout, want)
+	}
+	// Diagnostics carry the byte count, never the bytes.
+	if strings.Contains(err.Error(), "injected") {
+		t.Fatalf("Dial error = %q, want the count only and no server text", err)
+	}
+
 	select {
 	case <-done:
 	case <-time.After(10 * time.Second):
