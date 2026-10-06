@@ -209,6 +209,37 @@ func TestPOP3STLSInjectedPlaintextRefusesUpgrade(t *testing.T) {
 		t.Fatalf("Dial error = %v, want it to name the pre-handshake bytes", err)
 	}
 
+	// The refusal has to reach the operator as the step it happened at. As a
+	// plain error it misses syncDiagnosticStage's errors.As and falls through to
+	// the dial fallback, so the adapter's most security-relevant refusal is
+	// reported as a failed TCP connection that took no time at all.
+	var inbound *domain.InboundError
+	if !errors.As(err, &inbound) {
+		t.Fatalf("Dial error = %T (%v), want a *domain.InboundError naming the stage", err, err)
+	}
+	if inbound.Stage != domain.StageStartTLS {
+		t.Fatalf("Stage = %q, want %q", inbound.Stage, domain.StageStartTLS)
+	}
+	if inbound.Command != "STLS" {
+		t.Fatalf("Command = %q, want the verb actually sent, %q", inbound.Command, "STLS")
+	}
+	// No new class label: "other" is already in syncClassLabels, so the
+	// diagnostic's allowed() keeps it instead of dropping the refusal.
+	if want := domain.ClassifyInbound(inbound.Err); inbound.Class != want || want != "other" {
+		t.Fatalf("Class = %q, want the ClassifyInbound value %q (expected %q)", inbound.Class, want, "other")
+	}
+	if inbound.Elapsed <= 0 {
+		t.Fatalf("Elapsed = %v, want the time actually spent on the upgrade", inbound.Elapsed)
+	}
+	if want := 60 * time.Second; inbound.Timeout != want {
+		t.Fatalf("Timeout = %v, want the command budget %v", inbound.Timeout, want)
+	}
+	// Diagnostics carry the byte count, never the bytes: the injected text is
+	// exactly what must not reach an operator-facing string.
+	if strings.Contains(err.Error(), "injected") {
+		t.Fatalf("Dial error = %q, want the count only and no server text", err)
+	}
+
 	// The connection must be gone, not left dangling in plaintext.
 	select {
 	case <-done:

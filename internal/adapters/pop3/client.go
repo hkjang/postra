@@ -96,6 +96,7 @@ func (Dialer) Dial(ctx context.Context, opts domain.POP3DialOptions) (domain.POP
 	}
 
 	if opts.Security == domain.SecurityStartTLS {
+		stlsStart := time.Now()
 		if _, err := s.cmd("STLS"); err != nil {
 			conn.Close()
 			return nil, fmt.Errorf("STLS: %w", err)
@@ -112,9 +113,15 @@ func (Dialer) Dial(ctx context.Context, opts domain.POP3DialOptions) (domain.POP
 		// Best-effort by construction: only bytes that reached this buffer are
 		// visible, so an injection still in flight in the kernel or on the wire
 		// goes unseen. It narrows the window rather than closing it.
+		//
+		// The refusal names its own stage like every other failure in this
+		// function: reported as a plain error it misses the errors.As in
+		// syncDiagnosticStage and the operator is told the TCP connection
+		// failed. Only the byte count goes in — never the bytes themselves.
 		if n := s.text.R.Buffered(); n > 0 {
 			conn.Close()
-			return nil, fmt.Errorf("STLS: server sent %d bytes before TLS handshake", n)
+			refused := fmt.Errorf("STLS: server sent %d bytes before TLS handshake", n)
+			return nil, &domain.InboundError{Stage: domain.StageStartTLS, Command: "STLS", Class: domain.ClassifyInbound(refused), Elapsed: time.Since(stlsStart), Timeout: s.commandTO, Err: refused}
 		}
 		tconn := tls.Client(conn, tlsCfg)
 		tlsStart := time.Now()
