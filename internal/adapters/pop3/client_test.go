@@ -281,6 +281,146 @@ func TestPOP3STLSUpgradeRunsCommandsOverTLS(t *testing.T) {
 	}
 }
 
+// implicitTLSServer listens with TLS already in force — the 995 shape, which is
+// what a new account gets by default (normSecurity(in.POP3Security,
+// domain.SecurityTLS) in internal/application/accounts.go). It reuses the
+// self-signed certificate of the STLS fixtures, so a client that verifies the
+// chain must refuse it. Connections are accepted in a loop because both halves
+// of TestPOP3ImplicitTLSVerifiesServerCertificate dial the same listener, and
+// the certificate has to be the same one for the comparison to mean anything.
+func implicitTLSServer(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tln := tls.NewListener(ln, selfSigned(t))
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			conn, err := tln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				conn.SetDeadline(time.Now().Add(20 * time.Second))
+				// Writing the greeting is what drives the server side of the
+				// handshake, so a client that rejects the certificate makes
+				// this fail and the handler simply returns.
+				if _, err := io.WriteString(conn, "+OK POP3 ready\r\n"); err != nil {
+					return
+				}
+				br := bufio.NewReader(conn)
+				for {
+					line, err := br.ReadString('\n')
+					if err != nil {
+						return
+					}
+					fields := strings.Fields(line)
+					if len(fields) == 0 {
+						continue
+					}
+					if strings.ToUpper(fields[0]) == "QUIT" {
+						io.WriteString(conn, "+OK bye\r\n")
+						return
+					}
+					io.WriteString(conn, "+OK\r\n")
+				}
+			}()
+		}
+	}()
+	return ln.Addr().String()
+}
+
+// dialImplicitTLS drives the real Dialer at an implicit-TLS server. skipVerify
+// is passed through verbatim so the two halves of the test differ in that one
+// field and nothing else.
+func dialImplicitTLS(t *testing.T, addr string, skipVerify bool) (domain.POP3Session, error) {
+	t.Helper()
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return Dialer{}.Dial(context.Background(), domain.POP3DialOptions{
+		Host: host, Port: port, Security: domain.SecurityTLS, InsecureSkipVerify: skipVerify,
+	})
+}
+
+// TestPOP3ImplicitTLSVerifiesServerCertificate pins the default on the path a
+// new account actually takes: POP3 security defaults to implicit TLS, so this
+// is the dial most installations make, and nothing here tested that its
+// certificate is verified at all — every other TLS test in this file asks for
+// SecurityStartTLS with InsecureSkipVerify: true. Without this, tlsCfg's
+// InsecureSkipVerify (client.go:69) could be pinned to a constant true and no
+// test in the package would notice. The outbound adapter already carries the
+// same guard (smtp/client_test.go, "self-signed cert is rejected without
+// InsecureSkipVerify"). tlsCfg's MinVersion is deliberately not pinned here:
+// Go's own client default is already TLS 1.2, so dropping that line would not
+// fail this test and claiming otherwise would be false.
+//
+// It also pins the stage connectFailure reports. With implicit TLS the dialer
+// runs TCP and the handshake in one call, so only the error type separates
+// them; mapped to tcp_connect instead of tls_handshake the operator is told the
+// connection failed rather than that the certificate was untrusted, which is
+// the sentence sync_diagnostics.go has for tls_certificate.
+func TestPOP3ImplicitTLSVerifiesServerCertificate(t *testing.T) {
+	addr := implicitTLSServer(t)
+
+	t.Run("rejected by default", func(t *testing.T) {
+		// Security is the only field set besides the address: InsecureSkipVerify
+		// is left at its zero value, which is the production default.
+		sess, err := dialImplicitTLS(t, addr, false)
+		if err == nil {
+			sess.Close()
+			t.Fatal("Dial accepted a self-signed certificate with the default options; want verification")
+		}
+		var inbound *domain.InboundError
+		if !errors.As(err, &inbound) {
+			t.Fatalf("Dial error = %T (%v), want a *domain.InboundError naming the stage", err, err)
+		}
+		if inbound.Stage != domain.StageTLS {
+			t.Fatalf("Stage = %q, want %q — tcp_connect would tell the operator the connection failed", inbound.Stage, domain.StageTLS)
+		}
+		if inbound.Class != "tls_certificate" {
+			t.Fatalf("Class = %q, want %q (the label syncClassLabels renders as the untrusted-certificate sentence)", inbound.Class, "tls_certificate")
+		}
+		if inbound.Elapsed <= 0 {
+			t.Fatalf("Elapsed = %v, want the time actually spent dialing", inbound.Elapsed)
+		}
+		// The message is the adapter's own prefix plus Go's x509 text. The
+		// server's own bytes must not be in it: diagnostics are persisted and
+		// shown, and a mail server can echo anything in its greeting.
+		if !strings.Contains(err.Error(), "pop3 connect:") {
+			t.Fatalf("Dial error = %q, want the adapter's own prefix", err)
+		}
+		if !strings.Contains(err.Error(), "x509:") {
+			t.Fatalf("Dial error = %q, want Go's certificate-verification text", err)
+		}
+		if strings.Contains(err.Error(), "POP3 ready") {
+			t.Fatalf("Dial error = %q, want no text the mail server sent", err)
+		}
+	})
+
+	t.Run("accepted with the account opt-in", func(t *testing.T) {
+		// Same listener, same certificate, one field different. Without this
+		// half the sub-test above would also pass against a server that is
+		// simply unreachable, and the default would not be pinned at all.
+		sess, err := dialImplicitTLS(t, addr, true)
+		if err != nil {
+			t.Fatalf("Dial with InsecureSkipVerify: true = %v, want the session to establish", err)
+		}
+		defer sess.Close()
+		if _, ok := sess.(*session).conn.(*tls.Conn); !ok {
+			t.Fatalf("session connection is %T, want *tls.Conn on the implicit-TLS path", sess.(*session).conn)
+		}
+	})
+}
+
 // endlessListServer accepts a command, answers +OK, and then repeats one line
 // for as long as the client keeps reading — it never sends the "." that ends a
 // multi-line response.
