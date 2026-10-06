@@ -1186,3 +1186,152 @@ func TestIMAPStartTLSUpgradeRunsCommandsOverTLS(t *testing.T) {
 		t.Fatalf("session connection is %T after STARTTLS, want *tls.Conn", sess.(*session).conn)
 	}
 }
+
+// implicitTLSServer listens with TLS already in force — the 993 shape, which is
+// the inbound default a new account gets (normSecurity in
+// internal/application/accounts.go). It reuses the self-signed certificate of
+// the STARTTLS fixture, so a client that verifies the chain must refuse it.
+// Connections are accepted in a loop because both halves of
+// TestIMAPImplicitTLSVerifiesServerCertificate dial the same listener, and the
+// certificate has to be the same one for the comparison to mean anything.
+//
+// An empty username skips LOGIN (client.go only sends it when
+// opts.Username != ""), but selectInbox() runs unconditionally, so the loop
+// still has to answer SELECT for the session to establish.
+func implicitTLSServer(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tln := tls.NewListener(ln, selfSigned(t))
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			conn, err := tln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				conn.SetDeadline(time.Now().Add(20 * time.Second))
+				// Writing the greeting is what drives the server side of the
+				// handshake, so a client that rejects the certificate makes
+				// this fail and the handler simply returns.
+				if _, err := io.WriteString(conn, "* OK IMAP4rev1 ready\r\n"); err != nil {
+					return
+				}
+				br := bufio.NewReader(conn)
+				for {
+					line, err := br.ReadString('\n')
+					if err != nil {
+						return
+					}
+					sp := strings.SplitN(strings.TrimRight(line, "\r\n"), " ", 3)
+					if len(sp) < 2 {
+						continue
+					}
+					tag, cmd := sp[0], strings.ToUpper(sp[1])
+					switch cmd {
+					case "SELECT":
+						io.WriteString(conn, "* 0 EXISTS\r\n")
+						io.WriteString(conn, "* OK [UIDVALIDITY 911] ok\r\n")
+						fmt.Fprintf(conn, "%s OK [READ-WRITE] SELECT completed\r\n", tag)
+					case "LOGOUT":
+						io.WriteString(conn, "* BYE\r\n")
+						fmt.Fprintf(conn, "%s OK LOGOUT completed\r\n", tag)
+						return
+					default:
+						fmt.Fprintf(conn, "%s OK\r\n", tag)
+					}
+				}
+			}()
+		}
+	}()
+	return ln.Addr().String()
+}
+
+// dialImplicitTLS drives the real Dialer at an implicit-TLS server. skipVerify
+// is passed through verbatim so the two halves of the test differ in that one
+// field and nothing else.
+func dialImplicitTLS(t *testing.T, addr string, skipVerify bool) (domain.InboundSession, error) {
+	t.Helper()
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return Dialer{}.Dial(context.Background(), domain.InboundDialOptions{
+		Host: host, Port: port, Security: domain.SecurityTLS, InsecureSkipVerify: skipVerify,
+	})
+}
+
+// TestIMAPImplicitTLSVerifiesServerCertificate is the POP3 case on the other
+// inbound adapter, and both must answer the same input the same way. Implicit
+// TLS is the security a new account defaults to, so this is the dial most
+// installations make, and nothing here tested that its certificate is verified
+// at all — every other TLS test in this file asks for SecurityStartTLS with
+// InsecureSkipVerify: true. Without this, tlsCfg's InsecureSkipVerify
+// (client.go:54) could be pinned to a constant true and no test in the package
+// would notice. MinVersion is deliberately not pinned here: Go's own client
+// default is already TLS 1.2, so dropping that line would not fail this test.
+//
+// It also pins the stage connectFailure reports: with implicit TLS the dialer
+// runs TCP and the handshake in one call, so only the error type separates
+// them, and mapped to tcp_connect the operator is told the connection failed
+// rather than that the certificate was untrusted.
+func TestIMAPImplicitTLSVerifiesServerCertificate(t *testing.T) {
+	addr := implicitTLSServer(t)
+
+	t.Run("rejected by default", func(t *testing.T) {
+		// Security is the only field set besides the address: InsecureSkipVerify
+		// is left at its zero value, which is the production default.
+		sess, err := dialImplicitTLS(t, addr, false)
+		if err == nil {
+			sess.Close()
+			t.Fatal("Dial accepted a self-signed certificate with the default options; want verification")
+		}
+		var inbound *domain.InboundError
+		if !errors.As(err, &inbound) {
+			t.Fatalf("Dial error = %T (%v), want a *domain.InboundError naming the stage", err, err)
+		}
+		if inbound.Stage != domain.StageTLS {
+			t.Fatalf("Stage = %q, want %q — tcp_connect would tell the operator the connection failed", inbound.Stage, domain.StageTLS)
+		}
+		if inbound.Class != "tls_certificate" {
+			t.Fatalf("Class = %q, want %q (the label syncClassLabels renders as the untrusted-certificate sentence)", inbound.Class, "tls_certificate")
+		}
+		if inbound.Elapsed <= 0 {
+			t.Fatalf("Elapsed = %v, want the time actually spent dialing", inbound.Elapsed)
+		}
+		// The message is the adapter's own prefix plus Go's x509 text. The
+		// server's own bytes must not be in it: diagnostics are persisted and
+		// shown, and a mail server can echo anything in its greeting.
+		if !strings.Contains(err.Error(), "imap connect:") {
+			t.Fatalf("Dial error = %q, want the adapter's own prefix", err)
+		}
+		if !strings.Contains(err.Error(), "x509:") {
+			t.Fatalf("Dial error = %q, want Go's certificate-verification text", err)
+		}
+		if strings.Contains(err.Error(), "IMAP4rev1 ready") {
+			t.Fatalf("Dial error = %q, want no text the mail server sent", err)
+		}
+	})
+
+	t.Run("accepted with the account opt-in", func(t *testing.T) {
+		// Same listener, same certificate, one field different. Without this
+		// half the sub-test above would also pass against a server that is
+		// simply unreachable, and the default would not be pinned at all.
+		sess, err := dialImplicitTLS(t, addr, true)
+		if err != nil {
+			t.Fatalf("Dial with InsecureSkipVerify: true = %v, want the session to establish", err)
+		}
+		defer sess.Close()
+		if _, ok := sess.(*session).conn.(*tls.Conn); !ok {
+			t.Fatalf("session connection is %T, want *tls.Conn on the implicit-TLS path", sess.(*session).conn)
+		}
+	})
+}
