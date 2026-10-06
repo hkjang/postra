@@ -11,7 +11,7 @@ Go로 작성한 개인/사내 구축형 메일 서비스입니다. 사용자의 
 
 v0.20.0의 검색 가능한 운영 콘솔은 환경변수 초기값 위에 관리자 설정과 강제 정책을 적용합니다. 개인·계정 설정과 복수 서명도 웹에서 관리합니다. [설정 관리](docs/SETTINGS.md) · [HTML 메일](docs/MAIL_RENDERING.md) · [Ask Postra](docs/ASK_POSTRA.md) · [MCP 계약](docs/MCP_CONVERGENCE.md) · [API 스키마](docs/API_CONTRACTS.md) · [동기화 실패 진단](docs/SYNC_DIAGNOSTICS.md) · [릴리즈 및 이전 주의사항](docs/releases/v0.20.0.md)
 
-최신 릴리즈 [v0.25.6](docs/releases/v0.25.6.md)은 **개발 환경 전용 유지 보수 릴리즈**입니다 — 갓 내려받은 체크아웃에서 `make frontend-test` 가 `tsc: not found` 로 즉시 죽던 것을 고쳤고(의존성이 없을 때만 한 번 설치), README 의 govulncheck 예시를 CI 가 쓰는 고정 버전에 맞췄습니다. **운영 동작·프로덕션 코드는 한 줄도 바뀌지 않았으므로 운영자가 할 일은 없습니다.** [v0.25.5](docs/releases/v0.25.5.md)의 거부된 `LIST` 크기 선별 경고, [v0.25.4](docs/releases/v0.25.4.md)의 크기 제한 없는 계정 본문 잘림 수정, [v0.25.3](docs/releases/v0.25.3.md)의 POP3 `fetch` 진단 교정, [v0.25.2](docs/releases/v0.25.2.md)의 OpenTelemetry v1.45.0 갱신은 그대로입니다.
+최신 릴리즈 [v0.25.7](docs/releases/v0.25.7.md)은 **거부된 STARTTLS 업그레이드가 자기 단계를 말하게** 합니다 — 서버가 핸드셰이크 전에 평문을 밀어 넣어 Postra 가 업그레이드를 끊은 경우가 `서버 연결(TCP)` 실패로, 경과 시간도 없이 보고되던 것을 `STARTTLS 전환` 단계로 고쳤습니다. **거부 판정과 차단 동작은 바뀌지 않았고**, 공개되지 않았던 [v0.25.6](docs/releases/v0.25.6.md)의 개발 환경 전용 변경(클린 체크아웃 `make frontend-test` 가드, govulncheck 예시 고정)도 함께 들어갑니다. [v0.25.5](docs/releases/v0.25.5.md)의 거부된 `LIST` 크기 선별 경고, [v0.25.4](docs/releases/v0.25.4.md)의 크기 제한 없는 계정 본문 잘림 수정, [v0.25.3](docs/releases/v0.25.3.md)의 POP3 `fetch` 진단 교정, [v0.25.2](docs/releases/v0.25.2.md)의 OpenTelemetry v1.45.0 갱신은 그대로입니다.
 
 ## 설계 핵심
 
