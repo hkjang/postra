@@ -80,7 +80,7 @@ func (Dialer) Dial(ctx context.Context, opts domain.InboundDialOptions) (domain.
 	greeting, err := s.readBoundedLine()
 	if err != nil {
 		conn.Close()
-		return nil, s.failed(domain.StageGreeting, "", fmt.Errorf("imap greeting: %w", err), start)
+		return nil, domain.WrapInbound(domain.StageGreeting, "", fmt.Errorf("imap greeting: %w", err), time.Since(start), connectTO)
 	}
 	// Every command sets its own deadline before writing (execRaw), so the
 	// greeting's shorter one does not leak into the session.
@@ -88,7 +88,7 @@ func (Dialer) Dial(ctx context.Context, opts domain.InboundDialOptions) (domain.
 	if strings.HasPrefix(greeting, "* BYE") {
 		// Refused before any command — typically a connection limit.
 		conn.Close()
-		return nil, s.failed(domain.StageGreeting, "", &domain.InboundRejected{Code: domain.InboundResponseCode(greeting)}, start)
+		return nil, domain.WrapInbound(domain.StageGreeting, "", &domain.InboundRejected{Code: domain.InboundResponseCode(greeting)}, time.Since(start), connectTO)
 	}
 
 	if opts.Security == domain.SecurityStartTLS {

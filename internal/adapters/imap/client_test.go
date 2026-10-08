@@ -1335,3 +1335,81 @@ func TestIMAPImplicitTLSVerifiesServerCertificate(t *testing.T) {
 		}
 	})
 }
+
+func TestIMAPGreetingTimeoutBudget(t *testing.T) {
+	for _, tc := range []struct {
+		name, greeting, stage, command, class string
+		timeout                               time.Duration
+	}{
+		{"silent", "", domain.StageGreeting, "", "timeout", time.Second},
+		{"rejected", "* BYE private-greeting-marker\r\n", domain.StageGreeting, "", "rejected", time.Second},
+		{"command keeps command budget", "* OK ready\r\n", domain.StageSelect, "SELECT", "rejected", 4 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { ln.Close() })
+			result := make(chan error, 1)
+			go func() {
+				conn, err := ln.Accept()
+				if err != nil {
+					result <- err
+					return
+				}
+				defer conn.Close()
+				_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+				if _, err := io.WriteString(conn, tc.greeting); err != nil {
+					result <- err
+					return
+				}
+				br := bufio.NewReader(conn)
+				if tc.command != "" {
+					line, err := br.ReadString('\n')
+					fields := strings.Fields(line)
+					if err != nil || len(fields) != 3 || fields[1] != "SELECT" {
+						result <- fmt.Errorf("SELECT = %q, %v", line, err)
+						return
+					}
+					if _, err := fmt.Fprintf(conn, "%s NO command refused\r\n", fields[0]); err != nil {
+						result <- err
+						return
+					}
+				}
+				line, err := br.ReadString('\n')
+				if line != "" || err != io.EOF {
+					result <- fmt.Errorf("after failure read = (%q, %v), want empty data and EOF", line, err)
+					return
+				}
+				result <- nil
+			}()
+			sess, err := (Dialer{}).Dial(context.Background(), domain.InboundDialOptions{
+				Host: "127.0.0.1", Port: ln.Addr().(*net.TCPAddr).Port, Security: domain.SecurityNone,
+				ConnectTimeoutSec: 1, CommandTimeoutSec: 4,
+			})
+			if sess != nil {
+				t.Cleanup(func() { sess.Close() })
+				t.Fatal("Dial returned a session after failure")
+			}
+			var inbound *domain.InboundError
+			if !errors.As(err, &inbound) {
+				t.Fatalf("Dial error = %v, want InboundError", err)
+			}
+			if inbound.Stage != tc.stage || inbound.Command != tc.command || inbound.Class != tc.class || inbound.Elapsed <= 0 {
+				t.Fatalf("diagnostic = %+v", inbound)
+			}
+			select {
+			case err := <-result:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(6 * time.Second):
+				t.Fatal("server did not observe peer EOF before cleanup")
+			}
+			if inbound.Timeout != tc.timeout {
+				t.Errorf("%s Timeout = %s, want %s", tc.stage, inbound.Timeout, tc.timeout)
+			}
+		})
+	}
+}

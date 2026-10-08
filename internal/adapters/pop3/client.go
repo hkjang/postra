@@ -92,7 +92,7 @@ func (Dialer) Dial(ctx context.Context, opts domain.POP3DialOptions) (domain.POP
 	greetStart := time.Now()
 	if _, err := s.readGreeting(connectTO); err != nil {
 		conn.Close()
-		return nil, domain.WrapInbound(domain.StageGreeting, "", fmt.Errorf("pop3 greeting: %w", err), time.Since(greetStart), s.commandTO)
+		return nil, domain.WrapInbound(domain.StageGreeting, "", fmt.Errorf("pop3 greeting: %w", err), time.Since(greetStart), connectTO)
 	}
 
 	if opts.Security == domain.SecurityStartTLS {
