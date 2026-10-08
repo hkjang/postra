@@ -2,13 +2,17 @@ package application
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"postra/internal/adapters/imap"
+	"postra/internal/adapters/pop3"
 	"postra/internal/domain"
 )
 
@@ -401,5 +405,145 @@ func TestInboundCensusCountsSessionsPerHostAndAccount(t *testing.T) {
 	releaseFirst()
 	if hosts, accounts := census.count(first); hosts != 0 || accounts != 0 {
 		t.Fatalf("after both released: hosts=%d accounts=%d", hosts, accounts)
+	}
+}
+
+// Accept every retry and keep each connection open until the client closes it.
+// The longer server deadline is only a safety net, never the timeout under test.
+func syncGreetingServer(t *testing.T, greeting string) (int, <-chan error) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed := make(chan error, 8)
+	done := make(chan struct{})
+	t.Cleanup(func() {
+		ln.Close()
+		select {
+		case <-done:
+		case <-time.After(6 * time.Second):
+			t.Error("greeting server did not stop")
+		}
+	})
+	go func() {
+		defer close(done)
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+			if _, err := io.WriteString(conn, greeting); err != nil {
+				conn.Close()
+				closed <- err
+				continue
+			}
+			var b [1]byte
+			n, err := conn.Read(b[:])
+			conn.Close()
+			if n != 0 || err != io.EOF {
+				closed <- fmt.Errorf("after greeting read = (%d bytes, %v), want EOF", n, err)
+			} else {
+				closed <- nil
+			}
+		}
+	}()
+	return ln.Addr().(*net.TCPAddr).Port, closed
+}
+
+func TestSyncGreetingTimeoutUsesConnectBudget(t *testing.T) {
+	fastRetries(t) // Changes package backoffs; these cases must not run in parallel.
+	const marker = "private-greeting-marker"
+	for _, protocol := range []string{"pop3", "imap"} {
+		for _, class := range []string{"timeout", "rejected"} {
+			t.Run(protocol+"/"+class, func(t *testing.T) {
+				greeting := ""
+				if class == "rejected" {
+					greeting = "-ERR " + marker + "\r\n"
+					if protocol == "imap" {
+						greeting = "* BYE " + marker + "\r\n"
+					}
+				}
+				port, closed := syncGreetingServer(t, greeting)
+				app, _, _, _ := newTestApp(t)
+				app.POP3 = pop3.Dialer{}
+				app.IMAP = imap.Dialer{}
+				view, err := app.AdminSettingsCatalog(settingsAdmin())
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, err = app.AdminPatchSettings(settingsAdmin(), SettingsPatch{Revision: view.Revision, Values: map[string]string{
+					"sync.connect_timeout_sec": "1", "sync.command_timeout_sec": "4",
+				}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				ctx := WithActor(context.Background(), "test")
+				acc, err := app.CreateAccount(ctx, CreateAccountInput{
+					Name: "greeting budget", Email: "me@corp.local", InboundProtocol: protocol,
+					POP3Host: "127.0.0.1", POP3Port: port, POP3Security: "none",
+					SMTPHost: "127.0.0.1", SMTPSecurity: "none", SMTPAuth: "none",
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				job := syncAndWait(t, app, acc.ID) // StartSync -> persisted GetJob.
+				d := job.Diagnostic
+				if job.Status != domain.JobFailed || d == nil {
+					t.Fatalf("job = %+v, want failed with diagnostic", job)
+				}
+				if d.Stage != domain.StageGreeting || d.Class != class || d.Command != "" || d.Protocol != protocol {
+					t.Fatalf("diagnostic = %+v", d)
+				}
+				if d.TimeoutMS != 1000 {
+					t.Errorf("TimeoutMS = %d, want 1000", d.TimeoutMS)
+				}
+				if !strings.Contains(d.Summary, "제한 1.0초") {
+					t.Errorf("summary lacks connect budget: %q", d.Summary)
+				}
+				if class == "timeout" {
+					if d.ElapsedMS <= 0 || d.Attempts != 2 || job.Error != syncStoppedTimeout {
+						t.Errorf("timeout job = %+v", job)
+					}
+					if strings.Contains(d.Summary, "이 단계의 제한 시간에는 이르지 않았습니다") {
+						t.Errorf("own deadline reported as early interruption: %q", d.Summary)
+					}
+				}
+				stored, err := json.Marshal(job)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if strings.Contains(string(stored), marker) {
+					t.Fatal("server marker leaked into stored job")
+				}
+				for attempt := 0; attempt < d.Attempts; attempt++ {
+					select {
+					case err := <-closed:
+						if err != nil {
+							t.Fatal(err)
+						}
+					case <-time.After(6 * time.Second):
+						t.Fatal("server did not observe peer EOF before cleanup")
+					}
+				}
+				deadline := time.Now().Add(5 * time.Second)
+				for {
+					incidents, err := app.AdminListIncidents(settingsAdmin(), domain.IncidentFilter{})
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, inc := range incidents {
+						if inc.Component == "sync" && inc.Severity == domain.SeverityError && inc.Detail == d.Summary {
+							return
+						}
+					}
+					if time.Now().After(deadline) {
+						t.Fatal("no sync incident carried the diagnostic")
+					}
+					time.Sleep(20 * time.Millisecond)
+				}
+			})
+		}
 	}
 }

@@ -940,3 +940,60 @@ func TestPOP3StalledBodyReportsFetchTiming(t *testing.T) {
 		})
 	}
 }
+
+func TestPOP3GreetingTimeoutBudget(t *testing.T) {
+	for _, tc := range []struct {
+		name, greeting, class string
+	}{
+		{"silent", "", "timeout"},
+		{"rejected", "-ERR private-greeting-marker\r\n", "rejected"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			addr, results := pop3ScriptServer(t, tc.greeting, nil, true)
+			host, portText, _ := net.SplitHostPort(addr)
+			port, _ := strconv.Atoi(portText)
+			sess, err := (Dialer{}).Dial(context.Background(), domain.POP3DialOptions{
+				Host: host, Port: port, Security: domain.SecurityNone,
+				ConnectTimeoutSec: 1, CommandTimeoutSec: 4,
+			})
+			if sess != nil {
+				t.Cleanup(func() { sess.Close() })
+				t.Fatal("Dial returned a session after greeting failure")
+			}
+			var inbound *domain.InboundError
+			if !errors.As(err, &inbound) {
+				t.Fatalf("Dial error = %v, want InboundError", err)
+			}
+			if inbound.Stage != domain.StageGreeting || inbound.Class != tc.class || inbound.Command != "" || inbound.Elapsed <= 0 {
+				t.Fatalf("greeting diagnostic = %+v", inbound)
+			}
+			checkPOP3Script(t, results, nil) // Observe peer EOF before cleanup.
+			if inbound.Timeout != time.Second {
+				t.Errorf("greeting Timeout = %s, want 1s", inbound.Timeout)
+			}
+		})
+	}
+	t.Run("command keeps command budget", func(t *testing.T) {
+		exchanges := []pop3Exchange{{"LIST\r\n", "-ERR command refused\r\n"}}
+		addr, results := pop3ScriptServer(t, "+OK ready\r\n", exchanges, false)
+		host, portText, _ := net.SplitHostPort(addr)
+		port, _ := strconv.Atoi(portText)
+		sess, err := (Dialer{}).Dial(context.Background(), domain.POP3DialOptions{
+			Host: host, Port: port, Security: domain.SecurityNone,
+			ConnectTimeoutSec: 1, CommandTimeoutSec: 4,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer sess.Close()
+		_, err = sess.List(context.Background())
+		var inbound *domain.InboundError
+		if !errors.As(err, &inbound) {
+			t.Fatalf("LIST error = %v, want InboundError", err)
+		}
+		if inbound.Stage != domain.StageEnumerate || inbound.Command != "LIST" || inbound.Class != "rejected" || inbound.Timeout != 4*time.Second || inbound.Elapsed <= 0 {
+			t.Fatalf("command diagnostic = %+v (Timeout=%s)", inbound, inbound.Timeout)
+		}
+		checkPOP3Script(t, results, exchanges)
+	})
+}
