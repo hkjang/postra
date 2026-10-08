@@ -16,8 +16,10 @@ import (
 	"math/big"
 	"net"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -921,6 +923,157 @@ func TestIMAPLargeBodyWithoutLimitIsNotCapped(t *testing.T) {
 	}
 	if !strings.HasPrefix(string(got), trapHeader) {
 		t.Fatalf("body prefix = %.30q, want the trapped header intact", got)
+	}
+}
+
+// indexRetryServer respects each FETCH range and rejects a chosen batch with a
+// tagged NO, leaving the connection framed for another enumeration attempt.
+// A negative failures count rejects that batch on every attempt.
+func indexRetryServer(t *testing.T, count, rejectStart, failures int) (string, func() []string) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var requests []string
+	done := make(chan struct{})
+	t.Cleanup(func() {
+		_ = ln.Close()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Error("index server did not stop after session close")
+		}
+	})
+	go func() {
+		defer close(done)
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+		br := bufio.NewReader(conn)
+		_, _ = io.WriteString(conn, "* OK IMAP4rev1 ready\r\n")
+		for {
+			line, err := br.ReadString('\n')
+			if err != nil {
+				return
+			}
+			sp := strings.SplitN(strings.TrimSpace(line), " ", 3)
+			if len(sp) < 2 {
+				return
+			}
+			tag, cmd := sp[0], sp[1]
+			switch cmd {
+			case "SELECT":
+				fmt.Fprintf(conn, "* %d EXISTS\r\n* OK [UIDVALIDITY 777] ok\r\n%s OK\r\n", count, tag)
+			case "FETCH":
+				if len(sp) != 3 {
+					return
+				}
+				mu.Lock()
+				requests = append(requests, sp[2])
+				mu.Unlock()
+				var start, end int
+				if n, err := fmt.Sscanf(sp[2], "%d:%d (UID RFC822.SIZE)", &start, &end); err != nil || n != 2 || start < 1 || end < start || end > count {
+					fmt.Fprintf(conn, "%s BAD invalid metadata range\r\n", tag)
+					continue
+				}
+				if start == rejectStart && failures != 0 {
+					if failures > 0 {
+						failures--
+					}
+					fmt.Fprintf(conn, "%s NO metadata refused\r\n", tag)
+					continue
+				}
+				for i := start; i <= end; i++ {
+					fmt.Fprintf(conn, "* %d FETCH (UID %d RFC822.SIZE %d)\r\n", i, 100+i, 2048+i)
+				}
+				fmt.Fprintf(conn, "%s OK\r\n", tag)
+			default:
+				fmt.Fprintf(conn, "%s OK\r\n", tag)
+			}
+		}
+	}()
+	return ln.Addr().String(), func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(requests)
+	}
+}
+
+func TestIMAPEnumerationFailureNeverCachesPartialResults(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		count       int
+		rejectStart int
+		wantAttempt []string
+	}{
+		{"first_batch", 1, 1, []string{"1:1 (UID RFC822.SIZE)"}},
+		{"later_batch", 2001, 2001, []string{"1:2000 (UID RFC822.SIZE)", "2001:2001 (UID RFC822.SIZE)"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			addr, requests := indexRetryServer(t, tc.count, tc.rejectStart, -1)
+			sess := dial(t, addr)
+			defer sess.Close()
+			var want []string
+			for i, enumerate := range []func(context.Context) ([]domain.RemoteMessage, error){sess.UIDL, sess.List, sess.UIDL} {
+				msgs, err := enumerate(context.Background())
+				if err == nil || len(msgs) != 0 {
+					t.Fatalf("attempt %d: messages=%d err=%v, want error and no partial results", i+1, len(msgs), err)
+				}
+				var inbound *domain.InboundError
+				if !errors.As(err, &inbound) || inbound.Stage != domain.StageEnumerate || inbound.Class != "rejected" {
+					t.Fatalf("attempt %d: error = %v, want enumerate rejection", i+1, err)
+				}
+				want = append(want, tc.wantAttempt...)
+				if got := requests(); !slices.Equal(got, want) {
+					t.Fatalf("FETCH requests = %v, want %v", got, want)
+				}
+			}
+		})
+	}
+}
+
+func TestIMAPEnumerationRetryCommitsCompleteCache(t *testing.T) {
+	addr, requests := indexRetryServer(t, 2001, 2001, 1)
+	sess := dial(t, addr)
+	defer sess.Close()
+	if msgs, err := sess.UIDL(context.Background()); err == nil || len(msgs) != 0 {
+		t.Fatalf("first UIDL: messages=%d err=%v, want error and no partial results", len(msgs), err)
+	}
+	for i, enumerate := range []func(context.Context) ([]domain.RemoteMessage, error){sess.List, sess.UIDL, sess.List} {
+		msgs, err := enumerate(context.Background())
+		if err != nil || len(msgs) != 2001 {
+			t.Fatalf("call %d after failure: messages=%d err=%v, want 2001 complete messages", i+1, len(msgs), err)
+		}
+		for j, msg := range msgs {
+			n := j + 1
+			want := domain.RemoteMessage{Number: n, UIDL: fmt.Sprintf("777.%d", 100+n), Size: int64(2048 + n)}
+			if msg != want {
+				t.Fatalf("message %d = %+v, want %+v", n, msg, want)
+			}
+		}
+		want := []string{"1:2000 (UID RFC822.SIZE)", "2001:2001 (UID RFC822.SIZE)", "1:2000 (UID RFC822.SIZE)", "2001:2001 (UID RFC822.SIZE)"}
+		if got := requests(); !slices.Equal(got, want) {
+			t.Fatalf("FETCH requests = %v, want %v (successful cache must not fetch again)", got, want)
+		}
+	}
+}
+
+func TestIMAPEmptyEnumerationNeedsNoFetch(t *testing.T) {
+	addr, requests := indexRetryServer(t, 0, 0, 0)
+	sess := dial(t, addr)
+	defer sess.Close()
+	for _, enumerate := range []func(context.Context) ([]domain.RemoteMessage, error){sess.UIDL, sess.List, sess.UIDL} {
+		if msgs, err := enumerate(context.Background()); err != nil || len(msgs) != 0 {
+			t.Fatalf("empty mailbox: messages=%d err=%v", len(msgs), err)
+		}
+	}
+	if got := requests(); len(got) != 0 {
+		t.Fatalf("empty mailbox fetched metadata: %v", got)
 	}
 }
 

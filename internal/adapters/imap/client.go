@@ -514,10 +514,9 @@ func (s *session) ensureIndex() error {
 	if s.indexed {
 		return nil
 	}
-	s.indexed = true
-	if s.exists == 0 {
-		return nil
-	}
+	// Commit only a complete enumeration: a failed batch must leave the next
+	// UIDL/List free to retry from the start without reusing partial results.
+	var index []domain.RemoteMessage
 	for start := 1; start <= s.exists; start += enumerateBatch {
 		end := start + enumerateBatch - 1
 		if end > s.exists {
@@ -540,9 +539,11 @@ func (s *session) ensureIndex() error {
 			if m := reSize.FindStringSubmatch(l); m != nil {
 				rm.Size, _ = strconv.ParseInt(m[1], 10, 64)
 			}
-			s.index = append(s.index, rm)
+			index = append(index, rm)
 		}
 	}
+	s.index = index
+	s.indexed = true
 	return nil
 }
 
