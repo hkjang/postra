@@ -2,16 +2,16 @@
 
 Docker 데몬 없이 빌드한, 오프라인망에서 바로 사용 가능한 산출물입니다.
 
-> **v0.25.9 — IMAP 환영 메시지를 확인한 뒤 세션을 시작합니다**: 수신 포트가 IMAP 이 아닌 peer(POP3·SMTP 기본값으로 둔 포트, 엉뚱한 백엔드를 보는 프록시)를 가리키면 이제 **`서버 환영 메시지 수신` 단계에서 실패**합니다 — 전에는 로그인·메일함 문제로 보고되거나, 더 나쁘게는 **빈 메일함으로 성공** 처리됐습니다. Go 툴체인 1.26.9 · `golang.org/x/net` v0.60.0 로 빌드해 `net/http`·`html/template`·`crypto/tls` 권고도 정리했습니다. **설정·DB 는 그대로이고 마이그레이션도 없습니다.** v0.25.8 의 기본값 implicit TLS 인증서 검증 보증과 v0.25.7 의 `STARTTLS 전환` 단계 진단은 그대로 들어 있습니다. [릴리즈 내용](../docs/releases/v0.25.9.md) · [진단 읽는 법](../docs/SYNC_DIAGNOSTICS.md)
+> **v0.25.10 — IMAP 이 아닌 첫 응답을 운영자에게 그대로 말합니다**: v0.25.9 가 거부하기 시작한 비-IMAP 환영 메시지는 지금까지 `서버 환영 메시지 수신 단계: 알 수 없는 오류로 중단되었습니다` 로만 보고돼 네트워크 장애처럼 읽혔습니다. 이제 진단이 **수신 포트와 프로토콜 조합을 확인하라**고 적습니다(IMAP 143·993 / POP3 110·995 / SMTP 25·587). **성공·실패 판정은 v0.25.9 와 같고 설정·DB 도 그대로이며 마이그레이션도 없습니다** — 바뀌는 것은 실패 진단의 문장 하나입니다. Go 툴체인 1.26.9 · `golang.org/x/net` v0.60.0 로 빌드합니다. v0.25.9 의 IMAP 환영 메시지 요구, v0.25.8 의 기본값 implicit TLS 인증서 검증 보증, v0.25.7 의 `STARTTLS 전환` 단계 진단은 그대로 들어 있습니다. [릴리즈 내용](../docs/releases/v0.25.10.md) · [진단 읽는 법](../docs/SYNC_DIAGNOSTICS.md)
 
 기존 SSO·메일 프로비저닝·비밀값 암호화·승인·멱등 발송은 유지합니다. 런타임 Node 서버나 외부 CDN은 필요 없으며 서체와 시간대 데이터도 실행 파일에 포함됩니다.
 
 | 파일 | 설명 |
 | --- | --- |
-| `postra-0.25.9.tar.gz` | `docker load` 로 불러오는 컨테이너 이미지 (`postra:0.25.9`, linux/amd64) |
-| `postra-0.25.9-linux-amd64` | 정적 링크 단일 실행 파일 (CGO 없음, 의존성 없음) |
-| `postra-0.25.9-sbom.cdx.json` | CycloneDX 소프트웨어 자재명세서 |
-| `postra-0.25.9-frontend-sbom.cdx.json` | 프런트엔드 의존성 CycloneDX 명세서 |
+| `postra-0.25.10.tar.gz` | `docker load` 로 불러오는 컨테이너 이미지 (`postra:0.25.10`, linux/amd64) |
+| `postra-0.25.10-linux-amd64` | 정적 링크 단일 실행 파일 (CGO 없음, 의존성 없음) |
+| `postra-0.25.10-sbom.cdx.json` | CycloneDX 소프트웨어 자재명세서 |
+| `postra-0.25.10-frontend-sbom.cdx.json` | 프런트엔드 의존성 CycloneDX 명세서 |
 | `SHA256SUMS.txt` | 모든 릴리즈 파일의 SHA-256 체크섬 |
 
 이미지는 순수 Go 정적 바이너리 + CA 인증서 + 최소 rootfs 로만 구성됩니다(scratch 기반).
@@ -20,7 +20,7 @@ Docker 데몬 없이 빌드한, 오프라인망에서 바로 사용 가능한 �
 
 ```bash
 # 폐쇄망 호스트로 tar.gz 를 옮긴 뒤:
-docker load -i postra-0.25.9.tar.gz     # gzip 자동 인식
+docker load -i postra-0.25.10.tar.gz     # gzip 자동 인식
 docker image ls postra
 
 # 오프라인망(평문 POP3/SMTP 허용) 실행 예시
@@ -30,7 +30,7 @@ docker run -d --name postra \
   -e POSTRA_HTTP_ADDR=0.0.0.0:8480 \
   -e POSTRA_ALLOW_INSECURE_MAIL=true \
   -e POSTRA_API_TOKEN=change-me \
-  postra:0.25.9
+  postra:0.25.10
 
 # CLI 사용 (같은 컨테이너)
 docker exec -it postra postra account list
@@ -42,9 +42,9 @@ REST API는 `/api/v1/`(기존 `/api/` 호환), 유일한 공식 Web UI는 `/app/
 ## 2) 바이너리 단독 실행 (Docker 불필요)
 
 ```bash
-chmod +x postra-0.25.9-linux-amd64
-./postra-0.25.9-linux-amd64 init
-POSTRA_BOOTSTRAP_ADMIN_PASSWORD='replace-with-a-long-secret' ./postra-0.25.9-linux-amd64 serve
+chmod +x postra-0.25.10-linux-amd64
+./postra-0.25.10-linux-amd64 init
+POSTRA_BOOTSTRAP_ADMIN_PASSWORD='replace-with-a-long-secret' ./postra-0.25.10-linux-amd64 serve
 ```
 
 ## 데이터 / 비밀값
@@ -58,6 +58,6 @@ Docker 없이 이미지를 다시 만들려면:
 
 ```bash
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o postra ./cmd/postra
-go run scripts/mkimage.go postra postra-image.tar postra:0.25.9
+go run scripts/mkimage.go postra postra-image.tar postra:0.25.10
 gzip -9 postra-image.tar
 ```
