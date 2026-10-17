@@ -312,6 +312,15 @@ func syncSessions(d *domain.SyncDiagnostic) string {
 	return out
 }
 
+// greetingNotIMAPHint covers the two refusals the IMAP adapter leaves for class
+// "other" at the greeting stage: a first line that is not one of RFC 3501
+// §7.1.1's untagged OK/PREAUTH/BYE, and a first line that never terminated
+// inside the protocol-line bound. Neither is a network fault — the peer is
+// talking, just not IMAP — so the hint names the configuration to look at
+// instead of the wire. The server's own text never travels, which is exactly
+// why the operator cannot see for themselves that it was a POP3 banner.
+const greetingNotIMAPHint = "서버의 첫 응답이 IMAP 환영 메시지가 아닙니다. 수신 포트와 프로토콜 조합을 확인하세요(POP3 110·995 또는 SMTP 25·587 포트에 IMAP으로 접속했거나, 프록시가 다른 서버로 연결하고 있을 수 있습니다)"
+
 // syncHint adds the one thing an operator should check next, when the class and
 // the connection census together point at it.
 func syncHint(d *domain.SyncDiagnostic) string {
@@ -330,6 +339,12 @@ func syncHint(d *domain.SyncDiagnostic) string {
 		return "이 계정의 동시 접속 허용 수를 확인하세요. 실시간 대기(IDLE) 연결과 동기화 연결을 함께 사용합니다. 계정당 1개만 허용하는 서버라면 관리자 설정에서 IMAP 실시간 수신(IDLE)을 끄세요"
 	case d.Stage == domain.StageGreeting && (d.Class == "timeout" || d.Class == "closed" || d.Class == "reset"):
 		return "TCP 연결은 되었으나 서버가 세션을 시작하지 않았습니다. 동시 접속 제한·접속 빈도 제한·차단 목록·프록시를 확인하세요"
+	// Last of the greeting hints on purpose: the two above name a cause this one
+	// cannot tell apart from a wrong port, and "other" is where everything the
+	// adapter could not classify lands. Only the IMAP adapter refuses a greeting
+	// it cannot parse, so POP3 keeps falling through to no hint.
+	case d.Stage == domain.StageGreeting && d.Protocol == "imap" && d.Class == "other":
+		return greetingNotIMAPHint
 	case d.Stage == domain.StageTLS && d.Class == "timeout":
 		return "보안 모드(TLS/STARTTLS)와 포트 조합을 확인하세요"
 	case d.Stage == domain.StageFetch && d.Class == "timeout":

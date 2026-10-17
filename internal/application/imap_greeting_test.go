@@ -112,6 +112,12 @@ func TestSyncOfANonIMAPServerFailsAtTheGreeting(t *testing.T) {
 		if !strings.Contains(d.Summary, syncStageLabels[domain.StageGreeting]) {
 			t.Fatalf("summary %q does not name the greeting step", d.Summary)
 		}
+		// Naming the step is not naming the cause: "알 수 없는 오류" sends the
+		// operator looking at the network when the port is simply wrong. The
+		// summary has to end on what to check.
+		if !strings.Contains(d.Summary, greetingNotIMAPHint) {
+			t.Fatalf("summary %q carries no hint about the first response not being an IMAP greeting", d.Summary)
+		}
 		// The greeting is the server's own text and diagnostics are persisted
 		// and shown, so none of it may travel.
 		for _, leak := range []string{"POP3 ready", "1234@maildrop"} {

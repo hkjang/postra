@@ -1499,3 +1499,48 @@ func TestIMAPDialRequiresAnIMAPGreeting(t *testing.T) {
 		})
 	}
 }
+
+// TestIMAPGreetingRefusalsClassifyAsOther pins the class the two greeting
+// refusals above carry, which the table test only checks for self-consistency.
+// It matters outside this package: application.syncHint keys its "the first
+// response was not an IMAP greeting" advice on stage=greeting + protocol=imap +
+// class=other, and nothing in that package can see which errors reach it. If
+// either refusal were ever classified as a network condition instead, the hint
+// would quietly stop appearing and the operator would be back to "알 수 없는
+// 오류" with no test going red.
+func TestIMAPGreetingRefusalsClassifyAsOther(t *testing.T) {
+	cases := []struct {
+		name     string
+		greeting string
+	}{
+		// Dial's isGreeting guard: a peer talking another protocol.
+		{name: "not a greeting", greeting: "+OK POP3 ready\r\n"},
+		// readBoundedLine's errUnframed: a first line that never terminates. The
+		// bound trips on the read that would carry acc past it, so the fixture
+		// has to overshoot by more than one of the reader's buffers — a line of
+		// exactly maxLineBytes+1 instead stalls on the last byte and times out,
+		// which is a different class and a different hint.
+		{name: "greeting past the line bound", greeting: strings.Repeat("x", maxLineBytes+(64<<10))},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			addr, _ := greetingServer(t, tc.greeting)
+			host, portStr, _ := net.SplitHostPort(addr)
+			var port int
+			fmt.Sscanf(portStr, "%d", &port)
+			_, err := Dialer{}.Dial(context.Background(), domain.InboundDialOptions{
+				Host: host, Port: port, Security: domain.SecurityNone,
+				Username: "me", Password: domain.NewSecretHandle([]byte("pw")),
+				CommandTimeoutSec: 2,
+			})
+			var inbound *domain.InboundError
+			if !errors.As(err, &inbound) {
+				t.Fatalf("Dial error = %T (%v), want a *domain.InboundError", err, err)
+			}
+			if inbound.Stage != domain.StageGreeting || inbound.Class != "other" {
+				t.Fatalf("stage/class = %q/%q, want %q/\"other\" — syncHint's non-IMAP-greeting advice keys on that pair",
+					inbound.Stage, inbound.Class, domain.StageGreeting)
+			}
+		})
+	}
+}
