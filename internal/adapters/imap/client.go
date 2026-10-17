@@ -90,6 +90,19 @@ func (Dialer) Dial(ctx context.Context, opts domain.InboundDialOptions) (domain.
 		conn.Close()
 		return nil, s.failed(domain.StageGreeting, "", &domain.InboundRejected{Code: domain.InboundResponseCode(greeting)}, start)
 	}
+	// A peer that opened with something else is not an IMAP server — an inbound
+	// port left at the POP3 or SMTP default, or a proxy in front of the wrong
+	// backend. Carrying on costs the operator the diagnosis: the dial fails at
+	// LOGIN or SELECT instead, which reads as a credential or mailbox problem,
+	// and against a peer that then says nothing it costs the command budget
+	// rather than the connect budget. Only the line's length travels in the
+	// error, never the line: diagnostics are persisted and shown. The POP3
+	// adapter has always required its "+OK" in readGreeting.
+	if !isGreeting(greeting) {
+		conn.Close()
+		return nil, s.failed(domain.StageGreeting, "",
+			fmt.Errorf("imap greeting: %d bytes that are not an IMAP greeting (no untagged OK, PREAUTH or BYE)", len(greeting)), start)
+	}
 
 	if opts.Security == domain.SecurityStartTLS {
 		starttlsStart := time.Now()
@@ -161,6 +174,32 @@ func (Dialer) Dial(ctx context.Context, opts domain.InboundDialOptions) (domain.
 		return nil, err
 	}
 	return s, nil
+}
+
+// isGreeting reports whether line is one of the three server greetings RFC 3501
+// §7.1.1 allows: untagged OK, PREAUTH or BYE. The condition is matched
+// case-insensitively because the ABNF's literals are, so a server that greets in
+// lower case is odd but legal and must not be refused; the PREAUTH and BYE
+// branches in Dial stay case-sensitive, since widening either of those would
+// change which sessions skip LOGIN and which count as refused. Greeting text is
+// optional here — a bare "* OK" is accepted — because what this guards against
+// is a peer speaking another protocol, not a terse one.
+func isGreeting(line string) bool {
+	rest, ok := strings.CutPrefix(line, "* ")
+	if !ok {
+		return false
+	}
+	for _, cond := range []string{"OK", "PREAUTH", "BYE"} {
+		if len(rest) < len(cond) || !strings.EqualFold(rest[:len(cond)], cond) {
+			continue
+		}
+		// "* OKAY" is not "* OK": the condition ends the line or is followed by
+		// the space before its text.
+		if len(rest) == len(cond) || rest[len(cond)] == ' ' {
+			return true
+		}
+	}
+	return false
 }
 
 // connectFailure names the step a failed dial stopped at. With implicit TLS

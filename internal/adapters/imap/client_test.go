@@ -18,6 +18,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1334,4 +1335,167 @@ func TestIMAPImplicitTLSVerifiesServerCertificate(t *testing.T) {
 			t.Fatalf("session connection is %T, want *tls.Conn on the implicit-TLS path", sess.(*session).conn)
 		}
 	})
+}
+
+// greetingRecorder keeps the command verbs a fixture server was asked for, so a
+// test can tell "the dial stopped at the greeting" from "the dial carried on
+// and the command it sent next happened to fail".
+type greetingRecorder struct {
+	mu    sync.Mutex
+	verbs []string
+}
+
+func (r *greetingRecorder) add(verb string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.verbs = append(r.verbs, verb)
+}
+
+func (r *greetingRecorder) seen() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.verbs...)
+}
+
+// greetingServer opens with the line given and then answers every tagged
+// command in frame, whatever its own greeting was. A real non-IMAP peer does
+// not play along like this — it answers out of frame and the client sits on the
+// response until the command budget runs out — but a fixture that answers
+// correctly is what makes the assertion about the greeting check itself rather
+// than about a timeout: whether the dial got past the greeting shows up in what
+// the server was asked for, with nothing to wait for either way.
+func greetingServer(t *testing.T, greeting string) (string, *greetingRecorder) {
+	t.Helper()
+	rec := &greetingRecorder{}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		conn.SetDeadline(time.Now().Add(20 * time.Second))
+		br := bufio.NewReader(conn)
+		io.WriteString(conn, greeting)
+		for {
+			line, err := br.ReadString('\n')
+			if err != nil {
+				return
+			}
+			sp := strings.SplitN(strings.TrimRight(line, "\r\n"), " ", 3)
+			if len(sp) < 2 {
+				continue
+			}
+			tag, cmd := sp[0], strings.ToUpper(sp[1])
+			rec.add(cmd)
+			switch cmd {
+			case "SELECT":
+				io.WriteString(conn, "* 0 EXISTS\r\n* OK [UIDVALIDITY 42] ok\r\n")
+				fmt.Fprintf(conn, "%s OK [READ-WRITE] SELECT completed\r\n", tag)
+			default:
+				fmt.Fprintf(conn, "%s OK\r\n", tag)
+			}
+		}
+	}()
+	return ln.Addr().String(), rec
+}
+
+// TestIMAPDialRequiresAnIMAPGreeting pins which opening lines may start a
+// session. RFC 3501 §7.1.1 allows exactly three — untagged OK, PREAUTH and BYE
+// — and a peer that sends anything else is not an IMAP server: an inbound port
+// left at 110 or 25, or a proxy in front of the wrong backend. Accepting such a
+// greeting costs the operator the diagnosis, because the dial carries on and
+// fails at LOGIN or SELECT instead, which reads as a credential or mailbox
+// problem and (against a server that stays silent) only after the command
+// budget rather than the connect budget. The POP3 adapter has always required
+// its "+OK" in readGreeting; this is the same check on the other adapter.
+func TestIMAPDialRequiresAnIMAPGreeting(t *testing.T) {
+	cases := []struct {
+		name      string
+		greeting  string
+		refuse    bool   // the dial must stop at the greeting
+		wantCode  string // response code expected on the diagnostic
+		wantLogin bool   // LOGIN must have been sent (accepted greetings only)
+	}{
+		// An inbound port left at the POP3 or SMTP default: the account's own
+		// server, answering a protocol this adapter does not speak.
+		{name: "pop3 greeting", greeting: "+OK POP3 ready\r\n", refuse: true},
+		{name: "smtp greeting", greeting: "220 mail.corp.local ESMTP Postfix\r\n", refuse: true},
+		// Untagged, but not one of the three greetings.
+		{name: "untagged capability", greeting: "* CAPABILITY IMAP4rev1\r\n", refuse: true},
+		// A tagged completion with no greeting in front of it.
+		{name: "tagged response", greeting: "a1 OK nothing to see\r\n", refuse: true},
+		{name: "ok", greeting: "* OK IMAP4rev1 ready\r\n", wantLogin: true},
+		// The ABNF's literals are case-insensitive, so a server that greets in
+		// lower case is odd but legal: the check must not refuse it.
+		{name: "ok lower case", greeting: "* ok ready\r\n", wantLogin: true},
+		// PREAUTH keeps its meaning: the session is already authenticated, so
+		// no LOGIN is sent.
+		{name: "preauth", greeting: "* PREAUTH IMAP4rev1 ready\r\n"},
+		// BYE at the greeting stays the refusal it already was, with its
+		// response code — typically a per-account connection limit.
+		{name: "bye", greeting: "* BYE [LIMIT] too many connections\r\n", refuse: true, wantCode: "LIMIT"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			addr, rec := greetingServer(t, tc.greeting)
+			host, portStr, _ := net.SplitHostPort(addr)
+			var port int
+			fmt.Sscanf(portStr, "%d", &port)
+			sess, err := Dialer{}.Dial(context.Background(), domain.InboundDialOptions{
+				Host: host, Port: port, Security: domain.SecurityNone,
+				Username: "me", Password: domain.NewSecretHandle([]byte("pw")),
+				// Kept short so a dial that does carry on against a silent
+				// server cannot hold this test for the default minute.
+				CommandTimeoutSec: 2,
+			})
+			if !tc.refuse {
+				if err != nil {
+					t.Fatalf("Dial = %v, want the session to establish on greeting %q", err, strings.TrimRight(tc.greeting, "\r\n"))
+				}
+				defer sess.Close()
+				verbs := strings.Join(rec.seen(), ",")
+				if !strings.Contains(verbs, "SELECT") {
+					t.Fatalf("server was asked for %q, want SELECT — the session never reached the mailbox", verbs)
+				}
+				if got := strings.Contains(verbs, "LOGIN"); got != tc.wantLogin {
+					t.Fatalf("LOGIN sent = %v, want %v (asked for %q)", got, tc.wantLogin, verbs)
+				}
+				return
+			}
+			if err == nil {
+				sess.Close()
+				t.Fatalf("Dial accepted %q as a greeting and asked for %q; want the dial to stop at the greeting",
+					strings.TrimRight(tc.greeting, "\r\n"), rec.seen())
+			}
+			var inbound *domain.InboundError
+			if !errors.As(err, &inbound) {
+				t.Fatalf("Dial error = %T (%v), want a *domain.InboundError naming the stage", err, err)
+			}
+			if inbound.Stage != domain.StageGreeting {
+				t.Fatalf("Stage = %q, want %q — any other stage sends the operator to the wrong place",
+					inbound.Stage, domain.StageGreeting)
+			}
+			if inbound.Class != domain.ClassifyInbound(inbound.Err) || inbound.Class == "" {
+				t.Fatalf("Class = %q, want the classification of %v", inbound.Class, inbound.Err)
+			}
+			if inbound.Code != tc.wantCode {
+				t.Fatalf("Code = %q, want %q", inbound.Code, tc.wantCode)
+			}
+			if verbs := rec.seen(); len(verbs) != 0 {
+				t.Fatalf("server was asked for %q after a greeting it never sent, want nothing", verbs)
+			}
+			// Diagnostics are persisted and shown, so none of the server's own
+			// bytes may travel in the error — only the adapter's own text.
+			for _, leak := range []string{"POP3", "ESMTP", "CAPABILITY", "too many", "nothing to see"} {
+				if strings.Contains(err.Error(), leak) {
+					t.Fatalf("Dial error = %q, want no text the server sent (%q)", err, leak)
+				}
+			}
+		})
+	}
 }
