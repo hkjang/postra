@@ -12,7 +12,7 @@ permissions:
 # Pinned to a toolchain that includes the stdlib security fixes govulncheck
 # requires (see go.mod `toolchain`). Bump both together.
 env:
-  GO_VERSION: "1.26.6"   # 1.26.6 에서 GO-2026-6218(net/url)·GO-2026-6091(html/template) 이 고쳐졌다
+  GO_VERSION: "1.26.9"   # 1.26.9 에서 net/http·html/template·crypto/tls·mime/multipart 권고(GO-2026-6599 등)가 고쳐졌다
   NODE_VERSION: "22"
 
 concurrency:
