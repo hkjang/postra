@@ -403,3 +403,55 @@ func TestInboundCensusCountsSessionsPerHostAndAccount(t *testing.T) {
 		t.Fatalf("after both released: hosts=%d accounts=%d", hosts, accounts)
 	}
 }
+
+// TestGreetingHintNamesANonIMAPFirstResponse pins the one combination the IMAP
+// adapter leaves for class "other" at the greeting. Two different refusals land
+// there and both mean the same thing to an operator — the first line was not
+// usable as an IMAP greeting — so one hint covers them:
+//
+//	a line that is not "* OK"/"* PREAUTH"/"* BYE" (Dial's isGreeting guard), and
+//	a first line that ran past the 1 MiB protocol-line bound (errUnframed).
+//
+// The sub-tests below also fix the precedence this hint sits at, because the
+// stage it keys on already has two hints in front of it.
+func TestGreetingHintNamesANonIMAPFirstResponse(t *testing.T) {
+	greeting := func(d domain.SyncDiagnostic) *domain.SyncDiagnostic {
+		d.Stage, d.Host = domain.StageGreeting, "mail.corp.local"
+		return &d
+	}
+	for _, tc := range []struct {
+		name string
+		d    *domain.SyncDiagnostic
+		want string
+	}{
+		{"not an IMAP greeting", greeting(domain.SyncDiagnostic{Protocol: "imap", Class: "other", Port: 110}), greetingNotIMAPHint},
+		{"greeting past the line bound", greeting(domain.SyncDiagnostic{Protocol: "imap", Class: "other", Port: 143}), greetingNotIMAPHint},
+		// POP3 keeps its own vocabulary: its greeting check rejects a missing
+		// "+OK", and a hint naming IMAP ports would misdirect.
+		{"pop3 is out of scope", greeting(domain.SyncDiagnostic{Protocol: "pop3", Class: "other", Port: 110}), ""},
+		// A silent peer is the connection-limit case, which already has a hint.
+		{"silence keeps its own hint", greeting(domain.SyncDiagnostic{Protocol: "imap", Class: "timeout", Port: 143}),
+			"TCP 연결은 되었으나 서버가 세션을 시작하지 않았습니다. 동시 접속 제한·접속 빈도 제한·차단 목록·프록시를 확인하세요"},
+		// Both hints in front of this one still win, so adding it cannot have
+		// taken a more specific diagnosis away from anyone.
+		{"implicit TLS still wins", greeting(domain.SyncDiagnostic{Protocol: "imap", Class: "other", Port: 993, Security: string(domain.SecurityNone)}),
+			"이 포트는 접속 직후 TLS를 요구합니다. 계정의 보안 모드를 TLS로 바꾸세요(현재 none)"},
+		{"concurrent sessions still win", greeting(domain.SyncDiagnostic{Protocol: "imap", Class: "other", Port: 143, AccountSessions: 2}),
+			"이 계정의 동시 접속 허용 수를 확인하세요. 실시간 대기(IDLE) 연결과 동기화 연결을 함께 사용합니다. 계정당 1개만 허용하는 서버라면 관리자 설정에서 IMAP 실시간 수신(IDLE)을 끄세요"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := syncHint(tc.d); got != tc.want {
+				t.Fatalf("hint = %q, want %q", got, tc.want)
+			}
+			// The hint is only worth anything if it survives the read boundary,
+			// which rebuilds the summary from the allow-listed tokens alone.
+			safe := safeSyncDiagnostic(tc.d)
+			if safe == nil {
+				t.Fatalf("read boundary dropped the diagnostic: %+v", tc.d)
+			}
+			if tc.want != "" && !strings.Contains(safe.Summary, tc.want) {
+				t.Fatalf("rebuilt summary %q does not carry the hint", safe.Summary)
+			}
+		})
+	}
+}
